@@ -62,8 +62,8 @@ function drawPendingOverlays(context,b,scale,density,now){
       context.fillStyle=`rgba(255,255,255,${alpha.toFixed(4)})`;
       context.fillRect(x,y,w,h);
       context.globalCompositeOperation='source-over';
-      context.strokeStyle=`rgba(255,255,255,${(0.08+0.08*wave).toFixed(4)})`;
-      context.lineWidth=Math.max(1,density*0.75);
+      context.strokeStyle=`rgba(255,255,255,${(0.025+0.025*wave).toFixed(4)})`;
+      context.lineWidth=1;
       context.strokeRect(x+0.5,y+0.5,Math.max(0,w-1),Math.max(0,h-1));
       if(!reducedMotion)needsPulse=true;
     }else if(tile.state==='downloaded'&&showFlash){
@@ -73,8 +73,8 @@ function drawPendingOverlays(context,b,scale,density,now){
       context.fillStyle=`rgba(255,255,255,${alpha.toFixed(4)})`;
       context.fillRect(x,y,w,h);
       context.globalCompositeOperation='source-over';
-      context.strokeStyle=`rgba(181,217,139,${(0.18+0.28*wave).toFixed(4)})`;
-      context.lineWidth=Math.max(1,density*0.85);
+      context.strokeStyle=`rgba(181,217,139,${(0.04+0.06*wave).toFixed(4)})`;
+      context.lineWidth=1;
       context.strokeRect(x+0.5,y+0.5,Math.max(0,w-1),Math.max(0,h-1));
       if(!reducedMotion)needsPulse=true;
     }
