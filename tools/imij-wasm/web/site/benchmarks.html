@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>IMI Benchmarks · 4K and 8K browser decode</title>
+  <link rel="canonical" href="__PAGE_ORIGIN__/imi/benchmarks">
+  <script src="../imi/site-origin.js"></script>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    .container { max-width: 1480px; }
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+      align-items: center;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin: 16px 0;
+    }
+    .filter-bar label {
+      font: 500 12px var(--mono);
+      color: var(--muted);
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      max-width: 100%;
+    }
+    .filter-bar select { max-width: 100%; }
+    .filter-bar select, .filter-bar button {
+      font: 500 12.5px var(--mono);
+      background: var(--bg);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    .filter-bar button.primary {
+      background: var(--accent);
+      color: #142011;
+      border-color: var(--accent);
+      font-weight: 700;
+    }
+    .filter-bar button:disabled { opacity: .55; cursor: progress; }
+    #live-status { font: 12px var(--mono); color: var(--muted); flex: 1 1 260px; }
+    .scene-strip {
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      padding: 4px 2px 10px;
+    }
+    .scene-btn {
+      flex: 0 0 185px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      color: var(--ink);
+    }
+    .scene-btn[aria-pressed="true"] {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px #b5d98b55;
+    }
+    .scene-btn img {
+      width: 100%;
+      height: 82px;
+      object-fit: cover;
+      border-radius: 4px;
+      background: var(--bg);
+    }
+    .scene-btn strong {
+      font: 600 11.5px/1.2 var(--mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .scene-btn small { font: 400 10px/1.2 var(--mono); color: var(--muted); }
+    .table-wrap { position: relative; overflow-x: auto; margin: 8px 0 20px; border-radius: 8px; }
+    .table-wrap table { margin: 0; }
+    table.results td, table.results th { white-space: nowrap; vertical-align: top; }
+    table.results th button {
+      all: unset;
+      cursor: pointer;
+      color: inherit;
+    }
+    table.results th button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    table.results th[aria-sort="ascending"] button::after { content: " ▲"; }
+    table.results th[aria-sort="descending"] button::after { content: " ▼"; }
+    table.results th.headline, table.results td.headline { background: #b5d98b12; }
+    table.results th.headline { color: var(--ink); }
+    table.results th small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td .ms { display: block; font-size: 11px; color: var(--muted); }
+    td .note { display: block; font-size: 11px; color: var(--warm); }
+    td.na { color: var(--muted); text-align: center; }
+    .winner { color: var(--accent); font-weight: 700; }
+    .row-run-btn {
+      font: 600 11px var(--mono);
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--line);
+      background: var(--panel-alt);
+      color: var(--accent);
+      cursor: pointer;
+    }
+    .row-run-btn:hover { border-color: var(--accent); }
+    .preview-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: minmax(0, 720px) minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+      margin: 8px 0 28px;
+    }
+    .preview-card canvas {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      display: block;
+    }
+    .note-box {
+      font-size: 13px;
+      color: var(--muted);
+      background: var(--panel);
+      border-left: 3px solid var(--accent);
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      margin: 12px 0 20px;
+    }
+    .source { font: 11.5px/1.5 var(--mono); color: var(--muted); margin: -10px 0 18px; }
+    @media (max-width: 860px) {
+      .preview-card { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./index.html"><span class="mark">i</span> IMI <span>FORMAT</span> <small>Benchmarks</small></a>
+    <nav class="nav" aria-label="IMI site navigation">
+      <a href="./index.html">IMI Home</a>
+      <a href="./why.html">Why IMI?</a>
+      <a href="./encode.html">Encoder Lab</a>
+      <a href="./benchmarks.html" aria-current="page">Benchmarks</a>
+      <a href="../gigapixel/">Gigapixel Explorer</a>
+      <a href="../codestream-atlas/">3D Codestream Atlas</a>
+      <a href="./spec.html">Format Spec</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <p class="eyebrow">Browser decode of real 4K and 8K photographs</p>
+      <h1>4K &amp; 8K decode in your browser</h1>
+      <p class="lede">
+        Each run downloads hash-pinned files and decodes them on this device. IMI files decode in WebAssembly SIMD workers; the
+        headline column is <strong>8 IMI workers</strong>. Other formats use the browser's own decoder
+        (<code>createImageBitmap</code>), which picks its own threads. Download time is reported separately from decode time.
+      </p>
+    </section>
+
+    <h2 id="live">1. Run a live decode</h2>
+    <div id="bench-thumbs" class="scene-strip" role="group" aria-label="Choose a 4K or 8K scene"></div>
+
+    <div class="filter-bar">
+      <label>IMI worker counts
+        <select id="worker-preset">
+          <option value="8" selected>8 workers</option>
+          <option value="standard">8, 4, 2 and 1 workers</option>
+          <option value="all">8, 16, 4, 2, 1 workers + whole-image decoder</option>
+        </select>
+      </label>
+      <label>Trials
+        <select id="trial-count">
+          <option value="3" selected>3 (slowest shown)</option>
+          <option value="1">1</option>
+        </select>
+      </label>
+      <button id="live-run" type="button" class="primary">Run all files in this scene</button>
+      <button id="live-stop" type="button" hidden>Stop</button>
+      <span id="live-status" role="status" aria-live="polite">Ready.</span>
+    </div>
+
+    <ul class="codec-legend" aria-label="Codec colors" id="codec-legend"></ul>
+
+    <div class="table-wrap">
+      <table id="live-table" class="results">
+        <caption class="visually-hidden">Live decode results for the selected scene. Speed is megapixels per second of the slowest trial; time below it is that trial's decode time.</caption>
+        <thead><tr id="live-head"></tr></thead>
+        <tbody id="live-body"></tbody>
+      </table>
+    </div>
+
+    <section class="preview-card" aria-label="Decoded output">
+      <canvas id="bench-preview" width="640" height="360" aria-label="Decoded image preview"></canvas>
+      <div>
+        <p class="eyebrow" style="margin:0 0 6px" id="preview-tag">Decoded output</p>
+        <strong id="preview-title" style="font:600 13px var(--mono)"></strong>
+        <p id="preview-meta" style="font:11.5px var(--mono);color:var(--muted);margin:6px 0 0"></p>
+        <p style="font-size:12.5px;color:var(--muted)">The preview shows the last trial of the most recent decode, scaled down. Drawing it happens after the decode timer stops.
+          Each decoder first decodes the file once untimed, so compilation and warm-up in a fresh worker pool are not counted; the timed trials follow.
+          IMI decode time covers input copy, index open, range transfer to workers, decoding and the final RGBA bitmap; worker start-up and
+          hash verification are outside it. Native decode time covers <code>createImageBitmap</code> until the bitmap is ready.</p>
+      </div>
+    </section>
+
+    <h2 id="recorded">2. Recorded results</h2>
+    <p class="note-box">These tables copy measurements from dated studies in the IMI repository. Each table names its machine and scope. They are
+      not comparable to each other or to your live run: hosts, browsers, workloads and timers differ. Cells that were not measured are blank.</p>
+
+    <h3>NASA Blue Marble crop: file size and quality of the live-benchmark files</h3>
+    <div class="table-wrap">
+      <table id="size-table" class="results">
+        <thead><tr><th scope="col">Codec</th><th scope="col">Size</th><th scope="col">Encoder setting</th><th scope="col">Bytes</th><th scope="col">bits/pixel</th><th scope="col">SSIMULACRA2</th></tr></thead>
+        <tbody id="size-body"></tbody>
+      </table>
+    </div>
+    <p class="source">Files and SSIMULACRA2 scores: the hash-pinned fixture catalog used above. Lossy files were matched to SSIMULACRA2 within ±0.5 per size. One scene; not a corpus result.</p>
+
+    <h3>Browser IMI decode, 8K crop, benchmark page (2026-10-16)</h3>
+    <div class="table-wrap">
+      <table id="browser-table" class="results">
+        <thead><tr><th scope="col">Browser</th><th scope="col">Mode</th><th scope="col" class="headline">8 workers<small>ms (MP/s)</small></th><th scope="col">4 workers<small>ms (MP/s)</small></th></tr></thead>
+        <tbody id="browser-body"></tbody>
+      </table>
+    </div>
+    <p class="source">Source: benchmarks/browser_scaling_2026-10-16.md, “Published UI validation”. Ryzen 9 5900XT, slowest of three, whole decode pipeline as described above. MP/s is 33.18 MP divided by the recorded time.</p>
+
+    <h3>Browser IMI throughput, separate 4K images per worker (Chromium 153, 2026-10-16)</h3>
+    <div class="table-wrap">
+      <table id="batch-table" class="results">
+        <thead><tr><th scope="col">Mode</th><th scope="col" class="headline">8 workers</th><th scope="col">16</th><th scope="col">4</th><th scope="col">2</th><th scope="col">1</th></tr></thead>
+        <tbody id="batch-body"></tbody>
+      </table>
+    </div>
+    <p class="source">Source: benchmarks/browser_scaling_2026-10-16.md, “Independent full-image control”. Aggregate MP/s, slowest of three batches; each worker decodes a whole 4K image, so total work grows with workers. This is throughput, not single-image latency.</p>
+
+    <h3>Native IMI decode, Ryzen 9 7900X (Zen 4)</h3>
+    <div class="table-wrap">
+      <table id="native-table" class="results">
+        <thead><tr><th scope="col">Content</th><th scope="col">Mode</th><th scope="col">Size</th><th scope="col" class="headline">8 workers</th><th scope="col">1 worker</th><th scope="col">Source</th></tr></thead>
+        <tbody id="native-body"></tbody>
+      </table>
+    </div>
+    <p class="source">Photo/screenshot/text/pixel-art rows: benchmarks/quick_pixels_production_2026-10-14.md (MPx/s, slowest of three fresh processes, size in bits per pixel). Scientific rows: benchmarks/science_baselines_2026-10-08 (megasamples per second, size in bits per sample, IMI lossless effort 7.5).</p>
+  </main>
+
+  <script type="module">
+    const $ = id => document.getElementById(id);
+    const BUNDLE = '__BUNDLE_PREFIX__'.startsWith('bundles/') ? '/__BUNDLE_PREFIX__' : '..';
+    // Benchmark files and previews live on the data origin; pages may be served elsewhere.
+    const DATA_ORIGIN = window.IMI_SITE?.dataOrigin || location.origin;
+    const dataUrl = path => new URL(path, DATA_ORIGIN);
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+    const CODECS = {
+      'imi-lossy': ['imi', 'IMI'], 'imi-lossless': ['imi', 'IMI'],
+      'jxl-lossy': ['jxl', 'JPEG XL'], 'jxl-lossless': ['jxl', 'JPEG XL'],
+      avif: ['avif', 'AVIF'], jpeg: ['jpeg', 'JPEG'],
+      'webp-lossy': ['webp', 'WebP'], 'webp-lossless': ['webp', 'WebP'], png: ['png', 'PNG'],
+    };
+    $('codec-legend').innerHTML = [['imi', 'IMI (WebAssembly workers)'], ['jxl', 'JPEG XL'], ['avif', 'AVIF'], ['jpeg', 'JPEG'], ['webp', 'WebP'], ['png', 'PNG']]
+      .map(([k, label]) => `<li class="codec-chip" data-codec="${k}">${label}</li>`).join('');
+
+    // SSIMULACRA2 of the lossy NASA files, from the fixture catalog (keyed by SHA-256).
+    const SSIM2 = {
+      ace389ce78ecaebca3b1b434a6aeb1763936605ff755036b92bc5ac5c849e5de: 71.111935455174,
+      aca9818200cb26eeec24467210bf5643a4c1bc603d85e57586be066f64480b41: 71.426146862625,
+      '975459acbdfb58487ccbd2bf2a18bb5fc135392ed9491c9585e92103bfdd44a2': 71.164640589,
+      '7b590ca8ba5ebe82051045a8cbb26cafc22d9b6ac4eb87815f86880a804a2402': 71.148427459304,
+      '924281b66862c4ae61a196215c2dc411be415c9201e04b13fc105122ceae2fca': 70.980311980532,
+      '23debccf3521f08ffbebcb9a2d5e7ecf05da2d4c9a7c58172a7571e9498ae6f4': 73.079766896048,
+      '051a740cad1a8c1b15a4f87999148c099ecef0229897b8fe5efe8bf84e03313d': 72.979999180517,
+      '326606d9ae1027d69983c1a6f326d4ba315c9b0fa12d9e747faec7c52b144f81': 72.689045603529,
+      '3789bb3a380d17961f9bab6db285f838221aa89d47f284c3a66e7333e35dc83e': 73.187027983664,
+      cc47d97e333d76acd3555b5b13ccfb83e7c35815d361b088d814f85ae3d31485: 72.984529056643,
+    };
+    const SETTINGS = {
+      ace389ce78ecaebca3b1b434a6aeb1763936605ff755036b92bc5ac5c849e5de: 'libaom cpu-used 0 · CRF 17 · 4:2:0',
+      '0ff5dfc5d54a906e85d7bc7753608251c305f67b11ce687810bd8c5c6101501f': 'IMI default lossless · effort 10',
+      aca9818200cb26eeec24467210bf5643a4c1bc603d85e57586be066f64480b41: 'IMI Fast · effort 10 · JPEG-quality 81.25',
+      '975459acbdfb58487ccbd2bf2a18bb5fc135392ed9491c9585e92103bfdd44a2': 'zenjpeg Max · q80 · progressive 4:2:0',
+      '3e6b0ca8daa6723b0ec70e933986d8df22e22d506d04bd0097aa4d465f3ad31c': 'libjxl effort 9 · distance 0',
+      '7b590ca8ba5ebe82051045a8cbb26cafc22d9b6ac4eb87815f86880a804a2402': 'libjxl effort 9 · distance 2.03125',
+      '1d844cc1d9c7ec501753b25b535a8daa3f4f6b51844dec1cba0422afbb069dbe': 'zenpng effort 30',
+      '6d784c978f1a5c2273e2bb1febe71d45e8166cd166eceda572081498f9921ddc': 'libwebp lossless preset 9 · method 6',
+      '924281b66862c4ae61a196215c2dc411be415c9201e04b13fc105122ceae2fca': 'libwebp q85.625 · method 6',
+      '23debccf3521f08ffbebcb9a2d5e7ecf05da2d4c9a7c58172a7571e9498ae6f4': 'libaom cpu-used 0 · CRF 16 · 4:2:0',
+      f285f1510562120c5edfd2db65613aee8403d8b6615d620d6dcf7a75ea9f67d7: 'IMI default lossless · effort 10',
+      '051a740cad1a8c1b15a4f87999148c099ecef0229897b8fe5efe8bf84e03313d': 'IMI Fast · effort 10 · JPEG-quality 81.25',
+      '326606d9ae1027d69983c1a6f326d4ba315c9b0fa12d9e747faec7c52b144f81': 'zenjpeg Max · q80 · progressive 4:2:0',
+      '084f5c47ae714b16ea22b6056040ef004b6012b970fa1d7307fa6bb40a1aba93': 'libjxl effort 9 · distance 0',
+      '3789bb3a380d17961f9bab6db285f838221aa89d47f284c3a66e7333e35dc83e': 'libjxl effort 9 · distance 2.20312',
+      '18e90415496f06a36323badc0940ab64131deef743f9b5bc19090a7d28737d00': 'zenpng effort 30',
+      '181dc81e97b8c64621cfc576214d404005b5d050b366916039fca11625d4f700': 'libwebp lossless preset 9 · method 6',
+      cc47d97e333d76acd3555b5b13ccfb83e7c35815d361b088d814f85ae3d31485: 'libwebp q88.75 · method 6',
+    };
+
+    const SCENES = [
+      {
+        id: 'earth-4k',
+        title: 'NASA Blue Marble · 4K',
+        dims: '3840×2160 (8.29 MP · 24.9 MB raw)',
+        thumb: '/p/44d9dc1cee0ce3d11f76bff79ae8c7720707d5e0d2e58487d912944fa9ffe3f6/preview.jpg',
+        fixtures: [
+          { id: '4k-imi-lossy', codec: 'imi-lossy', label: 'IMI Lossy · Fast (q81.25)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 696270, sha256: 'aca9818200cb26eeec24467210bf5643a4c1bc603d85e57586be066f64480b41', decodedRgbSha256: '769c5e807c9fb9fa6e0cd49520e942658c4739b6332ece8987b0390b3e7e4b82', lossless: false, url: '/benchmarks/aca9818200cb26eeec24467210bf5643a4c1bc603d85e57586be066f64480b41/imi-lossy-04.imi' },
+          { id: 'earth-4k-splithuf', codec: 'imi-lossy', label: 'IMI Lossy · SplitHuf Control', sizeLabel: '4K', width: 3840, height: 2160, bytes: 1658298, sha256: 'ea9d1a244c031321f0048901ee219d0c3e46475a0702c59cae9878e1b9e9a364', decodedRgbSha256: '93b8585abbfecbb94b894032f19d84f0181be2bb32bd962581f4816750fc8058', lossless: false, url: '/benchmarks/ea9d1a244c031321f0048901ee219d0c3e46475a0702c59cae9878e1b9e9a364/earth-4k-splithuf.imi' },
+          { id: 'earth-4k-fastest', codec: 'imi-lossy', label: 'IMI Lossy · Fastest Selector', sizeLabel: '4K', width: 3840, height: 2160, bytes: 1662555, sha256: '90a8d3e1d54f73b9832a6340cb54269ca4c692fb86d36b026a9404a17ecaa052', decodedRgbSha256: '9548f13de8a22fd216df983657fc0b0311227f25615b8222aa6f94879774cbc8', lossless: false, url: '/benchmarks/90a8d3e1d54f73b9832a6340cb54269ca4c692fb86d36b026a9404a17ecaa052/earth-4k-fastest.imi' },
+          { id: 'earth-4k-runlevel', codec: 'imi-lossy', label: 'IMI Lossy · RunLevel rANS', sizeLabel: '4K', width: 3840, height: 2160, bytes: 1562310, sha256: 'ab2e7417ef6d15d528e6824c4b654ceb5608ee75af24234f4e66898055a94141', decodedRgbSha256: 'd4ab11c4c2f8342852f696b899f130ecfc4fe6437941e8a286ddd0f5a9f293ac', lossless: false, url: '/benchmarks/ab2e7417ef6d15d528e6824c4b654ceb5608ee75af24234f4e66898055a94141/earth-4k-runlevel.imi' },
+          { id: '4k-jxl-lossy', codec: 'jxl-lossy', label: 'JPEG XL Lossy (libjxl e9)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 660668, sha256: '7b590ca8ba5ebe82051045a8cbb26cafc22d9b6ac4eb87815f86880a804a2402', mime: 'image/jxl', lossless: false, url: '/benchmarks/7b590ca8ba5ebe82051045a8cbb26cafc22d9b6ac4eb87815f86880a804a2402/jxl-lossy-05.jxl' },
+          { id: '4k-avif', codec: 'avif', label: 'AVIF (libaom cpu-0)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 806808, sha256: 'ace389ce78ecaebca3b1b434a6aeb1763936605ff755036b92bc5ac5c849e5de', mime: 'image/avif', lossless: false, url: '/benchmarks/ace389ce78ecaebca3b1b434a6aeb1763936605ff755036b92bc5ac5c849e5de/avif-05.avif' },
+          { id: '4k-jpeg', codec: 'jpeg', label: 'Progressive JPEG (zenjpeg q80)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 856875, sha256: '975459acbdfb58487ccbd2bf2a18bb5fc135392ed9491c9585e92103bfdd44a2', mime: 'image/jpeg', lossless: false, url: '/benchmarks/975459acbdfb58487ccbd2bf2a18bb5fc135392ed9491c9585e92103bfdd44a2/progressive.jpg' },
+          { id: '4k-webp-lossy', codec: 'webp-lossy', label: 'WebP Lossy (libwebp m6)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 1020888, sha256: '924281b66862c4ae61a196215c2dc411be415c9201e04b13fc105122ceae2fca', mime: 'image/webp', lossless: false, url: '/benchmarks/924281b66862c4ae61a196215c2dc411be415c9201e04b13fc105122ceae2fca/webp-lossy-05.webp' },
+          { id: '4k-jxl-lossless', codec: 'jxl-lossless', label: 'JPEG XL Lossless (libjxl e9)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 7035165, sha256: '3e6b0ca8daa6723b0ec70e933986d8df22e22d506d04bd0097aa4d465f3ad31c', mime: 'image/jxl', lossless: true, url: '/benchmarks/3e6b0ca8daa6723b0ec70e933986d8df22e22d506d04bd0097aa4d465f3ad31c/lossless.jxl' },
+          { id: '4k-webp-lossless', codec: 'webp-lossless', label: 'WebP Lossless (libwebp m6)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 7717800, sha256: '6d784c978f1a5c2273e2bb1febe71d45e8166cd166eceda572081498f9921ddc', mime: 'image/webp', lossless: true, url: '/benchmarks/6d784c978f1a5c2273e2bb1febe71d45e8166cd166eceda572081498f9921ddc/lossless.webp' },
+          { id: '4k-imi-lossless', codec: 'imi-lossless', label: 'IMI Lossless · Effort 10', sizeLabel: '4K', width: 3840, height: 2160, bytes: 8423175, sha256: '0ff5dfc5d54a906e85d7bc7753608251c305f67b11ce687810bd8c5c6101501f', decodedRgbSha256: '51a149d0660faafa911fbdc5ea53e0e35eb9a784002973c7789c188e7e8e830d', lossless: true, url: '/benchmarks/0ff5dfc5d54a906e85d7bc7753608251c305f67b11ce687810bd8c5c6101501f/lossless.imi' },
+          { id: '4k-png', codec: 'png', label: 'Crushed PNG (zenpng e30)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 10144740, sha256: '1d844cc1d9c7ec501753b25b535a8daa3f4f6b51844dec1cba0422afbb069dbe', mime: 'image/png', lossless: true, url: '/benchmarks/1d844cc1d9c7ec501753b25b535a8daa3f4f6b51844dec1cba0422afbb069dbe/compressed.png' },
+        ],
+      },
+      {
+        id: 'st-helens-4k',
+        title: 'Mount St. Helens · 4K',
+        dims: '3840×2160 (8.29 MP · 24.9 MB raw)',
+        thumb: '/benchmarks/thumbs/st-helens-thumb.jpg',
+        fixtures: [
+          { id: 'st-helens-4k-runlevel', codec: 'imi-lossy', label: 'IMI Lossy · RunLevel rANS', sizeLabel: '4K', width: 3840, height: 2160, bytes: 2366741, sha256: '5f083ed49f041cb6d34e53b6440e5be309596b7df5d2352d38db2eda9f7580e3', decodedRgbSha256: '1f9ea23d4e976e32c56890fdc5c84b7647b80a2cea59c85e95238444e19f8b51', lossless: false, url: '/benchmarks/5f083ed49f041cb6d34e53b6440e5be309596b7df5d2352d38db2eda9f7580e3/st-helens-4k-runlevel.imi' },
+          { id: 'st-helens-4k-splithuf', codec: 'imi-lossy', label: 'IMI Lossy · SplitHuf Fast', sizeLabel: '4K', width: 3840, height: 2160, bytes: 2546269, sha256: '24a8b37c9e2d812c37f3390d0191db294bda584278ac7e22211b3dd57c3b78d6', decodedRgbSha256: '2770da17c193c2f4e80c89447024b9f543b10245c66c36940d63d6171be71886', lossless: false, url: '/benchmarks/24a8b37c9e2d812c37f3390d0191db294bda584278ac7e22211b3dd57c3b78d6/st-helens-4k-splithuf.imi' },
+          { id: 'st-helens-4k-lossless', codec: 'imi-lossless', label: 'IMI Lossless · Effort 10 (rANS)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 9449721, sha256: '5d8e36f5875470315d959db174e545744c80bbd5f6402c85f5868a5fc08005ee', decodedRgbSha256: 'a6bebc875fd11c1643ba8373dc15537d00deca2fb0c40e54f4287063629ddd2e', lossless: true, url: '/benchmarks/5d8e36f5875470315d959db174e545744c80bbd5f6402c85f5868a5fc08005ee/st-helens-4k-lossless.imi' },
+          { id: 'st-helens-4k-quick', codec: 'imi-lossless', label: 'IMI Quick · QOI-style Packets', sizeLabel: '4K', width: 3840, height: 2160, bytes: 15477814, sha256: '8fba69f6085f908a2a090746c74b4c1c6ad943b1fbdb5ed68ed0ddc9ea5ec0be', decodedRgbSha256: 'a6bebc875fd11c1643ba8373dc15537d00deca2fb0c40e54f4287063629ddd2e', lossless: true, url: '/benchmarks/8fba69f6085f908a2a090746c74b4c1c6ad943b1fbdb5ed68ed0ddc9ea5ec0be/st-helens-4k-quick.imi' },
+        ],
+      },
+      {
+        id: 'perito-4k',
+        title: 'Perito Moreno Glacier · 4K',
+        dims: '3840×2160 (8.29 MP · 24.9 MB raw)',
+        thumb: '/benchmarks/thumbs/perito-moreno-thumb.jpg',
+        fixtures: [
+          { id: 'perito-moreno-4k-runlevel', codec: 'imi-lossy', label: 'IMI Lossy · RunLevel rANS', sizeLabel: '4K', width: 3840, height: 2160, bytes: 1007326, sha256: '9f46e805b5acdc34bb1c1f40855df8ce15d9dfd2ab891f555fa6808c112f725b', decodedRgbSha256: '24e4678e952a601bf83a02c4aba86f30c419dca465b1ca6f0cfd8c226de0976e', lossless: false, url: '/benchmarks/9f46e805b5acdc34bb1c1f40855df8ce15d9dfd2ab891f555fa6808c112f725b/perito-moreno-4k-runlevel.imi' },
+          { id: 'perito-moreno-4k-splithuf', codec: 'imi-lossy', label: 'IMI Lossy · SplitHuf Fast', sizeLabel: '4K', width: 3840, height: 2160, bytes: 1014485, sha256: 'afad35c04ab4cbaec12bd39d466884494c4004c9082f3cb3f09f2d4354918a4f', decodedRgbSha256: '24e4678e952a601bf83a02c4aba86f30c419dca465b1ca6f0cfd8c226de0976e', lossless: false, url: '/benchmarks/afad35c04ab4cbaec12bd39d466884494c4004c9082f3cb3f09f2d4354918a4f/perito-moreno-4k-splithuf.imi' },
+          { id: 'perito-moreno-4k-lossless', codec: 'imi-lossless', label: 'IMI Lossless · Effort 10 (rANS)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 8681299, sha256: '051c8ebc7cfd9fee01cd22e155827fbb30766932ddcff67cf5155f02c3aea94c', decodedRgbSha256: '6940bc23a63ebe55c387fa73b566452edba736e7721d92a140ba1664888f5675', lossless: true, url: '/benchmarks/051c8ebc7cfd9fee01cd22e155827fbb30766932ddcff67cf5155f02c3aea94c/perito-moreno-4k-lossless.imi' },
+          { id: 'perito-moreno-4k-quick', codec: 'imi-lossless', label: 'IMI Quick · QOI-style Packets', sizeLabel: '4K', width: 3840, height: 2160, bytes: 12980023, sha256: '2fbd39917ab18f9f4d06fbfef72bcf435cd999ed340aaa35798807d74787ec34', decodedRgbSha256: '6940bc23a63ebe55c387fa73b566452edba736e7721d92a140ba1664888f5675', lossless: true, url: '/benchmarks/2fbd39917ab18f9f4d06fbfef72bcf435cd999ed340aaa35798807d74787ec34/perito-moreno-4k-quick.imi' },
+        ],
+      },
+      {
+        id: 'zabriskie-4k',
+        title: 'Zabriskie Point · 4K',
+        dims: '3840×2160 (8.29 MP · 24.9 MB raw)',
+        thumb: '/benchmarks/thumbs/zabriskie-thumb.jpg',
+        fixtures: [
+          { id: 'zabriskie-4k-runlevel', codec: 'imi-lossy', label: 'IMI Lossy · RunLevel rANS', sizeLabel: '4K', width: 3840, height: 2160, bytes: 1906981, sha256: '1d0e88183d61dd30d9abbbd58850955b24cd8c0a62f1ad226784a89f45a2c828', decodedRgbSha256: 'c8e9ab2937e66e354feac2128b1e47856d0c463a8b5fcb5333fd6ccc82738b38', lossless: false, url: '/benchmarks/1d0e88183d61dd30d9abbbd58850955b24cd8c0a62f1ad226784a89f45a2c828/zabriskie-4k-runlevel.imi' },
+          { id: 'zabriskie-4k-splithuf', codec: 'imi-lossy', label: 'IMI Lossy · SplitHuf Fast', sizeLabel: '4K', width: 3840, height: 2160, bytes: 2090976, sha256: 'c69243f6ab91c9e2ddced0f22c50f037591c263823eaf67cc90c69d25b8288b0', decodedRgbSha256: '495f8bafeb592f17bcfedf5cde25824b5582a4a74de6eee289a1dd1c2388ef3f', lossless: false, url: '/benchmarks/c69243f6ab91c9e2ddced0f22c50f037591c263823eaf67cc90c69d25b8288b0/zabriskie-4k-splithuf.imi' },
+          { id: 'zabriskie-4k-lossless', codec: 'imi-lossless', label: 'IMI Lossless · Effort 10 (rANS)', sizeLabel: '4K', width: 3840, height: 2160, bytes: 9653363, sha256: '2c3f9050356a49405aea421fbb12d5e1c07b1402a57e260eacb2e494f9ff59fc', decodedRgbSha256: '82d7fd9e6389fa734611fd2feac7790b27ed6107d46a93b4ceef54935729bf3e', lossless: true, url: '/benchmarks/2c3f9050356a49405aea421fbb12d5e1c07b1402a57e260eacb2e494f9ff59fc/zabriskie-4k-lossless.imi' },
+          { id: 'zabriskie-4k-quick', codec: 'imi-lossless', label: 'IMI Quick · QOI-style Packets', sizeLabel: '4K', width: 3840, height: 2160, bytes: 14088639, sha256: '9bd0ebe24e6b2e1f5a978125ad9353366757b6c6ed4ff231b2499c6e09b347d1', decodedRgbSha256: '82d7fd9e6389fa734611fd2feac7790b27ed6107d46a93b4ceef54935729bf3e', lossless: true, url: '/benchmarks/9bd0ebe24e6b2e1f5a978125ad9353366757b6c6ed4ff231b2499c6e09b347d1/zabriskie-4k-quick.imi' },
+        ],
+      },
+      {
+        id: 'earth-8k',
+        title: 'NASA Blue Marble · 8K',
+        dims: '7680×4320 (33.18 MP · 99.5 MB raw)',
+        thumb: '/p/44d9dc1cee0ce3d11f76bff79ae8c7720707d5e0d2e58487d912944fa9ffe3f6/preview.jpg',
+        fixtures: [
+          { id: '8k-imi-lossy', codec: 'imi-lossy', label: 'IMI Lossy · Fast (q81.25)', sizeLabel: '8K', width: 7680, height: 4320, bytes: 2254318, sha256: '051a740cad1a8c1b15a4f87999148c099ecef0229897b8fe5efe8bf84e03313d', decodedRgbSha256: 'ed183df0320dfe4296be172874b1b7f2ba0636b51a9730a1428ebe5f79fed5a6', lossless: false, url: '/benchmarks/051a740cad1a8c1b15a4f87999148c099ecef0229897b8fe5efe8bf84e03313d/imi-lossy-04.imi' },
+          { id: '8k-jxl-lossy', codec: 'jxl-lossy', label: 'JPEG XL Lossy (libjxl e9)', sizeLabel: '8K', width: 7680, height: 4320, bytes: 2074219, sha256: '3789bb3a380d17961f9bab6db285f838221aa89d47f284c3a66e7333e35dc83e', mime: 'image/jxl', lossless: false, url: '/benchmarks/3789bb3a380d17961f9bab6db285f838221aa89d47f284c3a66e7333e35dc83e/jxl-lossy-06.jxl' },
+          { id: '8k-avif', codec: 'avif', label: 'AVIF (libaom cpu-0)', sizeLabel: '8K', width: 7680, height: 4320, bytes: 2513712, sha256: '23debccf3521f08ffbebcb9a2d5e7ecf05da2d4c9a7c58172a7571e9498ae6f4', mime: 'image/avif', lossless: false, url: '/benchmarks/23debccf3521f08ffbebcb9a2d5e7ecf05da2d4c9a7c58172a7571e9498ae6f4/avif-04.avif' },
+          { id: '8k-jpeg', codec: 'jpeg', label: 'Progressive JPEG (zenjpeg q80)', sizeLabel: '8K', width: 7680, height: 4320, bytes: 2826027, sha256: '326606d9ae1027d69983c1a6f326d4ba315c9b0fa12d9e747faec7c52b144f81', mime: 'image/jpeg', lossless: false, url: '/benchmarks/326606d9ae1027d69983c1a6f326d4ba315c9b0fa12d9e747faec7c52b144f81/progressive.jpg' },
+          { id: '8k-webp-lossy', codec: 'webp-lossy', label: 'WebP Lossy (libwebp m6)', sizeLabel: '8K', width: 7680, height: 4320, bytes: 3933874, sha256: 'cc47d97e333d76acd3555b5b13ccfb83e7c35815d361b088d814f85ae3d31485', mime: 'image/webp', lossless: false, url: '/benchmarks/cc47d97e333d76acd3555b5b13ccfb83e7c35815d361b088d814f85ae3d31485/webp-lossy-04.webp' },
+          { id: '8k-jxl-lossless', codec: 'jxl-lossless', label: 'JPEG XL Lossless (libjxl e9)', sizeLabel: '8K', width: 7680, height: 4320, bytes: 23549905, sha256: '084f5c47ae714b16ea22b6056040ef004b6012b970fa1d7307fa6bb40a1aba93', mime: 'image/jxl', lossless: true, url: '/benchmarks/084f5c47ae714b16ea22b6056040ef004b6012b970fa1d7307fa6bb40a1aba93/lossless.jxl' },
+          { id: '8k-webp-lossless', codec: 'webp-lossless', label: 'WebP Lossless (libwebp m6)', sizeLabel: '8K', width: 7680, height: 4320, bytes: 27162048, sha256: '181dc81e97b8c64621cfc576214d404005b5d050b366916039fca11625d4f700', mime: 'image/webp', lossless: true, url: '/benchmarks/181dc81e97b8c64621cfc576214d404005b5d050b366916039fca11625d4f700/lossless.webp' },
+          { id: '8k-imi-lossless', codec: 'imi-lossless', label: 'IMI Lossless · Effort 10', sizeLabel: '8K', width: 7680, height: 4320, bytes: 29638383, sha256: 'f285f1510562120c5edfd2db65613aee8403d8b6615d620d6dcf7a75ea9f67d7', decodedRgbSha256: '5f2b2e75df855e924b53bb19112d899a3ed2cdd16f7ce64d927dc09be0fdc43a', lossless: true, url: '/benchmarks/f285f1510562120c5edfd2db65613aee8403d8b6615d620d6dcf7a75ea9f67d7/lossless.imi' },
+          { id: '8k-png', codec: 'png', label: 'Crushed PNG (zenpng e30)', sizeLabel: '8K', width: 7680, height: 4320, bytes: 34160066, sha256: '18e90415496f06a36323badc0940ab64131deef743f9b5bc19090a7d28737d00', mime: 'image/png', lossless: true, url: '/benchmarks/18e90415496f06a36323badc0940ab64131deef743f9b5bc19090a7d28737d00/compressed.png' },
+        ],
+      },
+    ];
+
+    // Measurement columns. The 8-worker IMI column is first and is the default sort after a run.
+    const COLUMNS = {
+      w8: { label: '8 IMI workers', sub: 'indexed regions', workers: 8, path: 'regions' },
+      native: { label: 'Browser decoder', sub: 'createImageBitmap', native: true },
+      w16: { label: '16 IMI workers', sub: 'indexed regions', workers: 16, path: 'regions' },
+      w4: { label: '4 IMI workers', sub: 'indexed regions', workers: 4, path: 'regions' },
+      w2: { label: '2 IMI workers', sub: 'indexed regions', workers: 2, path: 'regions' },
+      w1: { label: '1 IMI worker', sub: 'indexed regions', workers: 1, path: 'regions' },
+      whole: { label: '1 IMI worker', sub: 'whole-image decoder', workers: 1, path: 'whole' },
+    };
+    const PRESETS = { 8: ['w8', 'native'], standard: ['w8', 'native', 'w4', 'w2', 'w1'], all: ['w8', 'native', 'w16', 'w4', 'w2', 'w1', 'whole'] };
+    const activeColumns = () => PRESETS[$('worker-preset').value] || PRESETS[8];
+
+    let activeScene = SCENES[0];
+    let rows = [];
+    let sort = { key: 'bpp', dir: 1 };
+    let imiModulePromise = null;
+    const getImiModule = () => (imiModulePromise ||= import(`${BUNDLE}/gigapixel/codec-imij.js`));
+
+    function makeRows(scene) {
+      return scene.fixtures.map(f => {
+        const px = f.width * f.height;
+        const [codec, codecName] = CODECS[f.codec] || ['', f.codec];
+        return {
+          ...f, codecKey: codec, codecName, isImi: f.codec.startsWith('imi-'), kind: f.lossless ? 'lossless' : 'lossy',
+          bpp: (f.bytes * 8) / px, ssim2: SSIM2[f.sha256] ?? null, fetchMs: null, cells: {},
+        };
+      });
+    }
+
+    function sortValue(r, key) {
+      if (key in COLUMNS) return r.cells[key]?.mps ?? null;
+      return r[key];
+    }
+
+    function cellHtml(r, key) {
+      const col = COLUMNS[key];
+      if (col.native ? r.isImi : !r.isImi) return '<td class="na" aria-label="not applicable">–</td>';
+      const c = r.cells[key];
+      const cls = key === 'w8' ? 'num headline' : 'num';
+      if (!c) return `<td class="${cls}"></td>`;
+      if (c.mps == null) return `<td class="${cls}"><span class="note">${esc(c.status)}</span></td>`;
+      const used = c.workersUsed != null && c.workersUsed !== col.workers ? `<span class="note">${c.workersUsed} of ${col.workers} workers produced pixels</span>` : '';
+      return `<td class="${cls}"><strong class="${c.best ? 'winner' : ''}">${c.mps.toFixed(1)} MP/s</strong><span class="ms">${c.ms.toFixed(1)} ms</span>${used}</td>`;
+    }
+
+    function renderLive() {
+      const cols = activeColumns();
+      const head = [
+        ['codecName', 'Codec', ''], ['kind', 'Mode', ''], ['bytes', 'File', 'MiB'], ['bpp', 'bits/pixel', ''], ['ssim2', 'SSIMULACRA2', ''],
+        ...cols.map(k => [k, COLUMNS[k].label, COLUMNS[k].sub]),
+        ['fetchMs', 'Download', 'slowest trial'],
+      ];
+      $('live-head').innerHTML = head.map(([key, label, sub]) => {
+        const s = sort.key === key ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none';
+        return `<th scope="col" class="${key === 'w8' ? 'headline' : ''}" aria-sort="${s}"><button type="button" data-sort="${key}">${esc(label)}</button>${sub ? `<small>${esc(sub)}</small>` : ''}</th>`;
+      }).join('') + '<th scope="col"><span class="visually-hidden">Run</span></th>';
+      // Mark the fastest measured cell per column.
+      for (const k of cols) {
+        const best = Math.max(...rows.map(r => r.cells[k]?.mps ?? -1));
+        for (const r of rows) if (r.cells[k]) r.cells[k].best = best > 0 && r.cells[k].mps === best;
+      }
+      const sorted = [...rows].sort((a, b) => {
+        const va = sortValue(a, sort.key), vb = sortValue(b, sort.key);
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        return (typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))) * sort.dir;
+      });
+      $('live-body').innerHTML = sorted.map(r => `
+        <tr data-codec="${r.codecKey}" data-fixture="${r.id}">
+          <th scope="row"><span class="codec-chip" data-codec="${r.codecKey}">${esc(r.codecName)}</span><br><small style="color:var(--muted);font-weight:400">${esc(r.sizeLabel)} · ${esc(r.label)}</small></th>
+          <td>${r.kind}</td>
+          <td class="num">${(r.bytes / 1048576).toFixed(2)}</td>
+          <td class="num">${r.bpp.toFixed(3)}</td>
+          <td class="num">${r.ssim2 == null ? (r.lossless ? 'lossless' : '') : r.ssim2.toFixed(2)}</td>
+          ${cols.map(k => cellHtml(r, k)).join('')}
+          <td class="num">${r.fetchMs == null ? '' : r.fetchMs.toFixed(0) + ' ms'}</td>
+          <td><button type="button" class="row-run-btn" data-run="${r.id}">Run</button></td>
+        </tr>`).join('');
+    }
+
+    $('live-head').addEventListener('click', e => {
+      const key = e.target.closest('[data-sort]')?.dataset.sort;
+      if (!key) return;
+      sort = sort.key === key ? { key, dir: -sort.dir } : { key, dir: (key in COLUMNS || key === 'ssim2') ? -1 : 1 };
+      renderLive();
+    });
+
+    function drawPreview(decoded, row, col, ms) {
+      const cv = $('bench-preview');
+      cv.width = 640;
+      cv.height = Math.round((640 * row.height) / row.width);
+      const ctx = cv.getContext('2d');
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      if (decoded.bitmap) ctx.drawImage(decoded.bitmap, 0, 0, cv.width, cv.height);
+      else if (decoded.bitmaps) {
+        const sy = cv.height / row.height;
+        let y = 0;
+        decoded.bitmaps.forEach((b, i) => { ctx.drawImage(b.bitmap, 0, y * sy, cv.width, decoded.bands[i].height * sy); y += decoded.bands[i].height; });
+      } else if (decoded instanceof ImageBitmap) ctx.drawImage(decoded, 0, 0, cv.width, cv.height);
+      $('preview-tag').textContent = `Decoded ${row.width}×${row.height}`;
+      $('preview-title').textContent = `${row.codecName} · ${row.label}`;
+      $('preview-meta').textContent = `${col.label} (${col.sub}) · last trial ${ms.toFixed(1)} ms`;
+    }
+
+    async function fetchInput(row, signal) {
+      const u = dataUrl(row.url);
+      u.searchParams.set('bench', crypto.randomUUID());
+      const t0 = performance.now();
+      const res = await fetch(u, { cache: 'no-store', credentials: 'omit', signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const bytes = await res.arrayBuffer();
+      const fetchMs = performance.now() - t0;
+      const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(v => v.toString(16).padStart(2, '0')).join('');
+      if (bytes.byteLength !== row.bytes || hash !== row.sha256) throw new Error('file hash mismatch');
+      return { bytes, fetchMs };
+    }
+
+    async function measure(row, key, inputs, signal) {
+      const col = COLUMNS[key];
+      const cell = row.cells[key] = { status: 'running…' };
+      renderLive();
+      let decoder = null;
+      try {
+        if (row.isImi) {
+          const { ImiDecoder, ImiRegionDecoder } = await getImiModule();
+          decoder = col.path === 'whole' ? new ImiDecoder() : new ImiRegionDecoder(col.workers);
+          await decoder.ready;
+        }
+        // One untimed decode first, so the timed trials exclude WebAssembly compilation/JIT
+        // warm-up in a fresh worker pool (and the browser decoder's first-use cost).
+        cell.status = 'warming up…';
+        renderLive();
+        const warm = decoder ? await decoder.decode(inputs[0].bytes, row) : await createImageBitmap(new Blob([inputs[0].bytes], { type: row.mime }));
+        if (warm?.bitmap) warm.bitmap.close(); else if (warm?.bitmaps) warm.bitmaps.forEach(b => b.bitmap.close()); else warm?.close?.();
+        cell.status = 'running…';
+        renderLive();
+        const trials = [];
+        let workersUsed = null;
+        for (let t = 0; t < inputs.length; t++) {
+          if (signal?.aborted) throw new DOMException('Stopped', 'AbortError');
+          const begin = performance.now();
+          let decoded = null;
+          try {
+            decoded = decoder ? await decoder.decode(inputs[t].bytes, row) : await createImageBitmap(new Blob([inputs[t].bytes], { type: row.mime }));
+            const ms = performance.now() - begin;
+            if (decoded?.workersUsed != null) workersUsed = workersUsed == null ? decoded.workersUsed : Math.min(workersUsed, decoded.workersUsed);
+            if (t === inputs.length - 1) drawPreview(decoded, row, col, ms);
+            trials.push(ms);
+          } finally {
+            if (decoded?.bitmap) decoded.bitmap.close();
+            else if (decoded?.bitmaps) decoded.bitmaps.forEach(b => b.bitmap.close());
+            else decoded?.close?.();
+          }
+        }
+        const ms = Math.max(...trials);
+        Object.assign(cell, { ms, mps: (row.width * row.height) / (ms * 1000), workersUsed: col.path === 'regions' ? workersUsed : null, status: 'done' });
+      } catch (err) {
+        if (signal?.aborted) { delete row.cells[key]; throw err; }
+        cell.status = row.codecKey === 'jxl' ? 'browser cannot decode JPEG XL' : `error: ${err.message}`;
+        cell.mps = null;
+      } finally {
+        decoder?.close();
+      }
+      renderLive();
+    }
+
+    let controller = null;
+    async function runRows(targets) {
+      controller = new AbortController();
+      const { signal } = controller;
+      $('live-run').disabled = true;
+      document.querySelectorAll('.row-run-btn').forEach(b => { b.disabled = true; });
+      $('live-stop').hidden = false;
+      const n = Number($('trial-count').value) || 3;
+      try {
+        for (const row of targets) {
+          const keys = activeColumns().filter(k => COLUMNS[k].native ? !row.isImi : row.isImi);
+          const inputs = [];
+          for (let t = 0; t < n; t++) {
+            $('live-status').textContent = `Downloading ${row.codecName} ${row.sizeLabel} (${(row.bytes / 1048576).toFixed(2)} MiB), trial ${t + 1} of ${n}…`;
+            inputs.push(await fetchInput(row, signal));
+          }
+          row.fetchMs = Math.max(...inputs.map(i => i.fetchMs));
+          for (const key of keys) {
+            $('live-status').textContent = `Decoding ${row.codecName} ${row.sizeLabel} · ${COLUMNS[key].label} (${COLUMNS[key].sub})…`;
+            await measure(row, key, inputs, signal);
+          }
+        }
+        if (targets.length > 1) sort = { key: 'w8', dir: -1 };
+        renderLive();
+        $('live-status').textContent = `Finished ${targets.length === 1 ? targets[0].codecName + ' ' + targets[0].label : activeScene.title}.`;
+      } catch (err) {
+        $('live-status').textContent = signal.aborted ? 'Stopped. Completed cells are kept.' : `Error: ${err.message}`;
+        renderLive();
+      } finally {
+        $('live-run').disabled = false;
+        $('live-stop').hidden = true;
+        document.querySelectorAll('.row-run-btn').forEach(b => { b.disabled = false; });
+      }
+    }
+
+    $('live-body').addEventListener('click', e => {
+      const id = e.target.closest('[data-run]')?.dataset.run;
+      const row = id && rows.find(r => r.id === id);
+      if (row && !controller?.signal.aborted && $('live-run').disabled === false) runRows([row]);
+    });
+    $('live-run').onclick = () => runRows(rows);
+    $('live-stop').onclick = () => controller?.abort();
+
+    function selectScene(scene) {
+      if ($('live-run').disabled) return;
+      activeScene = scene;
+      document.querySelectorAll('#bench-thumbs .scene-btn').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.scene === scene.id)));
+      $('preview-tag').textContent = 'Scene preview';
+      $('preview-title').textContent = scene.title;
+      $('preview-meta').textContent = scene.dims;
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const cv = $('bench-preview');
+        cv.width = 640; cv.height = 360;
+        cv.getContext('2d').drawImage(img, 0, 0, 640, 360);
+      };
+      img.src = dataUrl(scene.thumb).href;
+      rows = makeRows(scene);
+      sort = { key: 'bpp', dir: 1 };
+      renderLive();
+    }
+
+    SCENES.forEach((sc, idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scene-btn';
+      btn.dataset.scene = sc.id;
+      btn.setAttribute('aria-pressed', String(idx === 0));
+      btn.innerHTML = `<img src="${esc(dataUrl(sc.thumb).href)}" alt="" crossorigin="anonymous"><strong>${esc(sc.title)}</strong><small>${esc(sc.dims)}</small>`;
+      btn.onclick = () => selectScene(sc);
+      $('bench-thumbs').appendChild(btn);
+    });
+    $('worker-preset').onchange = () => { for (const r of rows) for (const k of Object.keys(r.cells)) if (!activeColumns().includes(k)) delete r.cells[k]; renderLive(); };
+    selectScene(SCENES[0]);
+
+    // Recorded tables. Values are copied from the cited studies; empty means not measured.
+    const nasa = [...SCENES[0].fixtures, ...SCENES.find(s => s.id === 'earth-8k').fixtures].filter(f => SETTINGS[f.sha256]);
+    $('size-body').innerHTML = nasa.map(f => {
+      const [codec, name] = CODECS[f.codec];
+      return `<tr data-codec="${codec}"><th scope="row"><span class="codec-chip" data-codec="${codec}">${name}</span> <small style="color:var(--muted);font-weight:400">${f.lossless ? 'lossless' : 'lossy'}</small></th>
+        <td>${f.sizeLabel}</td><td>${esc(SETTINGS[f.sha256])}</td><td class="num">${f.bytes.toLocaleString('en-US')}</td>
+        <td class="num">${((f.bytes * 8) / (f.width * f.height)).toFixed(3)}</td><td class="num">${SSIM2[f.sha256]?.toFixed(2) ?? (f.lossless ? 'lossless' : '')}</td></tr>`;
+    }).join('');
+
+    const MP8K = 7680 * 4320 / 1e6;
+    const BROWSER = [
+      ['Chromium', 'lossless', 292.8, 377.9], ['Chromium', 'lossy', 236.7, 236.4],
+      ['Firefox', 'lossless', 402.0, 443.0], ['Firefox', 'lossy', 310.0, 285.0],
+      ['WebKit', 'lossless', 315.0, 393.0], ['WebKit', 'lossy', 262.0, 236.0],
+    ];
+    const msCell = (ms, head) => `<td class="num${head ? ' headline' : ''}">${ms.toFixed(1)} <span class="ms">${(MP8K / (ms / 1000)).toFixed(1)} MP/s</span></td>`;
+    $('browser-body').innerHTML = BROWSER.map(([b, m, w8, w4]) => `<tr data-codec="imi"><th scope="row">${b}</th><td><span class="codec-chip" data-codec="imi">IMI ${m}</span></td>${msCell(w8, true)}${msCell(w4)}</tr>`).join('');
+
+    const BATCH = [['lossless', 207.5, 339.3, 115.1, 65.1, 33.6], ['lossy', 334.3, 390.1, 194.2, 115.2, 65.3]];
+    $('batch-body').innerHTML = BATCH.map(([m, ...v]) => `<tr data-codec="imi"><th scope="row"><span class="codec-chip" data-codec="imi">IMI ${m}</span></th>${v.map((x, i) => `<td class="num${i === 0 ? ' headline' : ''}">${x.toFixed(1)} MP/s</td>`).join('')}</tr>`).join('');
+
+    const NATIVE = [
+      ['Photos (RGB8)', 'IMI lossless effort 7.5', '5.3431 bpp', '1105.51 MPx/s', '258.45 MPx/s', 'quick_pixels_production'],
+      ['Photos (RGB8)', 'IMI lossless effort 0', '6.0726 bpp', '1120.55 MPx/s', '269.71 MPx/s', 'quick_pixels_production'],
+      ['Photos (RGB8)', 'IMI Quick', '10.7170 bpp', '771.37 MPx/s', '163.49 MPx/s', 'quick_pixels_production'],
+      ['Screenshots (RGB8)', 'IMI Quick', '1.6895 bpp', '1457.89 MPx/s', '725.17 MPx/s', 'quick_pixels_production'],
+      ['Text (Gray8)', 'IMI Quick', '0.8319 bpp', '2358.22 MPx/s', '1428.42 MPx/s', 'quick_pixels_production'],
+      ['Pixel art (RGBA8)', 'IMI Quick', '0.2945 bpp', '1822.38 MPx/s', '1713.17 MPx/s', 'quick_pixels_production'],
+      ['Photon counts (u32)', 'IMI lossless effort 7.5', '0.636 bits/sample', '2538 MS/s', '479 MS/s', 'science_baselines'],
+      ['Astronomy CCD (u16)', 'IMI lossless effort 7.5', '4.975 bits/sample', '2675 MS/s', '557 MS/s', 'science_baselines'],
+      ['Elevation models (f32)', 'IMI lossless effort 7.5', '12.411 bits/sample', '2503 MS/s', '427 MS/s', 'science_baselines'],
+      ['Microscopy (u16)', 'IMI lossless effort 7.5', '9.359 bits/sample', '3266 MS/s', '613 MS/s', 'science_baselines'],
+    ];
+    $('native-body').innerHTML = NATIVE.map(([c, m, s, w8, w1, src]) => `<tr data-codec="imi"><th scope="row">${c}</th><td><span class="codec-chip" data-codec="imi">${m}</span></td><td class="num">${s}</td><td class="num headline">${w8}</td><td class="num">${w1}</td><td><small>${src}</small></td></tr>`).join('');
+  </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+[package]
+name = "imij-color-source"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+zenpixels-convert = { path = "../../../zenpixels/zenpixels-convert", default-features = false, features = ["std"] }
+zenpng = "=0.1.4"
+serde_json = "1"
+sha2 = "0.10"
+imgref = "1.12.3"
+rgb = "0.8.53"
+enough = "0.4.4"
+[profile.release]
+lto = "thin"
+codegen-units = 1

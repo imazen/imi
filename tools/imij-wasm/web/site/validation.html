@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IMI V4 and retained-format validation</title><link rel="canonical" href="__PAGE_ORIGIN__/imi/validation">
+  <script src="../imi/site-origin.js"></script>
+  <link rel="stylesheet" href="./style.css"></head><body>
+  <header class="topbar">
+    <a class="brand" href="./index.html"><span class="mark">i</span> IMI <span>FORMAT</span> <small>IMI v4 · archive v2</small></a>
+    <nav class="nav" aria-label="IMI site navigation">
+      <a href="./index.html">IMI Home</a>
+      <a href="./why.html">Why IMI?</a>
+      <a href="./encode.html">Encoder Lab</a>
+      <a href="./benchmarks.html">Benchmarks</a>
+      <a href="../gigapixel/">Gigapixel Explorer</a>
+      <a href="../codestream-atlas/">3D Codestream Atlas</a>
+      <a href="./spec.html">Format Spec</a>
+    </nav>
+  </header>
+
+<main class="container"><section class="hero"><h1>Validate every image, including its pixels</h1>
+<p>Strict validation supports V4 and retained formats. It succeeds only after fully decoding the primary image,
+frames/pages, previews, gain maps and unique plane tiles. Every declared file,
+pixel and temporal-reference checksum must match. There is no structure-only mode.</p></section>
+<h2>Command line</h2><pre><code>imij-wasm validate image.imi new-scratch-file
+imij-wasm validate image.imi new-scratch-file --max-scratch-bytes 1073741824
+imij-wasm validate --help
+
+# From the source checkout:
+just validate-v3 image.imi new-scratch-file</code></pre>
+<p>Input uses positional reads from a file, not stdin buffering. The scratch path
+must be new. It is never overwritten or automatically removed; failure can leave
+partial scratch. Success prints JSON counters; failure exits with status 2.</p>
+<h2>Large images and references</h2>
+<p>Decoded rows feed incremental XXH3 checksum verification. Only images actually
+referenced later are retained. Independent stills/pages, previews, gain maps and
+plane tiles need no raster scratch. Animation composition may also need disk
+scratch. Retained references remain until validation finishes.</p>
+<p>Use <code>--max-file-bytes</code>, <code>--max-decoded-pixels</code>,
+<code>--max-scratch-bytes</code> and <code>--max-working-bytes</code> to set admission
+limits. A limit failure is an error, never partial success. Planned storage limits
+are not a process-RSS guarantee; encoded plane tiles have their own bounded buffers.</p>
+<h2>What the result means</h2>
+<p>Known framing, indexes, plane descriptors and interpreted metadata are checked.
+Unknown checksum algorithms and unsupported image coding fail. Unknown ancillary
+extensions and ordinary attachments retain their opaque semantics. Missing
+checksums stay absent, and the report counts which checksums were verified.</p>
+<p>A region read or browser preview validates only what it uses, not the whole file.
+The strict validator is currently a Rust/std and file-based CLI operation.</p>
+<h2>Upgrade first when needed</h2>
+<p><code>imij::upgrade_image</code> migrates v2/v3 image framing to v3.
+<code>imij_set::upgrade</code> also migrates images in archives. Both reject the
+retired native-JPEG/component experiment; it is not legal v3 data. These operations
+preserve encoded pixel payloads but do not establish pixel correctness. Image
+rewriting currently buffers one encoded entry under an explicit size limit; it
+never allocates the decoded raster. Run strict validation on each upgraded image.</p>
+<p><a href="./spec.html">Format specification</a> ·
+<a href="https://github.com/imazen/zqi/blob/main/docs/VALIDATION.md">Rust API and complete limits</a></p>
+</main></body></html>

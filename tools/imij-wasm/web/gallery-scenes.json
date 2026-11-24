@@ -1,0 +1,263 @@
+{
+ "note": "Display metadata for scenes added from gallery-sources.json. Credits and licenses are as published by the source on the verification date; titles and descriptions are ours.",
+ "scenes": [
+  {
+   "id": "perito-moreno",
+   "title": "Perito Moreno Glacier",
+   "collection": "Landscapes",
+   "tags": [
+    "panorama",
+    "glacier",
+    "Patagonia",
+    "Argentina",
+    "ice"
+   ],
+   "description": "North panorama of the Perito Moreno Glacier, Argentina, January 2010. Published JPEG decoded to RGB8; no upscaling.",
+   "thumbnailAlt": "Perito Moreno Glacier panorama preview"
+  },
+  {
+   "id": "st-helens",
+   "title": "Mount St. Helens summit",
+   "collection": "Landscapes",
+   "tags": [
+    "panorama",
+    "volcano",
+    "crater",
+    "Washington",
+    "360"
+   ],
+   "description": "360° panorama from the summit of Mount St. Helens, October 2009. Published JPEG decoded to RGB8; no upscaling.",
+   "thumbnailAlt": "Mount St. Helens summit panorama preview"
+  },
+  {
+   "id": "colca",
+   "title": "Colca Valley terraces",
+   "collection": "Landscapes",
+   "tags": [
+    "panorama",
+    "terraces",
+    "Peru",
+    "Andes",
+    "agriculture"
+   ],
+   "description": "Ancient terraces of the Colca Valley, Peru, June 2010. Assembled without resampling from the author's six published full-size parts (a 3 × 2 grid), not from the recompressed single file.",
+   "thumbnailAlt": "Colca Valley terraces panorama preview"
+  },
+  {
+   "id": "zabriskie",
+   "title": "Zabriskie Point badlands",
+   "collection": "Landscapes",
+   "tags": [
+    "panorama",
+    "badlands",
+    "desert",
+    "Death Valley",
+    "California"
+   ],
+   "description": "Badlands from Zabriskie Point, Death Valley National Park, California. Published JPEG decoded to RGB8; no upscaling.",
+   "thumbnailAlt": "Zabriskie Point badlands panorama preview"
+  },
+  {
+   "id": "alabama-hills",
+   "title": "Alabama Hills",
+   "collection": "Landscapes",
+   "tags": [
+    "panorama",
+    "Sierra Nevada",
+    "California",
+    "desert",
+    "mountains"
+   ],
+   "description": "216-megapixel panorama of the Alabama Hills and the Sierra Nevada near Lone Pine, California. Published JPEG decoded to RGB8; no upscaling.",
+   "thumbnailAlt": "Alabama Hills panorama preview"
+  },
+  {
+   "id": "skywater-wafer",
+   "title": "Google/SkyWater wafer",
+   "collection": "Microscopy and technology",
+   "tags": [
+    "wafer",
+    "semiconductor",
+    "chip",
+    "microscopy",
+    "open hardware"
+   ],
+   "description": "Stitched microscope image of an open-source Google/SkyWater multi-project wafer. Published JPEG decoded to RGB8; no upscaling.",
+   "thumbnailAlt": "Google/SkyWater wafer preview"
+  },
+  {
+   "id": "taizong",
+   "title": "Emperor Taizong Receiving the Tibetan Envoy",
+   "collection": "Art",
+   "tags": [
+    "scroll",
+    "painting",
+    "Tang dynasty",
+    "China",
+    "handscroll"
+   ],
+   "description": "Scan of the handscroll attributed to Yan Liben. Published PNG, 143,397 × 9,399, decoded to RGB8 without resampling.",
+   "thumbnailAlt": "Handscroll Emperor Taizong Receiving the Tibetan Envoy preview",
+   "credit": "Yan Liben (Tang dynasty) · scan via the Palace Museum, Beijing, as credited on Wikimedia Commons"
+  },
+  {
+   "id": "virgo",
+   "title": "Virgo Cluster",
+   "collection": "Astronomy",
+   "tags": [
+    "galaxies",
+    "galaxy cluster",
+    "Virgo",
+    "Rubin Observatory",
+    "Cosmic Treasure Chest"
+   ],
+   "description": "Rubin Observatory image of the Virgo Cluster (NOIRLab's “The Cosmic Treasure Chest”), 97,943 × 51,536 pixels, from the full-size original TIFF. The embedded Adobe RGB (1998) profile is converted to sRGB; no upscaling. A published rendering, not raw detector data.",
+   "thumbnailAlt": "Virgo Cluster preview",
+   "credit": "NSF–DOE Vera C. Rubin Observatory/NOIRLab/SLAC/AURA"
+  },
+  {
+   "id": "eso1719",
+   "title": "Eagle, Omega and Sharpless 2-54 nebulae",
+   "collection": "Astronomy",
+   "tags": [
+    "nebula",
+    "Eagle Nebula",
+    "Omega Nebula",
+    "VST",
+    "star formation",
+    "ESO"
+   ],
+   "description": "ESO's three-gigapixel VLT Survey Telescope (VST) image of the Eagle, Omega and Sharpless 2-54 nebulae, 93,031 × 35,412 pixels, from the full-size original PSB. The embedded L* RGB profile is converted to sRGB; no upscaling. A published rendering, not raw detector data.",
+   "thumbnailAlt": "Eagle, Omega and Sharpless 2-54 nebulae preview",
+   "credit": "ESO"
+  },
+  {
+   "id": "bluemarble-globe",
+   "title": "Blue Marble · Complete globe",
+   "collection": "Earth",
+   "tags": [
+    "Earth",
+    "globe",
+    "Blue Marble",
+    "topography",
+    "MODIS",
+    "July"
+   ],
+   "description": "NASA's complete July Blue Marble Next Generation globe with topography, 86,400 × 43,200 pixels at 500 m, assembled without resampling from its eight published 21,600-pixel tiles. Not the topography-plus-bathymetry variant used by the western-hemisphere view.",
+   "thumbnailAlt": "Complete Blue Marble globe preview",
+   "credit": "NASA Earth Observatory / Reto Stöckli"
+  },
+  {
+   "id": "bigpine",
+   "title": "Big Pine Ledge reef, Florida",
+   "collection": "Earth",
+   "tags": [
+    "coral reef",
+    "seafloor",
+    "orthomosaic",
+    "underwater",
+    "photogrammetry",
+    "Florida Keys",
+    "USGS"
+   ],
+   "description": "A 5-millimeter underwater orthomosaic of Big Pine Ledge in the Florida Keys, 175,400 × 56,600 pixels (9.9 gigapixels), from USGS's cloud-optimized GeoTIFF. Areas outside the survey are transparent in the source and shown black here. Not for navigation.",
+   "thumbnailAlt": "Big Pine Ledge coral reef orthomosaic preview",
+   "credit": "U.S. Geological Survey · Kranenburg, Hatcher and Warrick (2024), DOI 10.5066/P9H0Q773"
+  },
+  {
+   "id": "ic348",
+   "title": "IC 348 star cluster",
+   "collection": "Astronomy",
+   "tags": [
+    "nebula",
+    "star cluster",
+    "Webb",
+    "NIRCam",
+    "brown dwarfs",
+    "Perseus"
+   ],
+   "description": "Webb NIRCam near-infrared view of IC 348, a young star cluster in Perseus about 1,000 light-years away, 30,866 × 38,204 pixels. Composite of four filters (F162M, F182M, F360M, F444W). Published PNG decoded to RGB8; no upscaling.",
+   "thumbnailAlt": "IC 348 star cluster preview",
+   "credit": "NASA, ESA, CSA, Kevin Luhman (PSU), Catarina Alves de Oliveira (ESA), Mahdi Zamani (ESA/Webb)"
+  },
+  {
+   "id": "ngc7129",
+   "title": "NGC 7129 star-forming region",
+   "collection": "Astronomy",
+   "tags": [
+    "nebula",
+    "star formation",
+    "Webb",
+    "NIRCam",
+    "protostars",
+    "Cepheus"
+   ],
+   "description": "Webb NIRCam image of NGC 7129, a star-forming region in Cepheus about 3,300 light-years away, 11,958 × 11,156 pixels. Published PNG decoded to RGB8; no upscaling.",
+   "thumbnailAlt": "NGC 7129 star-forming region preview",
+   "credit": "NASA, ESA, CSA, STScI; Alyssa Pagan (STScI)"
+  },
+  {
+   "id": "andromeda-phat",
+   "title": "Andromeda Galaxy (PHAT mosaic)",
+   "collection": "Astronomy",
+   "tags": [
+    "galaxy",
+    "Andromeda",
+    "M31",
+    "Hubble",
+    "PHAT",
+    "stars"
+   ],
+   "description": "The largest Hubble image of the Andromeda Galaxy (M31), 69,536 × 22,230 pixels, from the full-size original PSB. Over 100 million stars across about 40,000 light-years. The embedded ICC profile is converted to sRGB; no upscaling.",
+   "thumbnailAlt": "Andromeda Galaxy PHAT mosaic preview",
+   "credit": "NASA, ESA, J. Dalcanton, B.F. Williams, L.C. Johnson (U. Washington), the PHAT team, and R. Gendler"
+  },
+  {
+   "id": "triangulum",
+   "title": "Triangulum Galaxy M33",
+   "collection": "Astronomy",
+   "tags": [
+    "galaxy",
+    "Triangulum",
+    "M33",
+    "Hubble",
+    "spiral",
+    "stars"
+   ],
+   "description": "Hubble mosaic of the Triangulum Galaxy (M33), 34,372 × 19,345 pixels, from the full-size original TIFF. About 54 ACS pointings covering the central region and inner spiral arms. No upscaling.",
+   "thumbnailAlt": "Triangulum Galaxy M33 preview",
+   "credit": "NASA, ESA, and M. Durbin, J. Dalcanton, and B.F. Williams (U. Washington)"
+  },
+  {
+   "id": "carina",
+   "title": "Carina Nebula",
+   "collection": "Astronomy",
+   "tags": [
+    "nebula",
+    "Carina",
+    "Hubble",
+    "star formation",
+    "NGC 3372"
+   ],
+   "description": "Hubble 48-frame ACS mosaic of the Carina Nebula, 29,566 × 14,321 pixels, from the full-size original TIFF. Ionized hydrogen image with Cerro Tololo colour data. No upscaling.",
+   "thumbnailAlt": "Carina Nebula preview",
+   "credit": "NASA, ESA, N. Smith (UC Berkeley), and The Hubble Heritage Team (STScI/AURA)"
+  },
+  {
+   "id": "ngc2014",
+   "title": "NGC 2014 and NGC 2020 starbirth",
+   "collection": "Astronomy",
+   "tags": [
+    "nebula",
+    "LMC",
+    "Hubble",
+    "star formation",
+    "NGC 2014",
+    "NGC 2020"
+   ],
+   "description": "Hubble 30th-anniversary image of NGC 2014 and NGC 2020 in the Large Magellanic Cloud, 17,043 × 11,710 pixels, from the full-size original TIFF. No upscaling.",
+   "thumbnailAlt": "NGC 2014 and NGC 2020 starbirth preview",
+   "credit": "NASA, ESA, and STScI"
+  }
+ ]
+}

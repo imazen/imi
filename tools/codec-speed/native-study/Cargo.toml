@@ -1,0 +1,23 @@
+[package]
+name = "imij-native-study"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+[workspace]
+[dependencies]
+# Staging places this manifest at tools/native-study within the pinned candidate.
+imij = { path = "../../imij", features = ["native-jpeg"] }
+zenjpeg = { git = "https://github.com/imazen/zenjpeg", rev = "007920fb63fbfa839ecc7cd111b5a6db731b8ecc", default-features = false, features = ["parallel"] }
+fast-ssim2 = { git = "https://github.com/imazen/fast-ssim2", rev = "ebcd7f567b51d33777b124e877ff196866829f37" }
+enough = "0.4.4"
+rayon = "1.12.0"
+sha2 = "0.11.0"
+kamadak-exif = "0.6.1"
+serde_json = "1.0.145"
+[patch.crates-io]
+zenanalyze = { git = "https://github.com/imazen/zenanalyze", rev = "417cc785b83bee0b3f827ae85c5203f5e104a308" }
+[profile.release]
+debug = 1
+codegen-units = 1
+lto = "thin"

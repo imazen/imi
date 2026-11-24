@@ -1,0 +1,3 @@
+# Cross-route outcome matrix (lab build; tests/matrix.rs). One line per case:
+# name, the commonest outcome, then route=outcome for each route that differs.
+# Routes: decode decode_with_limits decode_with_limits-off decode_into threads1 threads3 threads8 threads_limits4 threads_limits4-off stream stream_limits stream_limits-off reader reader_chunked reader-off session_decode session_decode-off session_decode_into session_rows session_reader session_reader-off frames frames_limits frames_limits-off region region_threads4 region_tiles region_tiles-off header probe previews remux plane_builder

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>IMI Image Format · High-Throughput Multi-Core &amp; Scientific Imagery</title>
+  <link rel="canonical" href="__PAGE_ORIGIN__/imi/">
+  <script src="../imi/site-origin.js"></script>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./index.html"><span class="mark">i</span> IMI <span>FORMAT</span> <small>IMI v4 · archive v2</small></a>
+    <nav class="nav" aria-label="IMI site navigation">
+      <a href="./index.html" aria-current="page">IMI Home</a>
+      <a href="./why.html">Why IMI?</a>
+      <a href="./encode.html">Encoder Lab</a>
+      <a href="./benchmarks.html">Benchmarks</a>
+      <a href="../gigapixel/">Gigapixel Explorer</a>
+      <a href="../codestream-atlas/">3D Codestream Atlas</a>
+      <a href="./spec.html">Format Spec</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <p class="eyebrow">IMI (.imi) &amp; IMIJ-Set (.imijset) · Multi-Core SIMD, Intermediate &amp; Scientific Imagery</p>
+      <h1>Built for peak multi-threaded decode throughput,<br>scientific rasters, and instant HTTP random access.</h1>
+      <p class="lede">
+        IMI is an experimental image format and archive ecosystem designed for workflows where decode speed, 4–16 thread scaling, rich sample types (baseline <code>u8</code>, <code>u16</code>, <code>f16</code>, <code>f32</code>; signed <code>i8</code>, <code>i16</code> via <code>signed_samples</code>; extended <code>u32</code>, <code>i32</code>; wide <code>u64</code>, <code>i64</code>, <code>f64</code> via <code>wide_samples</code>), extended channel layouts (Gray, GrayAlpha, RGB, RGBA, CMYK, Oklab, OklabAlpha via <code>pixel_models</code>), and 2-RTT HTTP byte-range region access matter more than squeezing the last 15% of web-delivery file size.
+      </p>
+      <div class="cta-row">
+        <a class="btn primary" href="../gigapixel/">Launch Gigapixel Explorer ↗</a>
+        <a class="btn" href="./encode.html">Interactive Encoder Lab →</a>
+        <a class="btn" href="./benchmarks.html">Interactive Benchmarks →</a>
+        <a class="btn" href="../codestream-atlas/">3D Codestream Atlas ↗</a>
+        <a class="btn" href="./why.html">Why IMI? →</a>
+        <a class="btn" href="./spec.html">Wire Specification →</a>
+      </div>
+    </section>
+
+    <section class="grid" aria-label="Explore IMI">
+      <article class="card">
+        <span class="tag">Interactive Demo · Up to 8.82 GP</span>
+        <h3><a href="../gigapixel/">Gigapixel Range Explorer</a></h3>
+        <p>Stream multi-gigapixel ESO &amp; NASA archives (starting with the 3.3 GP Eagle &amp; Omega Nebulae) over HTTP byte ranges using 1–16 WebAssembly SIMD workers and level-lock pixel inspection.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Sortable Corpus &amp; Live Browser Runner</span>
+        <h3><a href="./benchmarks.html">Decode &amp; Compression Benchmarks</a></h3>
+        <p>Filter by image class (photos, screenshots, pixel art, 32 scientific arrays, 4K/8K browser WASM), compare IMI decoder-speed modes (Quick, Fastest SplitHuf, RunLevel, 16-lane lossless), and run live browser trials.</p>
+      </article>
+      <article class="card">
+        <span class="tag">3D Layer Visualizer + WASI Encoder</span>
+        <h3><a href="../codestream-atlas/">3D Codestream Atlas</a></h3>
+        <p>Watch IMI codestreams decode in 3D layer-by-layer (DC base slabs, transform/palette maps, Smart-Bits MSB/LSB byte planes, and rANS streams) across 13 distinct images, or encode your own PNG.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Compile-Time Proofed Wire Reference</span>
+        <h3><a href="./spec.html">Visual Format Specification</a></h3>
+        <p>Interactive bit-and-byte register diagrams for the 64-byte file header, 40-byte <code>IHDR</code>, record tags, 16-lane rANS streams, <code>unit_ordinals</code>, and <code>imij-set</code> Morton catalogs—verified at test time by <code>spec_proof.rs</code>.</p>
+      </article>
+    </section>
+
+    <h2>Where IMI Fits (and Where It Doesn't)</h2>
+    <div class="grid">
+      <article class="card">
+        <span class="tag">Use JPEG XL / AVIF / zenjpeg for</span>
+        <h3>Final Web Publishing &amp; Minimum Bandwidth</h3>
+        <p>JPEG XL and AVIF achieve ~10–25% smaller files than IMI at matched perceptual quality and on lossless photos. When network transfer size for end-user web delivery is the primary bottleneck, JPEG XL, AVIF, and <code>zenjpeg</code> are the right tools.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Use IMI (.imi / .imijset) for</span>
+        <h3>Intermediate Pipelines, Science &amp; Interactive ROI</h3>
+        <p>IMI supports internal processing pipelines, scientific/detector arrays (photon counts, DEMs, CCD frames), multi-gigapixel tile servers and browser WASM applications. The <a href="./benchmarks.html">retained performance measurements</a> remain tied to their recorded builds; V4 correctness qualification is separate from a throughput measurement.</p>
+      </article>
+    </div>
+
+    <h2>Upgrade and validate files</h2>
+    <p>Ordinary writers emit IMI v4; explicit compatibility readers retain v2/v3. The upgrade APIs rewrite encoded
+      framing without re-encoding pixels. Strict validation then fully decodes every
+      recognized image and verifies all declared checksums.</p>
+    <pre><code>imij-wasm validate image.imi new-scratch-file
+imij-wasm validate --help</code></pre>
+    <p>Unreferenced stills and pages need no raster scratch. Referenced images and
+      animation composition use caller-owned disk scratch. Unknown ancillary
+      extensions remain opaque. <a href="./validation.html">Validation, limits and CLI help →</a></p>
+
+    <h2>Drop-In Browser Library &amp; Web Components</h2>
+    <pre><code>&lt;!-- 1. Decode and display any .imi file like a regular &lt;img&gt; --&gt;
+&lt;script type="module" src="/src/imi-image.js"&gt;&lt;/script&gt;
+&lt;imi-img src="/path/to/image.imi" alt="Sample IMI image" fit="contain"&gt;&lt;/imi-img&gt;
+
+&lt;!-- 2. Configurable interactive pan/zoom Web Component --&gt;
+&lt;script type="module" src="/src/imi-viewer.js"&gt;&lt;/script&gt;
+&lt;imi-viewer src="/image/image.json" scene="eso1719" quality="webmap" memory-mode="auto"&gt;&lt;/imi-viewer&gt;</code></pre>
+  </main>
+</body>
+</html>

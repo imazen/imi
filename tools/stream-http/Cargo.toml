@@ -1,0 +1,52 @@
+[package]
+name = "imij-stream-http"
+version = "0.0.1"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "End-to-end streaming encode over HTTP: zencodec's begin/pending_output against one-shot encodes, from Rust (hyper) and ASP.NET (P/Invoke)"
+
+[lib]
+# cdylib: the C ABI the ASP.NET server loads (src/ffi.rs).
+crate-type = ["rlib", "cdylib"]
+
+[workspace]
+
+[dependencies]
+zencodec = { version = "0.1.27", git = "https://github.com/imazen/zencodec", rev = "5ed2daded81407e7206fd8de6e8f1d93a5447b5b", default-features = false, features = ["std"] }
+zenpixels = { version = "0.2.16", default-features = false }
+imij = { path = "../../imij" }
+# The streaming-output PRs, all on zencodec 5ed2dade (zencodec PR 149):
+# zenjpeg PR 231 (with its strided-push fix), zenpng PR 45, zenbitmaps PR 33.
+zenjpeg = { git = "https://github.com/imazen/zenjpeg", rev = "cc0227ad762c94e84761e22f5ff4753fabf40e1f", default-features = false, features = ["zencodec"] }
+zenpng = { git = "https://github.com/imazen/zenpng", rev = "a8d13778043066577e68b314daee0a65135cb580", default-features = false }
+zenbitmaps = { git = "https://github.com/imazen/zenbitmaps", rev = "01f085b499cfc325e686b73f98e9bdd456889188", default-features = false, features = ["std", "zencodec", "qoi"] }
+enough = "0.4.4"
+bytes = "1.10.1"
+hyper = { version = "1.7.0", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1.17", features = ["tokio", "server", "client-legacy", "http1"] }
+http-body-util = "0.1.3"
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio-stream = "0.1.17"
+
+[profile.release]
+debug = 1
+codegen-units = 1
+lto = "thin"
+
+[patch.crates-io]
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "5ed2daded81407e7206fd8de6e8f1d93a5447b5b" }
+# IMIJ's pin (one commit beside zenjpeg's 8f7ee871 ICC-recognition fix, which
+# changes no API).
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "789d69dbc314e748676b7f2f19542c17473ba40b" }
+zenpixels-convert = { git = "https://github.com/imazen/zenpixels", rev = "789d69dbc314e748676b7f2f19542c17473ba40b" }
+# zenpng's StripCompressor (zenflate::png) is unpublished.
+zenflate = { git = "https://github.com/imazen/zenflate", rev = "a0ea03637a2cc9a193e343018ae2cfb1a6c31edd" }
+# zenjpeg needs unpublished zenanalyze 0.2 (the rev its own lock records).
+zenanalyze = { git = "https://github.com/imazen/zenanalyze", rev = "e6c72f99390c190c102275c3b0e4d41fe0a734a4" }
+zenanalyze-api = { git = "https://github.com/imazen/zenanalyze", rev = "e6c72f99390c190c102275c3b0e4d41fe0a734a4" }
+# One how-far for zencodec and IMIJ (as in the workspace root).
+how-far = { git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("std"))'] }

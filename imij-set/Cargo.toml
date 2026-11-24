@@ -1,0 +1,28 @@
+[package]
+name = "imij-set"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Append-only paged archives of standalone IMI images and tiny blobs"
+
+[features]
+default = ["v3"]
+blake3 = ["imij/blake3"]
+sha2 = ["imij/sha2"]
+v3 = ["imij/v3"]
+cli = ["blake3", "sha2", "v3"]
+
+[[bin]]
+name = "imij-set"
+path = "src/bin/imij-set.rs"
+required-features = ["cli"]
+
+[dependencies]
+imij = { path = "../imij", default-features = false, features = ["std", "near-lossless"] }
+zenhash = { git = "https://github.com/imazen/zenhash", rev = "ce2bbdf669b90513d30d8dd86ad764ee3de68c6e", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Archive tests and examples generate their own image fixtures.
+imij = { path = "../imij", default-features = false, features = ["std", "encode"] }
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }

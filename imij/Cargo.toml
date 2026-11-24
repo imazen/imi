@@ -1,0 +1,650 @@
+[package]
+name = "imij"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "Codec for the IMI image format: lossless, near-lossless and lossy images, animations, pages and region reads"
+publish = false
+
+[features]
+# Encoding is optional. Some V4 writers use an internal V3-to-V4 conversion.
+encode = ["v3", "near-lossless"]
+blake3 = ["dep:blake3"]
+sha2 = ["dep:sha2"]
+# Historical v2 native-component experiment. Never accepted by v3 or upgrades.
+native-jpeg = ["v3"]
+# Decode historical V2 and V3 images. The default native build retains migration support.
+v3 = []
+default = ["encode", "std", "extended", "avx512", "rayon"]
+# Entropy-coder experiments used by imij-bench (not part of the format).
+lab = ["encode"]
+# Signed integers and 32-/64-bit sample coding. Baseline decodes U8, U16 and F16.
+extended = []
+# Bounded numeric residuals. Exact-only readers can omit the reconstruction kernels.
+near-lossless = []
+std = ["archmage/std", "magetypes/std", "zenhash/std", "zenpixels/std"]
+# Encoder and lossy-decode work on the current Rayon pool (global or
+# caller-installed). The lossless decode driver still uses scoped native threads.
+rayon = ["std", "dep:rayon"]
+# AVX-512 (v4x) variants of the magetypes kernels and of zenhash's XXH3 accumulator;
+# dispatch is still by runtime detection.
+avx512 = ["zenhash/avx512"]
+
+[dependencies]
+blake3 = { version = "1.8.7", default-features = false, optional = true, features = ["pure"] }
+bytemuck = { version = "1.25.2", default-features = false, features = ["extern_crate_alloc"] }
+sha2 = { version = "0.11.1", default-features = false, optional = true }
+# Portable primitive math when no dependency links std. Std call sites retain
+# their inherent operations; these are already present in the resolved graph.
+libm = { version = "0.2.16", default-features = false }
+num-traits = { version = "0.2.19", default-features = false, features = ["libm"] }
+how-far = { version = "0.1.0", git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }
+archmage = { version = "0.9.33", default-features = false, features = ["avx512"] }
+# ISO 21496-1 gain map metadata (typed parameters, binary form).
+zencodec = { version = "0.2.0", git = "https://github.com/imazen/zencodec", rev = "119f31336e3d9a32aa7d78290cfc17035b78f050", default-features = false }
+zenpixels = { version = "0.3.1", git = "https://github.com/imazen/zenpixels", rev = "3286169c7ef5b1e66ac841c3d8204eb54e390f8c", default-features = false }
+magetypes = { version = "0.9.33", default-features = false, features = ["avx512"] }
+rayon = { version = "1.12.0", optional = true }
+# XXH3 for the optional `cSUM` file checksum. Git pin until zenhash 0.1.0 is on
+# crates.io; switch to the crates.io release before any imij publish.
+zenhash = { git = "https://github.com/imazen/zenhash", rev = "ce2bbdf669b90513d30d8dd86ad764ee3de68c6e", default-features = false }
+
+[dev-dependencies]
+# PR85 retained-plan allocation oracle; test binaries only.
+allocation-counter = "0.8.1"
+# zencodec conformance checks (streaming output honesty), from the same commit
+# as the zencodec dependency.
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "119f31336e3d9a32aa7d78290cfc17035b78f050" }
+how-far-along = { version = "0.1.0", git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }
+fast-ssim2 = { version = "0.8.2", features = ["imgref"] }
+# Independent XXH3 implementation: the reference the `cSUM` digests are checked against.
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
+imgref = "1.12.3"
+rayon = "1.12.0"
+# Lets token-permutation tests disable compile-time-guaranteed tokens (NEON on
+# aarch64), so their scalar arms really run. Test, example and bench builds
+# only; never add it to [dependencies] (archmage's own guidance).
+archmage = { version = "0.9.33", default-features = false, features = ["testable_dispatch"] }
+
+# Callgrind runs on native hosts; keeping it out of WASM lets the same
+# parity example build there without a copied checker in a second crate.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+gungraun = "0.20.0"
+zenbench = { version = "0.1.11", git = "https://github.com/imazen/zenbench", rev = "73302a1c115836b2646f6a9adc32058c20d1a66f", default-features = false, features = ["precise-timing"] }
+serde_json = "1.0.151"
+sha2 = "0.11.1"
+
+# Instruction counts under callgrind (gungraun; needs `cargo install
+# gungraun-runner@0.20.0`). Valgrind has no AVX-512: this measures the AVX2
+# kernels.
+[[bench]]
+name = "cg_decode"
+harness = false
+required-features = ["encode"]
+
+[[bench]]
+name = "cg_encode"
+harness = false
+required-features = ["encode"]
+
+[[bench]]
+name = "cg_trellis"
+harness = false
+required-features = ["lab"]
+
+[[example]]
+name = "v4_range_settings_study"
+required-features = ["std", "encode"]
+
+[[example]]
+name = "parity"
+required-features = ["std", "extended"]
+
+[[example]]
+name = "codestream_trace"
+required-features = ["std", "lab"]
+
+[[example]]
+name = "value_table_sizes"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "vt_maps"
+required-features = ["std", "lab"]
+
+[[example]]
+name = "trellis_probe"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "aq_trellis_encode_20261009"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "sb_probe_20261010"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "sb_time_20261010"
+required-features = ["std"]
+
+[[example]]
+name = "coefgap_encode_20261009"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "ycocgq_encode_20261009"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "smallxf_probe_20261011"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "smallxf_stats_20261011"
+required-features = ["std", "lab"]
+
+[[example]]
+name = "smallxf_kernels_20261011"
+required-features = ["std", "lab"]
+
+[[example]]
+name = "resource_probe"
+required-features = ["encode", "std"]
+
+[[example]]
+name = "unit_table_bench"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "bilevel_lab"
+required-features = ["encode", "std", "lab"]
+
+[[example]]
+name = "kbit_lab"
+required-features = ["std", "lab"]
+
+[[example]]
+name = "pixel_checksum_probe"
+required-features = ["encode", "std", "rayon"]
+
+[[example]]
+name = "group_encode"
+required-features = ["encode", "std"]
+
+[[example]]
+name = "native_decode_probe_20261013"
+required-features = ["std"]
+
+[[example]]
+name = "validate"
+required-features = ["std"]
+
+[[example]]
+name = "validation_fixture"
+required-features = ["encode", "std"]
+
+[[test]]
+name = "ac_table_stats"
+required-features = ["encode"]
+
+[[test]]
+name = "alpha_modes"
+required-features = ["encode"]
+
+[[test]]
+name = "baseline_types"
+required-features = ["encode"]
+
+[[test]]
+name = "bilevel"
+required-features = ["encode"]
+
+[[test]]
+name = "block_lab"
+required-features = ["encode"]
+
+[[test]]
+name = "bounded_lossy"
+required-features = ["encode"]
+
+[[test]]
+name = "bounded_lossy_session"
+required-features = ["encode"]
+
+[[test]]
+name = "budgeted_one_pass"
+required-features = ["encode", "std", "lab"]
+
+[[test]]
+name = "checksum"
+required-features = ["encode"]
+
+[[test]]
+name = "checksum_writers"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_animation"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_animation_encode"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_bounded"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_decode"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_encode"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_encode_memory"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_progress"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_row_decode"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_rows"
+required-features = ["encode"]
+
+[[test]]
+name = "codec_stream_output"
+required-features = ["encode"]
+
+[[test]]
+name = "color_metadata"
+required-features = ["encode"]
+
+[[test]]
+name = "color_origin"
+required-features = ["encode"]
+
+[[test]]
+name = "complex_planes"
+required-features = ["encode"]
+
+[[test]]
+name = "container"
+required-features = ["encode"]
+
+[[test]]
+name = "corrupt"
+required-features = ["encode"]
+
+[[test]]
+name = "decode_progress"
+required-features = ["encode"]
+
+[[test]]
+name = "decode_reader_session"
+required-features = ["encode"]
+
+[[test]]
+name = "decode_resource_rows"
+required-features = ["encode"]
+
+[[test]]
+name = "decode_resources"
+required-features = ["encode"]
+
+[[test]]
+name = "decoder_memory"
+required-features = ["encode"]
+
+[[test]]
+name = "dering"
+required-features = ["encode"]
+
+[[test]]
+name = "effort"
+required-features = ["encode"]
+
+[[test]]
+name = "encoder_layout"
+required-features = ["encode"]
+
+[[test]]
+name = "exact_blocks"
+required-features = ["encode"]
+
+[[test]]
+name = "ext32"
+required-features = ["encode"]
+
+[[test]]
+name = "float_quant"
+required-features = ["encode"]
+
+[[test]]
+name = "frames"
+required-features = ["encode"]
+
+[[test]]
+name = "frames_inter_64"
+required-features = ["encode"]
+
+[[test]]
+name = "frames_owned"
+required-features = ["encode"]
+
+[[test]]
+name = "fuzz_regression"
+required-features = ["encode"]
+
+[[test]]
+name = "group_append_rows"
+required-features = ["encode"]
+
+[[test]]
+name = "group_checksum"
+required-features = ["encode"]
+
+[[test]]
+name = "group_forward_bands"
+required-features = ["encode"]
+
+[[test]]
+name = "group_forward_rows"
+required-features = ["encode"]
+
+[[test]]
+name = "group_growing"
+required-features = ["encode"]
+
+[[test]]
+name = "group_index"
+required-features = ["encode"]
+
+[[test]]
+name = "group_session"
+required-features = ["encode"]
+
+[[test]]
+name = "inter_maps"
+required-features = ["encode"]
+
+[[test]]
+name = "jpeg_coefficients"
+required-features = ["encode"]
+
+[[test]]
+name = "jpeg_native"
+required-features = ["encode"]
+
+[[test]]
+name = "lab_seed_bank"
+required-features = ["encode"]
+
+[[test]]
+name = "large_payloads"
+required-features = ["encode"]
+
+[[test]]
+name = "lossy_presence"
+required-features = ["encode"]
+
+[[test]]
+name = "lossy_u32"
+required-features = ["encode"]
+
+[[test]]
+name = "malformed"
+required-features = ["encode"]
+
+[[test]]
+name = "matrix"
+required-features = ["encode"]
+
+[[test]]
+name = "mixed_pages"
+required-features = ["encode"]
+
+[[test]]
+name = "model_grammar"
+required-features = ["encode"]
+
+[[test]]
+name = "near_lossless"
+required-features = ["encode"]
+
+[[test]]
+name = "pixel_checksum"
+required-features = ["encode"]
+
+[[test]]
+name = "pixel_models"
+required-features = ["encode"]
+
+[[test]]
+name = "planes"
+required-features = ["encode"]
+
+[[test]]
+name = "planes_u32"
+required-features = ["encode"]
+
+[[test]]
+name = "precision"
+required-features = ["encode"]
+
+[[test]]
+name = "profiles"
+required-features = ["encode"]
+
+[[test]]
+name = "quality_scale"
+required-features = ["encode"]
+
+[[test]]
+name = "quick_pixels"
+required-features = ["encode"]
+
+[[test]]
+name = "rans_run_min"
+required-features = ["encode"]
+
+[[test]]
+name = "rdoq"
+required-features = ["encode"]
+
+[[test]]
+name = "reader"
+required-features = ["encode"]
+
+[[test]]
+name = "readiness_20261005"
+required-features = ["encode"]
+
+[[test]]
+name = "region"
+required-features = ["encode"]
+
+[[test]]
+name = "region_observed"
+required-features = ["encode"]
+
+[[test]]
+name = "run_cap"
+required-features = ["encode"]
+
+[[test]]
+name = "samples"
+required-features = ["encode"]
+
+[[test]]
+name = "samples_decorrelation"
+required-features = ["encode"]
+
+[[test]]
+name = "science"
+required-features = ["encode"]
+
+[[test]]
+name = "science_categories"
+required-features = ["encode"]
+
+[[test]]
+name = "science_planes"
+required-features = ["encode"]
+
+[[test]]
+name = "scientific_profile"
+required-features = ["encode"]
+
+[[test]]
+name = "sequence_items"
+required-features = ["encode"]
+
+[[test]]
+name = "significant_bits"
+required-features = ["encode"]
+
+[[test]]
+name = "small_transforms"
+required-features = ["encode"]
+
+[[test]]
+name = "spec_proof"
+required-features = ["encode"]
+
+[[test]]
+name = "subblocks"
+required-features = ["encode"]
+
+[[test]]
+name = "superblocks"
+required-features = ["encode"]
+
+[[test]]
+name = "table_counts"
+required-features = ["encode"]
+
+[[test]]
+name = "template"
+required-features = ["encode"]
+
+[[test]]
+name = "trellis"
+required-features = ["encode"]
+
+[[test]]
+name = "trellis_lab_switches"
+required-features = ["encode"]
+
+[[test]]
+name = "unit_table"
+required-features = ["encode"]
+
+[[test]]
+name = "upgrade"
+required-features = ["encode"]
+
+[[test]]
+name = "v1_roundtrip"
+required-features = ["encode"]
+
+[[test]]
+name = "validation"
+required-features = ["encode"]
+
+[[test]]
+name = "value_tables"
+required-features = ["encode"]
+
+[[example]]
+name = "append_rows"
+required-features = ["encode"]
+
+[[example]]
+name = "bounded_lossy_rss"
+required-features = ["encode"]
+
+[[example]]
+name = "calibration_effort_probe"
+required-features = ["encode"]
+
+[[example]]
+name = "csum_write_20261007"
+required-features = ["encode"]
+
+[[example]]
+name = "decode_wave_20261005"
+required-features = ["encode"]
+
+[[example]]
+name = "effort0_study_20261005"
+required-features = ["encode"]
+
+[[example]]
+name = "encode_rss"
+required-features = ["encode"]
+
+[[example]]
+name = "formats_lossless"
+required-features = ["encode"]
+
+[[example]]
+name = "graypage_bench"
+required-features = ["encode"]
+
+[[example]]
+name = "lossless_bench"
+required-features = ["encode"]
+
+[[example]]
+name = "lowbit_eval"
+required-features = ["encode"]
+
+[[example]]
+name = "profile_refuse_20261005"
+required-features = ["encode"]
+
+[[example]]
+name = "registry_seeds"
+required-features = ["encode"]
+
+[[example]]
+name = "rewrite_width"
+required-features = ["encode"]
+
+[[example]]
+name = "scientific_block"
+required-features = ["encode"]
+
+[[example]]
+name = "scientific_region"
+required-features = ["encode"]
+
+[[test]]
+name = "group_encode"
+required-features = ["encode"]
+
+[[example]]
+name = "portrait_decode_bench"
+required-features = ["std", "rayon", "encode"]
+
+[[example]]
+name = "v4_browser_fixtures"
+required-features = ["lab"]
+
+[[example]]
+name = "array_chunk"
+required-features = ["std", "encode", "extended"]
+
+[[example]]
+name = "v4_joint_settings_decode"
+required-features = ["std", "lab"]

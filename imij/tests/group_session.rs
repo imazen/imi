@@ -1,0 +1,208 @@
+//! Caller-driven, bounded output, with the existing independent decode paths.
+use imij::stream_encode::GroupEncodeSession;
+use imij::{Channels, Error, ImageInfo, Metadata, SampleType};
+
+fn encode(info: &ImageInfo, pixels: &[u8], chunk: usize) -> Vec<u8> {
+    let mut encoder = GroupEncodeSession::new(
+        info.clone(),
+        &Metadata::default(),
+        &imij::ImiEncoderConfig::default().with_row_groups(Some(imij::RowGroups::new(
+            7,
+            3,
+            32 << 20,
+        ))),
+    )
+    .unwrap();
+    let mut file = Vec::new();
+    while !encoder.is_finished() {
+        if !encoder.output().is_empty() {
+            let before = encoder.output().to_vec();
+            assert_eq!(encoder.next_group(), None);
+            assert!(encoder.push_group(&[], 0).is_err());
+            assert!(encoder.consume_output(before.len() + 1).is_err());
+            assert_eq!(encoder.output(), before);
+            encoder.consume_output(0).unwrap();
+            let n = chunk.min(before.len());
+            file.extend_from_slice(&encoder.output()[..n]);
+            encoder.consume_output(n).unwrap();
+            assert_eq!(encoder.output(), &before[n..]);
+        } else {
+            let group = encoder.next_group().unwrap();
+            let row = group.width as usize * info.bytes_per_pixel();
+            let stride = row + 5;
+            let mut buffer = vec![0x5a; stride * group.height as usize];
+            for y in 0..group.height as usize {
+                let start = (group.y as usize + y) * info.row_bytes()
+                    + group.x as usize * info.bytes_per_pixel();
+                buffer[y * stride..y * stride + row].copy_from_slice(&pixels[start..start + row]);
+            }
+            assert!(encoder.push_group(&[], stride).is_err());
+            assert_eq!(encoder.next_group(), Some(group));
+            encoder.push_group(&buffer, stride).unwrap();
+        }
+    }
+    assert!(encoder.push_group(&[], 0).is_err());
+    assert_eq!(encoder.next_group(), None);
+    encoder.finish().unwrap();
+    file
+}
+
+#[test]
+fn every_sample_type_preserves_bits_with_output_backpressure() {
+    for sample in [
+        SampleType::U8,
+        SampleType::U16,
+        SampleType::F16,
+        SampleType::F32,
+        SampleType::I8,
+        SampleType::I16,
+        SampleType::U32,
+        SampleType::I32,
+        SampleType::U64,
+        SampleType::I64,
+        SampleType::F64,
+    ] {
+        for channels in [
+            Channels::Gray,
+            Channels::GrayAlpha,
+            Channels::Rgb,
+            Channels::Rgba,
+        ] {
+            let info = ImageInfo::new(19, 11, channels, sample);
+            // All-ones, zero, signed zero, NaN/infinity/subnormal bits and noisy
+            // words, including low words of 64-bit samples and alpha.
+            let patterns: [u64; 8] = [
+                0,
+                u64::MAX,
+                1,
+                1 << 63,
+                0x7ff8_1234_7fc0_1234,
+                0xfff0_0000_7f80_0000,
+                0x8000_0000_8000_0000,
+                0x1234_5678_9abc_def0,
+            ];
+            let mut pixels = Vec::new();
+            for i in 0..19 * 11 * channels.count() {
+                let value = patterns[i % patterns.len()];
+                match sample.bytes() {
+                    1 => pixels.push(value as u8),
+                    2 => pixels.extend_from_slice(&(value as u16).to_ne_bytes()),
+                    4 => pixels.extend_from_slice(&(value as u32).to_ne_bytes()),
+                    _ => pixels.extend_from_slice(&value.to_ne_bytes()),
+                }
+            }
+            let file = encode(&info, &pixels, 7);
+            assert_eq!(imij::header(&file).unwrap().info, info);
+            if sample.tier() == imij::Tier::Extended && !cfg!(feature = "extended") {
+                assert!(matches!(imij::decode(&file), Err(Error::Unsupported(_))));
+                continue;
+            }
+            assert_eq!(
+                imij::decode(&file).unwrap().1,
+                pixels,
+                "{sample:?} {channels:?}"
+            );
+            let mut stream = imij::StreamDecoder::new(&file).unwrap();
+            let mut row = vec![0; info.row_bytes()];
+            for expected in pixels.chunks_exact(info.row_bytes()) {
+                assert!(stream.next_row(&mut row).unwrap());
+                assert_eq!(row, expected, "{sample:?} {channels:?}");
+            }
+            assert!(!stream.next_row(&mut row).unwrap());
+            #[cfg(feature = "std")]
+            {
+                let stride = info.row_bytes() + 9;
+                let mut output = vec![0xa5; stride * 11];
+                imij::decode_into_threads(&file, &mut output, stride, 4).unwrap();
+                for (row, expected) in output
+                    .chunks_exact(stride)
+                    .zip(pixels.chunks_exact(info.row_bytes()))
+                {
+                    assert_eq!(&row[..info.row_bytes()], expected);
+                    assert!(row[info.row_bytes()..].iter().all(|&v| v == 0xa5));
+                }
+                let mut output = Vec::new();
+                imij::decode_reader(file.as_slice(), &imij::Limits::DEFAULT, |_, _, row| {
+                    output.extend_from_slice(row);
+                    Ok(())
+                })
+                .unwrap();
+                assert_eq!(output, pixels);
+            }
+        }
+    }
+}
+
+#[test]
+fn output_chunking_does_not_change_wire_and_finish_requires_drain() {
+    let info = ImageInfo::new(8, 5, Channels::Rgb, SampleType::F32);
+    let pixels: Vec<u8> = (0..8 * 5 * 3)
+        .flat_map(|i| (i as f32 * 0.125 - 7.0).to_ne_bytes())
+        .collect();
+    let one = encode(&info, &pixels, 1);
+    assert_eq!(one, encode(&info, &pixels, 13));
+    assert_eq!(one, encode(&info, &pixels, usize::MAX));
+    let tiny = ImageInfo::new(1, 1, Channels::Gray, SampleType::U8);
+    let mut encoder = GroupEncodeSession::new(
+        tiny.clone(),
+        &Metadata::default(),
+        &imij::ImiEncoderConfig::default().with_row_groups(Some(imij::RowGroups::new(
+            1,
+            1,
+            2 << 20,
+        ))),
+    )
+    .unwrap();
+    let header = encoder.output().len();
+    encoder.consume_output(header).unwrap();
+    encoder.push_group(&[255], 1).unwrap();
+    assert!(!encoder.is_finished());
+    assert!(matches!(encoder.finish(), Err(Error::InvalidInput(_))));
+    assert!(matches!(
+        GroupEncodeSession::new(
+            tiny,
+            &Metadata::default(),
+            &imij::ImiEncoderConfig::default().with_row_groups(Some(imij::RowGroups::new(1, 1, 1)))
+        ),
+        Err(Error::TooLarge)
+    ));
+}
+
+#[test]
+fn invalid_group_can_be_retried_after_symbol_scratch_has_been_reused() {
+    let info = ImageInfo::new(19, 11, Channels::Rgb, SampleType::U16);
+    let pixels: Vec<u8> = (0..19 * 11 * 3)
+        .flat_map(|i| (i as u16 * 79).to_ne_bytes())
+        .collect();
+    let expected = encode(&info, &pixels, 7);
+    let mut encoder = GroupEncodeSession::new(
+        info.clone(),
+        &Metadata::default(),
+        &imij::ImiEncoderConfig::default().with_row_groups(imij::RowGroups::new(7, 3, 32 << 20)),
+    )
+    .unwrap();
+    let mut file = Vec::new();
+    let mut retried = false;
+    while !encoder.is_finished() {
+        let count = encoder.output().len();
+        file.extend_from_slice(encoder.output());
+        encoder.consume_output(count).unwrap();
+        if let Some(group) = encoder.next_group() {
+            if group.y > 0 && !retried {
+                assert!(encoder.push_group(&[], info.row_bytes()).is_err());
+                assert_eq!(encoder.next_group(), Some(group));
+                assert!(encoder.output().is_empty());
+                retried = true;
+            }
+            let start =
+                group.y as usize * info.row_bytes() + group.x as usize * info.bytes_per_pixel();
+            encoder
+                .push_group(&pixels[start..], info.row_bytes())
+                .unwrap();
+        }
+    }
+    encoder.finish().unwrap();
+    assert!(retried);
+    assert_eq!(file, expected);
+    assert_eq!(imij::decode(&file).unwrap().1, pixels);
+}

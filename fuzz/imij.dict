@@ -1,0 +1,105 @@
+# IMIJ fuzz dictionary, format version 2 (SPEC.md; chunk tags from
+# imij/src/parse/chunks.rs, record ids from SPEC 1.0/2.7/2.8, features from
+# SPEC 0.1).
+# Signature (SPEC 1).
+"IMIJ\x0d\x0a\x87\x0a"
+# Container chunks (SPEC 1.1).
+"DATA"
+"iCCP"
+"eXIf"
+"xMPp"
+"mDCv"
+"cLLI"
+"pRVW"
+"gMAP"
+"aNIM"
+"fRAM"
+"mCMP"
+"cSUM"
+"cALB"
+"aXES"
+"cORD"
+"sMDT"
+"cATG"
+"pDAT"
+"pIDX"
+"sLOC"
+# aNIM kinds (SPEC 1.3): animation, pages, mixed pages.
+"\x01"
+"\x02"
+"\x03"
+# Header version byte (SPEC 1.0): 2.
+"\x02"
+# Header presence bits (SPEC 1.0): features, coding, sample, channels,
+# orientation, decode_speed, cicp, sig_bits, alpha_mode; then bit 8 and the
+# full 9-bit mask.
+"\x04"
+"\x01"
+"\x02"
+"\x08"
+"\x10"
+"\x20"
+"\x40"
+"\x80"
+"\x80\x02"
+"\xff\x03"
+# Header records (SPEC 1.0): 2 checksum, 4 DATA locator; 1 and 3 retired.
+"\x02"
+"\x04"
+# Feature mask values (SPEC 0.1): seed_bank_1, exact_blocks, signed_samples,
+# wide_samples, near_lossless, float_shift, mixed_pages, dequant_presets,
+# explicit_tables, recon_bias, color_transform, offset_map, superblocks,
+# and the unknown bit 13.
+"\x01"
+"\x02"
+"\x04"
+"\x08"
+"\x10"
+"\x20"
+"\x40"
+"\x80"
+"\x80\x02"
+"\x80\x04"
+"\x80\x08"
+"\x80\x10"
+"\x80\x20"
+"\x80\x40"
+# Unit record ids (SPEC 2.7): 1 lossy DC, 3 lossy alpha, 5 lossy AC,
+# 7 exact, 9 lossless stripe, and side records kind-1 (even).
+"\x01"
+"\x03"
+"\x05"
+"\x07"
+"\x09"
+"\x00"
+"\x02"
+"\x04"
+"\x06"
+"\x08"
+# Lossy head records (SPEC 2.8): 5 exact blocks, 7 AQ, 9 keep, 11 32-bit
+# DC, 13 explicit tables, 15 recon bias, 17 color transform, 19 layouts,
+# 21 superblocks (empty payload, SPEC 2.9).
+"\x0b"
+"\x0d"
+"\x0f"
+"\x11"
+"\x13"
+"\x15"
+"\x15\x00"
+# Frame presence bits (SPEC 1.3): uses previous, empty, record list.
+"\x04"
+"\x06"
+# Lossy entropy byte (SPEC 2.8): 0 run-level, 2 split, 3 split-Huffman;
+# 1 (packed) is retired.
+"\x00"
+"\x02"
+"\x03"
+# Lossless payload verbs (SPEC 2, 2.6): version, near-lossless version,
+# palette stripe flag, and unit-table head record id 2.
+"\x01"
+"\x02"
+"\x80"
+# Lossy payload marker and cSUM algorithm byte (SPEC 2.8, 1.4): 0x82 lossy
+# v2, 1 = XXH3-64.
+"\x82"
+"\x01"

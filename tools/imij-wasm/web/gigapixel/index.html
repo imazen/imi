@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Earth & Deep Space · IMI Explorer</title><link rel="stylesheet" href="./style.css"></head>
+<body>
+<main>
+  <section class="viewer" aria-label="Interactive NASA gigapixel image">
+    <div class="image-chooser-bar"><button id="gallery-toggle" type="button" class="header-chooser" aria-expanded="false" aria-controls="gallery-popover">Choose image ▾</button><button id="gallery-browse" type="button" class="header-browse" disabled>Browse all images</button></div>
+    <a id="how-imi-works" class="how-imi-link" href="/imi/index.html" target="_blank" rel="noopener">How IMI works ↗</a>
+    <div id="brave-warning" class="brave-warning" role="status" hidden><span>Brave Shields detected — turn off Shields for this site for full WASM &amp; canvas decode speed.</span><button id="brave-dismiss" type="button" aria-label="Dismiss Brave Shields notice">×</button></div>
+    <section id="gallery-popover" class="gallery gallery-popover" hidden aria-label="Choose an image"><div class="gallery-heading"><h2>Choose your view</h2><span id="gallery-status" role="status">Loading image gallery…</span></div><div id="gallery-items" class="gallery-items"></div></section>
+    <dialog id="gallery-dialog" aria-labelledby="gallery-title"><div class="gallery-dialog-header"><div><p class="eyebrow">Explore the collection</p><h2 id="gallery-title">Choose an image</h2></div><button id="gallery-close" type="button" aria-label="Close image browser">×</button></div><form id="gallery-filters" role="search"><label>Search<input id="gallery-search" type="search" placeholder="Title, subject or credit…" autocomplete="off"></label><label>Source<select id="gallery-source"><option value="">All sources</option></select></label><label>Order<select id="gallery-sort"><option value="featured">Featured</option><option value="largest">Largest first</option><option value="title">A–Z</option></select></label></form><p id="gallery-count" role="status"></p><div id="gallery-results" class="gallery-results"></div><div class="gallery-pages"><button id="gallery-previous" type="button">Previous</button><span id="gallery-page"></span><button id="gallery-next" type="button">Next</button></div></dialog>
+    <canvas id="view" tabindex="0" aria-label="Drag to pan. Pinch, scroll or use plus and minus to zoom. Arrow keys pan."></canvas>
+    <div class="viewer-overlay" aria-label="Live transfer and WASM decoding">
+      <div class="overlay-main overlay-text">
+        <div class="overlay-heading"><span id="overlay-mode">1.87 gigapixels</span><span id="overlay-quality" class="quality-chips" role="radiogroup" aria-label="Quality"></span></div>
+        <div class="overlay-level-line"><span id="overlay-level-info">Level 1/1</span><button id="overlay-level-lock" type="button" class="level-lock" aria-pressed="false" title="Toggle Auto vs Locked resolution level">Auto</button></div>
+        <span class="decode-label" hidden>WASM decoding · <span id="decode-context">last decode</span></span>
+        <div class="decode-readout"><strong id="wasm-work" class="decode-number">— MP/s</strong><span id="wasm-threads">(starting workers)</span></div>
+        <strong id="pixels-decoded" class="metric-total">Decoded 0.00 megapixels</strong>
+        <div class="transfer-readout"><strong id="overlay-network" class="http-number">— MiB/s</strong><span id="http-peak">(0 requests peak)</span></div>
+        <div class="overlay-download"><span id="download-label" title="Compressed image and index bodies received through HTTP, including browser cache hits.">Downloaded</span> <span id="bytes" class="http-number">—</span></div>
+        <div class="overlay-summary"><span id="coordinates">Preparing view…</span><div class="overlay-cache"><span id="cache">Compressed cache</span> · <span id="decoded-cache">Decoded cache</span></div><div class="overlay-memory"><strong id="memory-live" title="WASM linear-memory capacity plus retained buffers; not total browser RAM.">Starting decoder memory</strong><span id="memory-scope" class="memory-scope">WASM capacity + caches</span><button id="memory-mode" type="button" class="memory-mode-btn" data-mode="auto" aria-pressed="false" title="Cycle memory mode: Auto (device-tuned) → High (512 MiB cache + nearby pre-decode) → Low (32 MiB cap)">Mem: Auto</button></div></div>
+      </div>
+      <div id="phases" class="overlay-bars" aria-label="Visible view progress">
+        <div class="phase" data-phase="1"><span>HTTP</span><span id="http-compact" role="status"></span><div class="phase-track" role="progressbar" aria-label="Visible HTTP progress" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
+        <div class="phase" data-phase="2"><span>Decode</span><div class="phase-track" role="progressbar" aria-label="Visible WASM decoding progress" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
+      </div>
+    </div>
+    <div id="startup"><div class="spinner"></div><strong id="startup-title">Starting viewer</strong><span id="startup-detail">Loading the WASM decoder and image catalog.</span></div>
+    <div id="error" role="alert" hidden><span id="error-text"></span><span class="error-actions"><button id="error-retry" type="button">Retry</button><button id="error-dismiss" type="button" aria-label="Dismiss error">×</button></span></div>
+    <div class="canvas-bottom"><div class="zoom"><button id="minus" aria-label="Zoom out">−</button><output id="zoom" role="button" tabindex="0">100%</output><button id="plus" aria-label="Zoom in">+</button><button id="home" aria-label="Return to starting view">⌂</button><button id="fullscreen" aria-label="Enter fullscreen" aria-pressed="false">⛶</button></div></div>
+  </section>
+  <details class="progress-panel">
+    <summary>Technical details</summary>
+    <div class="tech-grid">
+      <div class="tech-card">
+        <strong>Session trace recorder</strong>
+        <div class="tech-actions">
+          <button id="record-toggle" type="button">Record session</button>
+          <button id="record-copy" type="button" disabled>Copy trace</button>
+          <button id="record-save" type="button" disabled>Save JSON</button>
+          <output id="record-status" aria-live="polite">Not recording</output>
+        </div>
+        <textarea id="record-text" hidden readonly aria-label="Recorded trace JSON"></textarea>
+      </div>
+      <div class="tech-card">
+        <strong>Live diagnostics</strong>
+        <div class="http-diagnostics" aria-label="Map HTTP request diagnostics">
+          <span id="http-view">This view · no requests yet</span>
+          <span id="http-background">Background · no requests yet</span>
+          <span id="http-status">Last HTTP —</span>
+          <span id="http-failure" hidden></span>
+          <span id="http-age"></span>
+        </div>
+        <div class="memory-note"><span id="browser-memory">Browser memory availability</span> <button id="memory-refresh" type="button">Measure memory</button> · <a href="/imi/benchmarks.html">Codec benchmarks ↗</a></div>
+      </div>
+    </div>
+  </details>
+  <section class="controls technical-controls" aria-label="Engine and performance tuning controls">
+    <label>Workers <select id="workers"><option value="auto">Auto (1–16)</option><option>1</option><option>2</option><option>4</option><option>8</option><option>16</option></select></label>
+    <label>Prefetch <select id="margin"><option value="0">Off</option><option value="1" selected>Spool nearby</option></select></label>
+    <label>Batch size <select id="batch-mb"><option value="0" selected>Auto (6 MiB)</option><option value="2">2 MiB (low latency)</option><option value="4">4 MiB</option><option value="8">8 MiB</option><option value="16">16 MiB (max throughput)</option></select></label>
+    <label>Pipeline loads <select id="pipeline-loads"><option value="4" selected>4 concurrent</option><option value="1">1 (serial)</option><option value="2">2 concurrent</option><option value="6">6 concurrent</option><option value="8">8 concurrent</option></select></label>
+    <label>HTTP streams <select id="http-parallel"><option value="8" selected>8 streams</option><option value="4">4 streams</option><option value="12">12 streams</option><option value="16">16 streams</option></select></label>
+    <label>Multipart ranges <select id="http-multipart"><option value="off" selected>Off (browser sparse-cache friendly)</option><option value="auto">Auto (Cloudflare + fallback)</option><option value="on">On (multipart/byteranges)</option></select></label>
+    <label class="check"><input id="redecode" type="checkbox">Re-decode on pan</label>
+    <label class="check" title="Gently pulse luminance over areas waiting for higher-resolution tile downloads"><input id="overlay-downloading" type="checkbox" checked>Pulse downloading</label>
+    <label class="check" title="Flash luminance faster over tiles whose compressed bytes are downloaded and waiting to decode"><input id="overlay-decoding" type="checkbox" checked>Flash pending decode</label>
+    <label class="check" title="After pausing at 100% zoom, lazily refine visible tiles to near-lossless quality from the same pyramid file"><input id="auto-refine" type="checkbox" checked>Auto-refine at 1×</label>
+    <label class="sr-control">Image <select id="scene" tabindex="-1"></select></label>
+    <label class="sr-control">Quality <select id="quality" tabindex="-1"><option value="webmap" selected>Lossy · target 70</option><option value="lossy50">Lossy · target 50</option><option value="lossless">Lossless</option><option value="lossy">Lossy · target 80</option></select></label>
+    <label class="sr-control">Resolution <select id="resolution" tabindex="-1"><option value="auto">Auto · ½ steps</option><option value="full">Original</option><option value="quarter">¼ dimensions</option></select></label>
+  </section>
+  <div hidden>
+    <span id="connection"></span><button id="help" type="button"></button><span id="scene-size"></span><span id="source-ratio"></span><span id="representation"></span><span id="backend"></span>
+    <span id="fraction"></span><output id="progress-detail"></output><span id="cache-hits"></span><span id="transfer-kib"></span>
+    <div id="speed-pie"></div><span id="overlay-speed"></span><span id="display-density"></span><output id="latency"></output><span id="throughput"></span>
+    <span id="timing-detail"></span><span id="requests"></span><span id="worker-status"></span><span id="protocol"></span><span id="range-batches"></span>
+    <span id="footprint"></span><span id="prefetch-status"></span><div id="memory"></div><section id="explanation"></section>
+    <button id="codec-benchmark-run" type="button"></button><button id="codec-benchmark-stop" type="button"></button>
+    <p id="codec-benchmark-source"></p><p id="codec-benchmark-status"></p>
+    <table><tbody id="codec-benchmark-lossless"></tbody><tbody id="codec-benchmark-lossy"></tbody></table>
+    <div id="codec-implementations"></div>
+    <strong id="scene-credit"></strong><span id="scene-description"></span><span id="scene-license"></span><a id="source" href="./"></a>
+  </div>
+</main><script type="module" src="./viewer.js"></script>
+</body></html>

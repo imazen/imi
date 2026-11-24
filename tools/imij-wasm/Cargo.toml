@@ -1,0 +1,34 @@
+[package]
+name = "imij-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+description = "WASI command engine for IMI (imij) encode/trace/decode — drives tools/codestream-atlas"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Own workspace: NOT a member of the imij workspace (different dep/feature surface).
+[workspace]
+
+[dependencies]
+# Shared code-value preview; no color-management machinery.
+garb = { version = "0.2.8", default-features = false }
+imij = { path = "../../imij", features = ["encode", "lab"] }
+zenpng = "0.1.4"
+enough = "0.4.2"
+# Decode profiling (profile-decode): the how-far revision imij pins.
+how-far = { version = "0.1.0", git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }
+how-far-along = { version = "0.1.0", git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }
+how-far-really = { version = "0.1.0", git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+# Separate workspaces must resolve the same pixel types as zencodec.
+[patch.crates-io]
+# Exact common animation timing; coordinated with zenpng's native-color APIs.
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "119f31336e3d9a32aa7d78290cfc17035b78f050" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "3286169c7ef5b1e66ac841c3d8204eb54e390f8c" }
+# zencodec takes how-far 0.1.0 from crates.io; one source keeps one Pulse type.
+how-far = { git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }

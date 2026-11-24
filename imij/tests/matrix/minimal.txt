@@ -1,0 +1,12 @@
+# Cross-route outcome matrix (minimal build; tests/matrix.rs). One line per case:
+# name, the commonest outcome, then route=outcome for each route that differs.
+# Routes: decode decode_with_limits decode_with_limits-off decode_into threads1 threads3 threads8 threads_limits4 threads_limits4-off stream stream_limits stream_limits-off reader reader_chunked reader-off session_decode session_decode-off session_decode_into session_rows session_reader session_reader-off frames frames_limits frames_limits-off region region_threads4 region_tiles region_tiles-off header probe previews remux plane_builder
+ll/i8-gray	Unsupported:signed samples (extended tier)	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ll/i16-graya	Unsupported:signed samples (extended tier)	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ll/u32-gray	Unsupported:32-bit samples (extended tier)	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ll/u64-gray	Unsupported:64-bit samples (extended tier)	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ll/f64-gray	Unsupported:64-bit samples (extended tier)	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ll/value-tables-u64	Unsupported:64-bit samples (extended tier)	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+cs/u32-digest-flip	Unsupported:32-bit samples (extended tier)	header=ok	probe=Corrupt:file checksum mismatch	previews=ok	remux=Corrupt:file checksum mismatch	plane_builder=Corrupt:file checksum mismatch
+cap/mixed-u32	ok	frames=Unsupported:mixed pages need a profile this build does not decode	frames_limits=Unsupported:mixed pages need a profile this build does not decode	frames_limits-off=Unsupported:mixed pages need a profile this build does not decode
+ly/u32	absent

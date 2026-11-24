@@ -1,0 +1,55 @@
+# Caller supplies the resource wrapper and the host timing lock for profiling.
+build target:
+    cargo build --locked --release --manifest-path Cargo.toml --example value_table_coz --target-dir {{quote(target)}}
+
+check target:
+    cargo fmt --manifest-path Cargo.toml --check
+    cargo clippy --locked --manifest-path Cargo.toml --all-targets --target-dir {{quote(target)}} -- -D warnings
+
+profile binary image raw iterations output:
+    coz run --source-scope '%recon.rs' -o {{quote(output)}} --- {{quote(binary)}} {{quote(image)}} {{quote(raw)}} {{iterations}}
+
+# The paired runner acquires the supplied host lock for each decoder process.
+matrix directory output host_lock work_lock +arms:
+    python3 ../value_table_profile.py {{quote(directory)}} {{quote(output)}} --host-lock {{quote(host_lock)}} --work-lock {{quote(work_lock)}} {{arms}}
+
+writer-tests:
+    cargo test --release --manifest-path ../../../Cargo.toml -p imij --features lab --lib value_tables
+
+writer-tests-avx2:
+    IMIJ_NO_AVX512=1 cargo test --release --manifest-path ../../../Cargo.toml -p imij --features lab --lib value_tables --test value_tables
+
+writer-tests-wasi:
+    RUSTFLAGS='-C target-feature=+simd128' CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test --release --manifest-path ../../../Cargo.toml --target wasm32-wasip1 -p imij --lib value_tables
+    RUSTFLAGS='-C target-feature=+simd128' CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test --release --manifest-path ../../../Cargo.toml --target wasm32-wasip1 -p imij --test value_tables
+
+# Summaries refuse incomplete matrices and preserve the per-cell results.
+summarize matrix:
+    python3 summarize_matrix.py {{quote(matrix)}}
+
+summarize-layouts matrix:
+    python3 summarize_layouts.py {{quote(matrix)}}
+
+# Regular-map files only (--off-only), every arm against `base`.
+summarize-off matrix:
+    python3 summarize_off.py {{quote(matrix)}}
+
+# One arm's table/off ratios per set, worst file and off MPx/s.
+summarize-arm matrix arm:
+    python3 summarize_arm.py {{quote(matrix)}} {{quote(arm)}}
+
+instruction-gate main_log change_log:
+    python3 compare_callgrind.py {{quote(main_log)}} {{quote(change_log)}}
+
+# Use a fresh target for each source/layout. Caller supplies the heavy wrapper.
+decoder-build target flags="":
+    RUSTFLAGS={{quote(flags)}} cargo build --locked --release --manifest-path ../../../Cargo.toml -p imij --example lowbit_eval --target-dir {{quote(target)}}
+
+decoder-layout target seed:
+    RUSTFLAGS='-C linker=clang -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--shuffle-sections=.text*={{seed}}' cargo build --locked --release --manifest-path ../../../Cargo.toml -p imij --example lowbit_eval --target-dir {{quote(target)}}
+
+sizes target directory side="1024":
+    cargo run --locked --release --manifest-path ../../../Cargo.toml -p imij --features lab --example value_table_sizes --target-dir {{quote(target)}} -- {{quote(directory)}} {{side}}
+
+callgrind target home:
+    cargo bench --locked --manifest-path ../../../Cargo.toml -p imij --bench cg_decode --target-dir {{quote(target)}} -- --home {{quote(home)}} --parallel=1 --output-format=json --save-summary=json --envs=IMIJ_NO_AVX512=1 --envs="TMPDIR=$TMPDIR"

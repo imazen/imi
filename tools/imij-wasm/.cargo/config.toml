@@ -1,0 +1,4 @@
+# The browser engine targets current browsers, all of which run WebAssembly
+# SIMD; imij's wasm128 kernels are compiled in only with this feature.
+[target.wasm32-wasip1]
+rustflags = ["-C", "target-feature=+simd128"]

@@ -1,0 +1,30 @@
+[package]
+name = "imij-gigapixel"
+version = "0.0.1"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Bounded V4 spatial image and pyramid preparation"
+
+[workspace]
+
+[dependencies]
+imij = { path = "../../imij" }
+imij-set = { path = "../../imij-set" }
+enough = "0.4.4"
+rayon = "1.12.0"
+sha2 = "0.11.0"
+zenpng = "0.1.4"
+zenresize = "=0.3.1"
+
+[patch.crates-io]
+how-far = { git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "119f31336e3d9a32aa7d78290cfc17035b78f050" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "3286169c7ef5b1e66ac841c3d8204eb54e390f8c" }
+
+[profile.release]
+lto = "thin"
+
+[dev-dependencies]
+imgref = "1.12.3"
+rgb = "0.8.53"

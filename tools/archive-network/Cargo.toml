@@ -1,0 +1,27 @@
+[package]
+name = "imij-archive-network"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "iqa_http_access"
+path = "../codec-speed/src/bin/iqa_http_access.rs"
+
+[dependencies]
+imij = { path = "../../imij" }
+imij-set = { path = "../../imij-set" }
+sha2 = "0.11.0"
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
+
+[profile.release]
+debug = 1
+lto = "thin"
+
+[patch.crates-io]
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "119f31336e3d9a32aa7d78290cfc17035b78f050" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "3286169c7ef5b1e66ac841c3d8204eb54e390f8c" }
+how-far = { git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }

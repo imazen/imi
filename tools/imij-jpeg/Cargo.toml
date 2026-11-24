@@ -1,0 +1,27 @@
+[package]
+name = "imij-jpeg"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Native component JPEG importer for IMI"
+
+[workspace]
+
+[dependencies]
+imij = { path = "../../imij", features = ["native-jpeg"] }
+zenjpeg = { path = "../../../zenjpeg/zenjpeg" }
+enough = "0.4.4"
+kamadak-exif = "0.6.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Local unpublished JPEG analysis dependency; replace at publication.
+[patch.crates-io]
+zenanalyze = { path = "../../../zenanalyze" }
+# Match IMI's shared pixel and codec types in this standalone workspace.
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "5ed2daded81407e7206fd8de6e8f1d93a5447b5b" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "789d69dbc314e748676b7f2f19542c17473ba40b" }

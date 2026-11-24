@@ -1,0 +1,28 @@
+[package]
+name = "imij-seeds"
+version = "0.0.0"
+edition = "2024"
+description = "Seed-table banks for IMI: training data, bank generation, A/B cells, timing"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Own workspace: NOT a member of the imij workspace (uses imij's lab surface).
+[workspace]
+
+[dependencies]
+imij = { path = "../../imij", features = ["lab"] }
+serde_json = "1.0.151"
+
+[profile.release]
+debug = 1
+codegen-units = 1
+lto = "thin"
+
+# Match the owning workspace common codec/pixel types.
+[patch.crates-io]
+# Exact common animation timing; coordinated with zenpng's native-color APIs.
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "119f31336e3d9a32aa7d78290cfc17035b78f050" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "3286169c7ef5b1e66ac841c3d8204eb54e390f8c" }
+# zencodec takes how-far 0.1.0 from crates.io; IMIJ pins the same release by
+# git. One source keeps a single SharedPulse/Stop type across the boundary.
+how-far = { git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }

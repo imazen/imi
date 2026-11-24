@@ -1,0 +1,14 @@
+file	sha256	format	origin	suggested_args
+gray8.png	8fb15c601f2eb2ac2abc9b6b975cc9e9e1bfab51f127e27770eeefad55149b57	png-gray8	synthetic gradient+blocks	--lossless
+ga8.png	38f7c2cd8b9555e4469f5439db202d35f5045038c86479b58b62555581e03a50	png-ga8	synthetic gradient + alpha wedge	--lossless
+rgb8.png	b2bcae06a3949e49448ddb6eef0316460e22abf807cfbb2d5b357f4decdcd524	png-rgb8	synthetic color gradient	--lossy --quality 90
+rgba8.png	33915b2de2d578d3a825547b3a5da1bdf1d48588a3a1a52352babce85fe28dc0	png-rgba8	synthetic color gradient + real alpha ramp	--lossy --quality 90
+odd61x37.png	18b20607232bb80faef80514fd435c39c001793d2c33a94a117b822905569bae	png-rgb8	synthetic odd-size gradient	--lossy --quality 90
+gray16.png	2645cbf5fdf573d0f5e8b8048afdaa9cfe2eaa35128d719f6f1c3218982659ca	png-gray16	synthetic 16-bit gradient	--lossless
+dither16.png	15fa966aaa1f382fcd4674500159ed09a02c0e89a0c69e1d46cfe75f637ec852	png-rgb8	synthetic 16-colour ordered dither (template palette stripes)	--lossless --effort 10
+bilevel.png	a93c6e01fbfc6303b3b482533e9e3ed4a1109976b7007f0ee480c90991863edf	png-gray8	synthetic two-value ordered dither (bilevel stripes with palettes off)	--lossless --palette off
+rgb16-pq.png	d64896adca593c057150105dd5165228e08f4faeba44f95eadb8dfd8ac196b4b	png-rgb16-pq	crop of local-scratch/zqi/corpus/hdr/1228.hdr.png (admitted hdr_precision source)	--lossy --quality 90 --cicp 9,16
+f16.rgb.raw	280b2cc3093b4e0e7dafa6082cfc29871b441aaf9bbfa1fa3f1f3812b9a77f5c	raw-64x48-3ch-f16	synthetic generated	--raw 64 48 rgb f16
+u32.rgba.raw	6f08cca924525602868ea03f180e0d24be75df034d68904d01f45c2808c34992	raw-48x32-4ch-u32	synthetic generated	--raw 48 32 rgba u32
+i32.rgb.raw	f7611e1f45ae8700cd8e2e5518ac74cc9b6e9c7973207396dbd12a573a3caa06	raw-48x32-3ch-i32	synthetic generated	--raw 48 32 rgb i32
+f32.rgb.raw	a4b88b808e9ece3a3431d50638a33f1bcc84154c066f7743ba323d77ebd5b7ce	raw-48x32-3ch-f32	synthetic generated	--raw 48 32 rgb f32

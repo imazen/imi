@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IMI Archive Browser</title>
+<link rel="stylesheet" href="archive.css">
+<script type="module" src="browser.js"></script>
+</head>
+<body>
+<main>
+  <header class="masthead">
+    <div>
+      <h1>Archive Browser</h1>
+      <p>Inspect IMI archives and browse image quality datasets.</p>
+    </div>
+    <a href="../gigapixel/">Gigapixel Explorer</a>
+  </header>
+  <form id="open-form" class="open">
+    <label for="archive-url">Archive URL</label>
+    <div class="open-row">
+      <input id="archive-url" type="url" placeholder="https://…/dataset.imijset">
+      <button type="submit">Open URL</button>
+      <label class="pick-file">Open a file <input id="archive-file" type="file" accept=".imijset,.imiset"></label>
+    </div>
+  </form>
+  <p id="status" role="status"></p>
+
+  <section id="archive" hidden>
+    <header class="dataset">
+      <div>
+        <span id="snapshot"></span>
+        <h2 id="dataset-title"></h2>
+        <dl id="dataset-facts"></dl>
+      </div>
+      <nav aria-label="Archive views">
+        <button id="pairs-tab" type="button" hidden>IQA pairs</button>
+        <button id="entries-tab" type="button">Entries</button>
+      </nav>
+    </header>
+    <div class="workspace">
+      <section class="contents" aria-label="Archive contents">
+        <div class="browse">
+          <h3 id="contents-title"></h3>
+          <input type="search" id="filter" aria-label="Filter this page" placeholder="Filter this page">
+        </div>
+        <div id="items"></div>
+        <div class="pagination">
+          <button id="previous" type="button">Previous</button>
+          <span id="position"></span>
+          <button id="next" type="button">Next</button>
+        </div>
+      </section>
+      <section id="selection" class="selection" aria-label="Selected record"></section>
+    </div>
+  </section>
+</main>
+</body>
+</html>

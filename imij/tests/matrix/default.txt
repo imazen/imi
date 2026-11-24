@@ -1,0 +1,348 @@
+# Cross-route outcome matrix (default build; tests/matrix.rs). One line per case:
+# name, the commonest outcome, then route=outcome for each route that differs.
+# Routes: decode decode_with_limits decode_with_limits-off decode_into threads1 threads3 threads8 threads_limits4 threads_limits4-off stream stream_limits stream_limits-off reader reader_chunked reader-off session_decode session_decode-off session_decode_into session_rows session_reader session_reader-off frames frames_limits frames_limits-off region region_threads4 region_tiles region_tiles-off header probe previews remux plane_builder
+ll/gray8-one-unit	ok
+ll/rgb8-table	ok
+ll/rgb8-prefixed	ok
+ll/rgb8-open-data	ok
+ll/rgb8-open-data-then-chunk	ok
+ll/rgb8-chunk-after-data	ok
+ll/rgb8-stale-locator	ok
+ll/rgb8-no-locator	ok
+ll/rgb8-mcmp	ok
+ll/rgba16-groups	ok
+ll/f16-rgb	ok
+ll/i8-gray	ok
+ll/i16-graya	ok
+ll/u32-gray	ok
+ll/f32-rgb	ok
+ll/u64-gray	ok
+ll/f64-gray	ok
+ll/value-tables-u8	ok
+ll/value-tables-f16	ok
+ll/value-tables-undeclared	Corrupt:value table without the feature value_tables	header=ok	probe=ok	previews=ok	plane_builder=ok
+ll/value-tables-f32	ok
+ll/value-tables-u64	ok
+ll/palette	ok
+ll/near2	ok
+ll/f16-floatshift	ok
+hd/near2-undeclared	Corrupt:near-lossless payload without the feature near_lossless	header=ok	probe=ok	previews=ok	plane_builder=ok
+hd/near2-hidden	Corrupt:near-lossless payload without the feature near_lossless	header=ok	probe=ok	previews=ok	plane_builder=ok
+hd/f16-floatshift-undeclared	Corrupt:float map without the feature float_shift	header=ok	probe=ok	previews=ok	plane_builder=ok
+hd/f16-floatshift-hidden	Corrupt:float map without the feature float_shift	header=ok	probe=ok	previews=ok	plane_builder=ok
+ll/f32-floatshift	ok
+ll/bilevel	ok
+ll/bilevel-groups	ok
+ll/bilevel-two-colors	ok
+da/bilevel-palette-three-entries	Corrupt:bilevel palette with more than two entries	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+hd/bilevel-undeclared	Corrupt:bilevel table without the feature bilevel	header=ok	probe=ok	previews=ok	plane_builder=ok
+hd/bilevel-hidden	Corrupt:bilevel table without the feature bilevel	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/bilevel-table-ignored	Corrupt:bilevel stripe without a bilevel table or 1-bit slot	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/bilevel-table-retired-id	Unsupported:unknown lossless head record	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/bilevel-probability-above-1	Corrupt:bilevel probability above 1	header=ok	probe=ok	previews=ok	plane_builder=ok
+ll/template-value-tables	ok
+ll/template	ok
+ll/template-groups	ok
+hd/template-undeclared	Corrupt:template tables without the feature template_palettes	header=ok	probe=ok	previews=ok	plane_builder=ok
+hd/template-hidden	Corrupt:template tables without the feature template_palettes	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/template-table-ignored	Corrupt:template palette stripe without template tables	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/template-table-unknown-id	Unsupported:unknown lossless head record	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/template-precision-changed	Corrupt:template table length	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/template-shared-relabeled-own	Corrupt:typical-row bitmap padding	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/template-unknown-layout	Corrupt:bad decorrelation mode	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/template-row-bitmap-padding	Corrupt:typical-row bitmap padding	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ll/csum	ok
+ll/csum-last	ok
+ll/csum-k10-w4-first	ok
+ll/previews	ok
+ll/gainmap	ok
+ly/xyb-one-unit	ok
+ly/xyb-table	ok
+ly/xyb-prefixed	ok
+ly/xyb-open-data	ok
+ly/ycocg-rgba	ok
+ly/ycocg-rgba-prefixed	ok
+ly/fast	ok
+ly/fastest	ok
+ly/compact	ok
+ly/splithuf	ok
+ly/groups	ok
+ly/exact	ok
+ly/exact-csum	ok
+ly/csum	ok
+ly/superblocks	ok
+ly/superblocks-map-symbol	Corrupt:superblock map symbol	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ly/superblocks-with-layouts	Corrupt:superblocks with keep blocks or channel layouts	header=ok	probe=ok	previews=ok	plane_builder=ok
+ly/small	ok
+ly/small-map-unread	Corrupt:partition map has unread bytes	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ly/small-undeclared	Corrupt:small transforms without the feature small_transforms	header=ok	probe=ok	previews=ok	plane_builder=ok
+ly/small-with-superblocks	Corrupt:small transforms with superblocks or channel layouts	header=ok	probe=ok	previews=ok	plane_builder=ok
+ly/small-merge-undeclared	Corrupt:partition map merges without the feature superblocks	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ly/small-merge	ok
+ly/small-empty-section	Corrupt:partition map splits section without a split	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+ly/u16	ok
+ly/f32	ok
+ly/u32	ok
+fr/animation	ok
+fr/pages	ok
+fr/mixed	ok
+fr/mixed-csum	ok
+fr/near-animation	ok
+fr/near-animation-hidden	Corrupt:near-lossless payload without the feature near_lossless	header=ok	probe=ok	previews=ok	plane_builder=ok
+fr/frame-unknown-field	ok	frames=Unsupported:unknown frame field	frames_limits=Unsupported:unknown frame field	frames_limits-off=Unsupported:unknown frame field
+fr/frame-ignorable-record	ok
+fr/frame-unknown-record	ok	frames=Unsupported:unknown frame record	frames_limits=Unsupported:unknown frame record	frames_limits-off=Unsupported:unknown frame record
+hd/signature	NotImij
+hd/header-version	Unsupported:unknown header version
+hd/header-version-1	Unsupported:unknown header version
+hd/header-version-2	Unsupported:unknown unit record	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+hd/unknown-critical-ext	Unsupported:unknown critical header record
+hd/unknown-ignorable-ext	ok
+hd/ext-out-of-order	Corrupt:header records out of order
+hd/feature-unknown-bit	Unsupported:unknown feature
+hd/retired-profiles-record	Unsupported:unknown critical header record
+hd/mixed-signal-no-anim	ok
+hd/huge-dims	TooLarge	decode_into=Corrupt:unit table length	threads1=Corrupt:unit table length	threads3=Corrupt:unit table length	threads8=Corrupt:unit table length	stream=Corrupt:unit table length	frames=opened	region=Corrupt:unit table length	region_threads4=Corrupt:unit table length	region_tiles=Corrupt:unit table length	region_tiles-off=Corrupt:unit table length	header=ok	probe=ok	previews=ok	remux=Corrupt:unit table length	plane_builder=ok
+hd/one-row-more	Corrupt:unit table length	header=ok	probe=ok	previews=ok	plane_builder=ok
+hd/width-overflow-2	Corrupt:varint overflow
+hd/width-overflow-3	Corrupt:varint overflow
+hd/width-overflow-127	Corrupt:varint overflow
+hd/width-overflow-128	Corrupt:varint overflow
+hd/width-overflow-255	Corrupt:varint overflow
+hd/width-padded-2	Corrupt:non-minimal varint
+hd/width-padded-3	Corrupt:non-minimal varint
+hd/width-padded-4	Corrupt:non-minimal varint
+hd/header-len-over-4g	Corrupt:truncated	reader=TooLarge	reader_chunked=TooLarge	reader-off=TooLarge	session_reader=TooLarge	session_reader-off=TooLarge
+ch/len-over-4g	Corrupt:chunk past end of file	reader=Corrupt:trailing DATA bytes	reader_chunked=Corrupt:trailing DATA bytes	reader-off=Corrupt:trailing DATA bytes	session_reader=Corrupt:trailing DATA bytes	session_reader-off=Corrupt:trailing DATA bytes	header=ok	previews=ok
+hd/explicit-cicp-alpha	ok
+hd/reserved-alpha-mode	Corrupt:reserved header bits
+hd/full-range-2	Corrupt:reserved header bits
+ch/bad-tag-bytes	Corrupt:invalid chunk tag
+ch/dup-exif	Corrupt:repeated chunk
+ch/dup-iccp-after-data	Corrupt:repeated chunk	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ch/bad-mdcv	Corrupt:bad mDCv
+ch/bad-clli	Corrupt:bad cLLI
+ch/good-mdcv-clli	ok
+ch/mcmp-bad-identity	Corrupt:invalid compressed metadata identity
+ch/mcmp-bad-pack	Unsupported:metadata pack method	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ch/anim-after-data	Corrupt:aNIM after DATA	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ch/anim-bad-kind	ok	frames=Unsupported:unknown aNIM kind	frames_limits=Unsupported:unknown aNIM kind	frames_limits-off=Unsupported:unknown aNIM kind
+ch/anim-count-mismatch	ok	frames=Corrupt:frame count does not match the fRAM chunks	frames_limits=Corrupt:frame count does not match the fRAM chunks	frames_limits-off=Corrupt:frame count does not match the fRAM chunks
+ch/fram-without-anim	ok	frames=Corrupt:frame count does not match the fRAM chunks	frames_limits=Corrupt:frame count does not match the fRAM chunks	frames_limits-off=Corrupt:frame count does not match the fRAM chunks
+ch/unknown-critical-before	Unsupported:unknown critical chunk
+ch/unknown-critical-after	Unsupported:unknown critical chunk	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ch/open-ancillary	Corrupt:open ancillary chunk
+ch/open-unknown-critical	Unsupported:unknown critical chunk
+ch/bad-tag	Corrupt:invalid chunk tag
+ch/no-data	Corrupt:no DATA chunk	header=ok	previews=ok
+ch/dup-data	Corrupt:repeated chunk	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ch/truncate-1	Corrupt:chunk past end of file	reader=Corrupt:truncated file	reader_chunked=Corrupt:truncated file	reader-off=Corrupt:truncated file	session_reader=Corrupt:truncated file	session_reader-off=Corrupt:truncated file	header=ok	previews=ok
+ch/truncate-header	Corrupt:no DATA chunk	header=ok	previews=ok
+ch/truncate-mid-data	Corrupt:chunk past end of file	reader=Corrupt:truncated file	reader_chunked=Corrupt:truncated file	reader-off=Corrupt:truncated file	session_reader=Corrupt:truncated file	session_reader-off=Corrupt:truncated file	header=ok	previews=ok
+ch/trailing-garbage	Corrupt:truncated	reader=Corrupt:truncated file	reader_chunked=Corrupt:truncated file	reader-off=Corrupt:truncated file	session_reader=Corrupt:truncated file	session_reader-off=Corrupt:truncated file	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ch/chunk-past-end	Corrupt:chunk past end of file	reader=Corrupt:truncated file	reader_chunked=Corrupt:truncated file	reader-off=Corrupt:truncated file	session_reader=Corrupt:truncated file	session_reader-off=Corrupt:truncated file	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+da/lossless-header-lossy-data	Corrupt:bad lane count	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/lossy-header-lossless-data	Corrupt:bad column group width	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/trailing-byte	Corrupt:trailing DATA bytes	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/runlevel-trailing-byte	Corrupt:trailing DATA bytes	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/splithuf-trailing-byte	Corrupt:trailing DATA bytes	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/entropy-1	Unsupported:retired entropy mode	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/entropy-2	Unsupported:retired entropy mode	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/short-by-one	Corrupt:unit table exceeds DATA	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/lossy-trailing-byte	Corrupt:trailing DATA bytes	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/lossy-short-by-one	Corrupt:unit table exceeds DATA	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/prefixed-trailing-byte	Corrupt:trailing DATA bytes	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/prefixed-short-by-one	Corrupt:record past end of DATA	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/lossy-prefixed-trailing-byte	Corrupt:trailing DATA bytes	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/lossy-prefixed-short-by-one	Corrupt:record past end of DATA	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+da/lossless-0-byte-payload	Corrupt:truncated	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/lossless-0-byte-open-payload	Corrupt:truncated	header=ok	previews=ok
+da/lossless-1-byte-payload	Corrupt:truncated	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/lossless-1-byte-open-payload	Corrupt:truncated	header=ok	previews=ok
+da/lossy-0-byte-payload	Corrupt:truncated	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/lossy-0-byte-open-payload	Corrupt:truncated	header=ok	previews=ok
+da/lossy-1-byte-payload	Corrupt:truncated	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/lossy-1-byte-open-payload	Corrupt:truncated	header=ok	previews=ok
+da/lossless-unknown-field	Unsupported:unknown lossless head field	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/lossy-unknown-flag	Unsupported:unknown lossy head field	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/lossless-hint-too-long	Corrupt:unit table length	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/lossy-hint-too-long	Corrupt:unit table length	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ll1-trailing	ok
+ut/ll1-trailing-open	ok
+ut/ll1-reserved4	ok
+ut/ll1-reserved3	ok
+ut/ll1-empty	ok
+ut/ll1-tail	ok
+ut/ll1-tail-open	ok
+ut/ll-trailing	ok
+ut/ll-trailing-open	ok
+ut/ll-reserved4	ok
+ut/ll-reserved3	ok
+ut/ll-empty	ok
+ut/ll-tail	ok
+ut/ll-tail-open	ok
+ut/ly1-trailing	ok
+ut/ly1-trailing-open	ok
+ut/ly1-reserved4	ok
+ut/ly1-reserved3	ok
+ut/ly1-empty	ok
+ut/ly1-tail	ok
+ut/ly1-tail-open	ok
+ut/ly-trailing	ok
+ut/ly-trailing-open	ok
+ut/ly-reserved4	ok
+ut/ly-reserved3	ok
+ut/ly-empty	ok
+ut/ly-tail	ok
+ut/ly-tail-open	ok
+ut/lya-trailing	ok
+ut/lya-trailing-open	ok
+ut/lya-reserved4	ok
+ut/lya-reserved3	ok
+ut/lya-empty	ok
+ut/lya-tail	ok
+ut/lya-tail-open	ok
+ut/ll-index-swapped	Corrupt:unit table does not match the records	header=ok	previews=ok	remux=ok
+ut/ll-index-sum	Corrupt:unit table does not match the records	header=ok	previews=ok	remux=ok
+ut/ll-index-entry-small	Corrupt:unit table entry	header=ok	previews=ok	remux=ok
+ut/ll-index-few	Corrupt:unit table length	header=ok	previews=ok	remux=ok
+ut/ll-index-too-long	Corrupt:unit table length	header=ok	previews=ok	remux=ok
+ut/ll-index-other-data	Corrupt:unit index for another DATA	header=ok	previews=ok	remux=ok
+ut/ll-index-other-data-open	Corrupt:unit index for another DATA	region=Corrupt:unit table does not match the records	region_threads4=Corrupt:unit table does not match the records	region_tiles=Corrupt:unit table does not match the records	region_tiles-off=Corrupt:unit table does not match the records	header=ok	previews=ok	remux=ok
+ut/ll-index-swapped-open	Corrupt:unit table does not match the records	header=ok	previews=ok	remux=ok
+ut/ll-index-truncated	Corrupt:chunk past end of file	reader=Corrupt:truncated file	reader_chunked=Corrupt:truncated file	reader-off=Corrupt:truncated file	session_reader=Corrupt:truncated file	session_reader-off=Corrupt:truncated file	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ut/ll-index-truncated-open	Corrupt:chunk past end of file	reader=Corrupt:truncated file	reader_chunked=Corrupt:truncated file	reader-off=Corrupt:truncated file	session_reader=Corrupt:truncated file	session_reader-off=Corrupt:truncated file	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ut/ll-index-footer-tag	ok
+ut/ll-index-footer-len	ok
+ut/ll-index-not-last	ok
+ut/ll-index-twice	Corrupt:repeated chunk	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ut/ll-index-before-data	Corrupt:uIDX before DATA
+ut/ll-tail-no-index	ok
+ut/ll-trailing-no-index	ok
+ut/ll-hint-and-index	ok
+ut/ll-filled-and-index	ok
+ut/ll-empty-and-index	ok
+ut/ll-hint-and-index-valid	ok
+ut/ll-reserve-long	Corrupt:unit table length	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ll-reserve-width	Corrupt:unit table width	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ll-reserve-entry-small	Corrupt:unit table entry	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ll-reserve-state	Corrupt:unit table state	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ll-reserve-padding	Corrupt:unit table padding	header=ok	previews=ok
+ut/ll-hint-and-reserve	Corrupt:unit table twice	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ly-index-swapped	Corrupt:unit table does not match the records	header=ok	previews=ok	remux=ok
+ut/ly-index-sum	Corrupt:unit table does not match the records	header=ok	previews=ok	remux=ok
+ut/ly-index-entry-small	Corrupt:unit table entry	header=ok	previews=ok	remux=ok
+ut/ly-index-few	Corrupt:unit table length	header=ok	previews=ok	remux=ok
+ut/ly-index-too-long	Corrupt:unit table length	header=ok	previews=ok	remux=ok
+ut/ly-index-other-data	Corrupt:unit index for another DATA	header=ok	previews=ok	remux=ok
+ut/ly-index-other-data-open	Corrupt:unit index for another DATA	region=Corrupt:unit table does not match the records	region_threads4=Corrupt:unit table does not match the records	region_tiles=Corrupt:unit table does not match the records	region_tiles-off=Corrupt:unit table does not match the records	header=ok	previews=ok	remux=ok
+ut/ly-index-swapped-open	Corrupt:unit table does not match the records	header=ok	previews=ok	remux=ok
+ut/ly-index-truncated	Corrupt:chunk past end of file	reader=Corrupt:truncated file	reader_chunked=Corrupt:truncated file	reader-off=Corrupt:truncated file	session_reader=Corrupt:truncated file	session_reader-off=Corrupt:truncated file	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ut/ly-index-truncated-open	Corrupt:chunk past end of file	reader=Corrupt:truncated file	reader_chunked=Corrupt:truncated file	reader-off=Corrupt:truncated file	session_reader=Corrupt:truncated file	session_reader-off=Corrupt:truncated file	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ut/ly-index-footer-tag	ok
+ut/ly-index-footer-len	ok
+ut/ly-index-not-last	ok
+ut/ly-index-twice	Corrupt:repeated chunk	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+ut/ly-index-before-data	Corrupt:uIDX before DATA
+ut/ly-tail-no-index	ok
+ut/ly-trailing-no-index	ok
+ut/ly-hint-and-index	ok
+ut/ly-filled-and-index	ok
+ut/ly-empty-and-index	ok
+ut/ly-hint-and-index-valid	ok
+ut/ly-reserve-long	Corrupt:unit table length	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ly-reserve-width	Corrupt:unit table width	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ly-reserve-entry-small	Corrupt:unit table entry	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ly-reserve-state	Corrupt:unit table state	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/ly-reserve-padding	Corrupt:unit table padding	header=ok	previews=ok
+ut/ly-hint-and-reserve	Corrupt:unit table twice	header=ok	probe=ok	previews=ok	plane_builder=ok
+ut/csum-trailing-before-data	ok
+ut/csum-index-flip-before-data	Corrupt:file checksum mismatch	decode_with_limits-off=Corrupt:unit table does not match the records	threads_limits4-off=Corrupt:unit table does not match the records	stream_limits-off=Corrupt:unit table does not match the records	reader-off=Corrupt:unit table does not match the records	session_decode-off=Corrupt:unit table does not match the records	session_reader-off=Corrupt:unit table does not match the records	frames_limits-off=Corrupt:unit table does not match the records	region_tiles-off=Corrupt:unit table does not match the records	header=ok	previews=ok
+ut/csum-trailing-last	ok
+ut/csum-index-flip-last	Corrupt:file checksum mismatch	decode_with_limits-off=Corrupt:unit table does not match the records	threads_limits4-off=Corrupt:unit table does not match the records	stream_limits-off=Corrupt:unit table does not match the records	reader-off=Corrupt:unit table does not match the records	session_decode-off=Corrupt:unit table does not match the records	session_reader-off=Corrupt:unit table does not match the records	frames_limits-off=Corrupt:unit table does not match the records	region_tiles-off=Corrupt:unit table does not match the records	header=ok	previews=ok
+da/run-past-cap	Corrupt:run token past the run cap	header=ok	probe=ok	previews=ok	plane_builder=ok
+da/run-past-lane	Corrupt:run past the end of its lane	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+cs/digest-flip	Corrupt:file checksum mismatch	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok	previews=ok
+cs/vendor-byte-flip	Corrupt:file checksum mismatch	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok	previews=ok
+cs/data-byte-flip	Corrupt:file checksum mismatch	decode_with_limits-off=ok!	threads_limits4-off=ok!	stream_limits-off=ok!	reader-off=ok!	session_decode-off=ok!	session_reader-off=ok!	frames_limits-off=ok!	region_tiles-off=ok!	header=ok	previews=ok
+cs/record-without-table	Corrupt:missing file checksum	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok	previews=ok
+cs/table-without-record	Corrupt:file checksum without its header record	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok	previews=ok
+cs/table-k-differs	Corrupt:cSUM piece size differs from the header	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok
+cs/bad-record-k	Corrupt:bad file checksum header record	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok
+cs/bad-record-k-no-table	Corrupt:bad file checksum header record	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok
+cs/second-table	Corrupt:repeated chunk	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader=Corrupt:cSUM length does not match the file	reader_chunked=Corrupt:cSUM length does not match the file	reader-off=ok	session_decode-off=ok	session_reader=Corrupt:cSUM length does not match the file	session_reader-off=ok	frames_limits-off=ok	region=Corrupt:cSUM length does not match the file	region_threads4=Corrupt:cSUM length does not match the file	region_tiles=Corrupt:cSUM length does not match the file	region_tiles-off=ok	header=ok	previews=ok
+cs/unknown-algo	ok	remux=Unsupported:unknown file checksum algorithm	plane_builder=Unsupported:unknown file checksum algorithm
+cs/unknown-algo-then-second	Corrupt:repeated chunk	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+cs/record-algo-differs	Corrupt:cSUM algorithm differs from the header	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok
+cs/unknown-record-algo	Corrupt:cSUM algorithm differs from the header	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok
+cs/exact-record-flip	Corrupt:file checksum mismatch	decode_with_limits-off=Corrupt:lane stream overrun	threads_limits4-off=Corrupt:lane stream overrun	stream_limits-off=Corrupt:lane stream overrun	reader-off=Corrupt:lane stream overrun	session_decode-off=Corrupt:lane stream overrun	session_reader-off=Corrupt:lane stream overrun	frames_limits-off=Corrupt:lane stream overrun	region_tiles-off=Corrupt:lane stream overrun	header=ok	previews=ok
+cs/mixed-page-own-table	ok
+cs/mixed-page-own-table-bad	ok	frames=Corrupt:file checksum mismatch	frames_limits=Corrupt:file checksum mismatch
+cs/page-own-table	ok
+cs/page-own-table-bad	ok	frames=Corrupt:file checksum mismatch	frames_limits=Corrupt:file checksum mismatch
+cs/frame-own-table	ok
+cs/frame-own-table-bad	ok	frames=Corrupt:file checksum mismatch	frames_limits=Corrupt:file checksum mismatch
+cs/table-last-data-flip	Corrupt:file checksum mismatch	decode_with_limits-off=ok!	threads_limits4-off=ok!	stream_limits-off=ok!	reader=Corrupt:file checksum mismatch+rows!	reader_chunked=Corrupt:file checksum mismatch+rows!	reader-off=ok!	session_decode-off=ok!	session_reader=Corrupt:file checksum mismatch+rows!	session_reader-off=ok!	frames_limits-off=ok!	region_tiles-off=ok!	header=ok	previews=ok
+cs/large-piece-data-flip	Corrupt:file checksum mismatch	decode_with_limits-off=ok!	threads_limits4-off=ok!	stream_limits-off=ok!	reader=Corrupt:file checksum mismatch+rows!	reader_chunked=Corrupt:file checksum mismatch+rows!	reader-off=ok!	session_decode-off=ok!	session_reader=Corrupt:file checksum mismatch+rows!	session_reader-off=ok!	frames_limits-off=ok!	region_tiles-off=ok!	header=ok	previews=ok
+cs/u32-digest-flip	Corrupt:file checksum mismatch	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok	previews=ok
+fr/page-holds-frames	ok
+fr/mixed-page-holds-frames	ok	frames=Corrupt:page holds frames	frames_limits=Corrupt:page holds frames	frames_limits-off=Corrupt:page holds frames
+lm/pixels-at-limit	ok	region_tiles=TooLarge	region_tiles-off=TooLarge
+lm/pixels-over	TooLarge	decode=ok	decode_into=ok	threads1=ok	threads3=ok	threads8=ok	stream=ok	frames=ok	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+lm/bytes-over	TooLarge	decode=ok	decode_into=ok	threads1=ok	threads3=ok	threads8=ok	stream=ok	frames=ok	region=ok	region_threads4=ok	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+lm/lossy-bytes-at-limit	ok	region_tiles=TooLarge	region_tiles-off=TooLarge
+lm/lossy-bytes-over	TooLarge	decode=ok	decode_into=ok	threads1=ok	threads3=ok	threads8=ok	stream=ok	frames=ok	region=ok	region_threads4=ok	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+lm/bytes-over-one-row-fits	TooLarge	decode=ok	decode_into=ok	threads1=ok	threads3=ok	threads8=ok	stream=ok	frames=ok	region=ok	region_threads4=ok	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+lm/pixels-over-and-corrupt	TooLarge	decode=Corrupt:unit table exceeds DATA	decode_into=Corrupt:unit table exceeds DATA	threads1=Corrupt:unit table exceeds DATA	threads3=Corrupt:unit table exceeds DATA	threads8=Corrupt:unit table exceeds DATA	stream=Corrupt:unit table exceeds DATA	frames=Corrupt:unit table exceeds DATA	region=Corrupt:unit table exceeds DATA	region_threads4=Corrupt:unit table exceeds DATA	region_tiles=Corrupt:unit table exceeds DATA	region_tiles-off=Corrupt:unit table exceeds DATA	header=ok	probe=ok	previews=ok	remux=ok	plane_builder=ok
+lm/pixels-over-and-mismatch	TooLarge	decode=Corrupt:file checksum mismatch	decode_into=Corrupt:file checksum mismatch	threads1=Corrupt:file checksum mismatch	threads3=Corrupt:file checksum mismatch	threads8=Corrupt:file checksum mismatch	stream=Corrupt:file checksum mismatch	frames=Corrupt:file checksum mismatch	region=Corrupt:file checksum mismatch	region_threads4=Corrupt:file checksum mismatch	region_tiles=Corrupt:file checksum mismatch	region_tiles-off=ok	header=ok	probe=Corrupt:file checksum mismatch	previews=ok	remux=Corrupt:file checksum mismatch	plane_builder=Corrupt:file checksum mismatch
+lm/pixels-over-and-bad-record	TooLarge	decode=Corrupt:bad file checksum header record	decode_into=Corrupt:bad file checksum header record	threads1=Corrupt:bad file checksum header record	threads3=Corrupt:bad file checksum header record	threads8=Corrupt:bad file checksum header record	stream=Corrupt:bad file checksum header record	frames=Corrupt:bad file checksum header record	region=Corrupt:bad file checksum header record	region_threads4=Corrupt:bad file checksum header record	region_tiles=Corrupt:bad file checksum header record	region_tiles-off=ok	header=ok	probe=Corrupt:bad file checksum header record	previews=Corrupt:bad file checksum header record	remux=Corrupt:bad file checksum header record	plane_builder=Corrupt:bad file checksum header record
+lm/later-page-over	ok	reader=TooLarge	reader_chunked=TooLarge	reader-off=TooLarge	session_reader=TooLarge	session_reader-off=TooLarge	frames_limits=TooLarge	frames_limits-off=TooLarge	region_tiles=TooLarge	region_tiles-off=TooLarge
+rv/base-rgb	ok
+rv/a-loc-vndr-as-exif	Corrupt:repeated chunk
+rv/a-loc-vndr-as-mdcv	Corrupt:bad mDCv
+rv/a-loc-vndr-as-clli	Corrupt:bad cLLI
+rv/a-loc-vndr-as-zzzz	Unsupported:unknown critical chunk
+rv/a-loc-vndr-as-badtag	Corrupt:invalid chunk tag
+rv/a-loc-vndr-as-csum	Corrupt:file checksum without its header record	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader-off=ok	session_decode-off=ok	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok	previews=ok
+rv/a-loc-vndr-as-pdat	ok	remux=Unsupported:metadata remux requires rebuilding plane indexes	plane_builder=InvalidInput:primary already contains plane chunks
+rv/a-loc-vndr-as-anim3	Corrupt:aNIM kind 3 needs the feature mixed_pages
+rv/a-loc-vndr-as-anim9-signal	ok	frames=Unsupported:unknown aNIM kind	frames_limits=Unsupported:unknown aNIM kind	frames_limits-off=Unsupported:unknown aNIM kind
+rv/a-loc-xmp-as-mcmp	Corrupt:invalid compressed metadata identity
+rv/b-badtag-past-end	Corrupt:invalid chunk tag
+rv/b-zzzz-past-end	Unsupported:unknown critical chunk
+rv/b-mdcv-past-end	Corrupt:bad mDCv
+rv/b-dup-exif-past-end	Corrupt:repeated chunk
+rv/b-mcmp-huge-before-data	TooLarge
+rv/b-mcmp-huge-after-data	TooLarge	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+rv/b-anim-after-data-past-end	Corrupt:aNIM after DATA	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+rv/b-mixed-signal-and-dup-after	Corrupt:repeated chunk	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+rv/b-mixed-signal-no-data	Corrupt:no DATA chunk	header=ok	previews=ok
+rv/b-two-csum-before-data	Corrupt:repeated chunk	decode_with_limits-off=ok	threads_limits4-off=ok	stream_limits-off=ok	reader=Corrupt:file checksum without its header record	reader_chunked=Corrupt:file checksum without its header record	reader-off=ok	session_decode-off=ok	session_reader=Corrupt:file checksum without its header record	session_reader-off=ok	frames_limits-off=ok	region_tiles-off=ok	header=ok
+rv/c-csumlast-base	ok
+rv/c-csumlast-good-mcmp-after	ok
+rv/c-csumlast-bad-mcmp-after	Corrupt:metadata raw length	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+rv/c-csumlast-dup-exif-after	Corrupt:repeated chunk	region_tiles-off=ok	header=ok	previews=ok
+rv/c-csumlast-anim-after	Corrupt:aNIM after DATA	region_tiles-off=ok	header=ok	previews=ok
+rv/c-csumlast-bad-mdcv-after	Corrupt:bad mDCv	region_tiles-off=ok	header=ok	previews=ok
+rv/c-csumlast-zzzz-after	Unsupported:unknown critical chunk	region_tiles-off=ok	header=ok	previews=ok
+rv/c-csumfirst-dup-exif-after	Corrupt:repeated chunk	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok
+rv/d-anim-kind-flip-table-first-unflipped	ok
+rv/d-anim-kind-flip-table-first	Corrupt:file checksum mismatch	decode_with_limits-off=Corrupt:aNIM kind 3 needs the feature mixed_pages	threads_limits4-off=Corrupt:aNIM kind 3 needs the feature mixed_pages	stream_limits-off=Corrupt:aNIM kind 3 needs the feature mixed_pages	reader-off=Corrupt:aNIM kind 3 needs the feature mixed_pages	session_decode-off=Corrupt:aNIM kind 3 needs the feature mixed_pages	session_reader-off=Corrupt:aNIM kind 3 needs the feature mixed_pages	frames_limits-off=Corrupt:aNIM kind 3 needs the feature mixed_pages	region_tiles-off=Corrupt:aNIM kind 3 needs the feature mixed_pages	header=Corrupt:aNIM kind 3 needs the feature mixed_pages
+rv/d-anim-kind-flip-table-last-unflipped	ok
+rv/d-anim-kind-flip-table-last	Corrupt:aNIM kind 3 needs the feature mixed_pages
+rv/d-exif-tag-flip-to-dup	Corrupt:repeated chunk
+rv/e-mcmp-over-cap-and-corrupt	Corrupt:metadata raw length	region=ok	region_threads4=ok	region_tiles=ok	region_tiles-off=ok	header=ok	previews=ok	remux=TooLarge
+rv/e-mcmp-over-cap-valid	ok	remux=TooLarge
+cap/feature-bit-64	Unsupported:unknown feature
+cap/feature-bit-300	Unsupported:unknown feature
+cap/implied-declared	ok
+cap/lossy-dc32	ok
+cap/lossy-dc32-undeclared	Corrupt:32-bit DC without the feature samples_32	header=ok	probe=ok	previews=ok	plane_builder=ok
+cap/lossy-layouts	ok
+cap/lossy-layouts-retired-id	Unsupported:unknown lossy head record	header=ok	probe=ok	previews=ok	plane_builder=ok
+cap/lossy-layouts-undeclared	Corrupt:channel layouts without the feature channel_layouts	header=ok	probe=ok	previews=ok	plane_builder=ok
+cap/mixed-lossy-undeclared	ok	frames=Corrupt:page needs a feature the file does not declare	frames_limits=Corrupt:page needs a feature the file does not declare	frames_limits-off=Corrupt:page needs a feature the file does not declare
+cap/mixed-u32	ok
+cap/mixed-u32-undeclared	ok	frames=Corrupt:page needs a feature the file does not declare	frames_limits=Corrupt:page needs a feature the file does not declare	frames_limits-off=Corrupt:page needs a feature the file does not declare
+cap/anim-lossy-frame	ok
+cap/anim-lossy-frame-undeclared	ok	frames=Corrupt:frame needs a feature the file does not declare	frames_limits=Corrupt:frame needs a feature the file does not declare	frames_limits-off=Corrupt:frame needs a feature the file does not declare

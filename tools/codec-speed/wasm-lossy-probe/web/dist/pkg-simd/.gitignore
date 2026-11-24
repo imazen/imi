@@ -1,0 +1,2 @@
+# pinned wasm artifacts: documented by sha256 in benchmarks/wasm_lossy_probe_2026-10-16.md
+*.wasm

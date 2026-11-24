@@ -1,0 +1,60 @@
+[package]
+name = "imij-cmp"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "IMI, JPEG, JPEG XL and AVIF: persisted size, quality and decode studies"
+
+# Separate workspace: JXL/AVIF use explicit git pins. Local JPEG and metric
+# dependencies, including dirty bytes, are preserved by freeze_build.py.
+[workspace]
+
+[dependencies]
+imij = { path = "../imij", features = ["lab", "native-jpeg"] }
+# jxl-encoder main with `LosslessConfig::with_fast_decode` (02850e60).
+jxl-encoder = { git = "https://github.com/imazen/jxl-encoder", rev = "2b13266e84cd125d38321c885f45b5c496eae9e4", default-features = false, features = ["std", "parallel", "jpeg-reencoding"] }
+# zenjxl-decoder PR #61 (fused prefix-code LUT fast path).
+zenjxl-decoder = { git = "https://github.com/imazen/zenjxl-decoder", rev = "51b8d9a0c4baca0699386979505c8b35921d94d2", features = ["threads"] }
+# zenavif main with the zenav1-svt (pure-Rust SVT-AV1) encode backend; decode
+# is rav1d-safe.
+zenavif = { git = "https://github.com/imazen/zenavif", rev = "b5be33bd244e48187dd4a0b3a1605876109b0640", features = ["zenav1-svt"] }
+zenpng = { version = "0.1.4", features = ["_dev"] }
+zenpixels-convert = "=0.2.16"
+almost-enough = "0.4.4"
+enough = "0.4.4"
+rayon = "1.12.0"
+imgref = "1.12.3"
+rgb = "0.8.53"
+fast-ssim2 = { git = "https://github.com/imazen/fast-ssim2", rev = "ebcd7f567b51d33777b124e877ff196866829f37", features = ["imgref", "unstable-internals"] }
+zensim = "0.2.7"
+butteraugli = "0.9.3"
+archmage = "0.9.33"
+
+# Read-only local sources are frozen and hashed by freeze_build.py.
+zenjpeg = { path = "../../zenjpeg/zenjpeg", features = ["__test-utils"] }
+cvvdp = { path = "../../zenmetrics/crates/cvvdp" }
+vmaf = { path = "../../zenmetrics/crates/vmaf" }
+zenyuv = "=0.1.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# Source EXIF positioning is read through a metadata parser, not marker code.
+kamadak-exif = "0.6.1"
+
+[patch.crates-io]
+# Same pixel-type pins as the root workspace (imij does not compile without them).
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "5ed2daded81407e7206fd8de6e8f1d93a5447b5b" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "789d69dbc314e748676b7f2f19542c17473ba40b" }
+how-far = { git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }
+zenanalyze = { path = "../../zenanalyze" }
+# zenavif's unpublished 0.2.0 muxer (zenavif's own workspace patches it the same way).
+zenavif-serialize = { git = "https://github.com/imazen/zenavif", rev = "b5be33bd244e48187dd4a0b3a1605876109b0640" }
+# jxl-encoder's `jpeg-reencoding` needs zenjpeg 0.9.0 (unpublished); same local checkout as
+# the comparator's own zenjpeg dependency, hashed by freeze_build.py.
+zenjpeg = { path = "../../zenjpeg/zenjpeg" }
+
+[profile.release]
+debug = 1
+codegen-units = 1
+lto = "thin"

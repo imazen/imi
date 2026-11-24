@@ -1,0 +1,22 @@
+# Filled in by run.sh: IMIJ_CHECKOUT is the source tree under test.
+[package]
+name = "imij-byte-gate"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "gate"
+path = "main.rs"
+
+[features]
+lab = ["imij/lab"]
+
+[dependencies]
+imij = { path = "IMIJ_CHECKOUT/imij" }
+
+[workspace]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

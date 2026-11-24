@@ -1,0 +1,1468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codestream Atlas</title>
+<link rel="canonical" href="https://imi.imazen.org/codestream-atlas/">
+<script src="../imi/site-origin.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Big+Shoulders+Display:wght@600;800&display=swap">
+<script>
+try {
+  const theme = localStorage.getItem('codestream-atlas-theme');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+} catch (_) { /* The viewer also works without persistent storage. */ }
+</script>
+<style>
+/* Layout: a datasheet bench — byte-axis map across the top, then syntax tree | image plane | field sheet. */
+:root{
+  --paper:#f3f4f1; --sheet:#fbfbf9; --ink:#1b2130; --ink-2:#4b5466; --rule:#cfd3d8; --grid:#e3e6ea; --row-alt:#edf1f5;
+  --accent:#1f5fbf; --play:#c2410c;
+  --k-file:#8c94a3; --k-header:#7c5cbf; --k-chunk:#5b6b85; --k-head:#b8860b;
+  --k-stripe:#3e8e7e; --k-dc:#c0563b; --k-ac:#2f6fd0; --k-alpha:#8a4fb5; --k-rec:#2f8f5b; --k-field:#9aa3b2;
+  --k-payload:#6d8f74; --k-stream:#3f7f9f; --p0:#d97706; --p1:#db2777; --p2:#0891b2;
+  --display:"Big Shoulders Display", "Arial Narrow", sans-serif;
+  --body:"IBM Plex Sans", system-ui, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --paper:#11141b; --sheet:#171b24; --ink:#e3e7ef; --ink-2:#a3acbd; --rule:#343e4e; --grid:#273142; --row-alt:#202a39;
+  --accent:#6ea2ff; --play:#fb923c;
+  --k-file:#6b7486; --k-header:#a48ae6; --k-chunk:#7f90ad; --k-head:#e0b54a;
+  --k-stripe:#59b8a4; --k-dc:#ec7c5f; --k-ac:#6ea2ff; --k-alpha:#bb86e6; --k-rec:#5fc98b; --k-field:#6c7587;
+  --k-payload:#7fa587; --k-stream:#5fa7c9; --p0:#fbbf24; --p1:#f472b6; --p2:#22d3ee;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#11141b; --sheet:#171b24; --ink:#e3e7ef; --ink-2:#a3acbd; --rule:#343e4e; --grid:#273142; --row-alt:#202a39;
+  --accent:#6ea2ff; --play:#fb923c;
+  --k-file:#6b7486; --k-header:#a48ae6; --k-chunk:#7f90ad; --k-head:#e0b54a;
+  --k-stripe:#59b8a4; --k-dc:#ec7c5f; --k-ac:#6ea2ff; --k-alpha:#bb86e6; --k-rec:#5fc98b; --k-field:#6c7587;
+  --k-payload:#7fa587; --k-stream:#5fa7c9; --p0:#fbbf24; --p1:#f472b6; --p2:#22d3ee;
+  color-scheme:dark}
+html{min-height:100%;overflow-y:scroll;scrollbar-gutter:stable}
+body{min-height:100%}
+body{background:var(--paper);color:var(--ink);font:15px/1.55 var(--body);padding-inline:clamp(16px,2vw,32px);padding-block:22px 32px;box-sizing:border-box;max-width:1800px;margin:auto}
+*,*::before,*::after{box-sizing:inherit}
+header.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 20px;margin-bottom:18px}
+h1{font:800 38px/1.05 var(--display);letter-spacing:.02em;margin:0;text-transform:uppercase}
+h1 small{font:500 13px var(--mono);letter-spacing:0;text-transform:none;color:var(--ink-2);margin-left:8px}
+.lede{color:var(--ink-2);max-width:72ch;margin:0;font-size:14px}
+.appearance{display:flex;align-items:center;gap:8px;margin-left:auto;white-space:nowrap}
+.appearance label{font:500 12px var(--mono);color:var(--ink-2)}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:12px 0;padding:12px;background:var(--sheet);border:1px solid var(--rule);border-radius:5px}
+.controls #file{flex:1 1 300px}
+.map-actions #play{background:var(--accent);border-color:var(--accent);color:var(--sheet);font-weight:600}
+.step{display:inline-flex;align-items:center;gap:8px;font:600 13px var(--body);color:var(--ink)}
+.step-number{display:inline-grid;place-items:center;flex:none;width:23px;height:23px;border-radius:50%;background:var(--accent);color:var(--sheet);font:600 12px var(--mono)}
+.section-label{display:flex;align-items:center;flex-wrap:wrap;gap:9px;margin:16px 0 7px;font:600 16px var(--body)}
+.section-label small{font:400 13px var(--body);color:var(--ink-2)}
+select{max-width:100%;min-width:0;text-overflow:ellipsis}
+select,button{font:500 13px var(--mono);color:var(--ink);background:var(--sheet);border:1px solid var(--rule);border-radius:3px;padding:5px 9px;cursor:pointer}
+button:hover,select:hover{border-color:var(--accent)}
+button:focus-visible,select:focus-visible,.node:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button[aria-pressed="true"]{background:var(--accent);color:var(--sheet);border-color:var(--accent)}
+.stat{font:12px var(--mono);color:var(--ink-2);font-variant-numeric:tabular-nums}
+.ok{color:var(--k-rec)} .bad{color:var(--play)}
+.panel{background:var(--sheet);border:1px solid var(--rule);border-radius:5px;min-width:0}
+.panel h2{font:600 12px var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink);margin:0;padding:10px 12px;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;gap:8px;align-items:center}
+.panel h2 span{letter-spacing:0;text-transform:none;font-weight:400}
+.panel h2 .step{font:600 12px var(--mono);letter-spacing:.09em;text-transform:uppercase}
+.panel h2 .step-number{font:600 12px var(--mono)}
+.map-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px}
+#mapwrap{position:relative;margin-top:10px}
+#repr dl{padding:8px 10px}
+#repr{margin-top:10px}
+details.panel>summary.acc-head{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;padding:9px 12px;font:600 12px var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink);user-select:none}
+details.panel>summary.acc-head::-webkit-details-marker{display:none}
+details.panel>summary.acc-head::before{content:"▸";font:600 12px/1 var(--mono);color:var(--accent);flex:none;transition:transform .12s}
+details.panel[open]>summary.acc-head::before{transform:rotate(90deg)}
+details.panel[open]>summary.acc-head{border-bottom:1px solid var(--rule)}
+details.panel>summary.acc-head .acc-sub{letter-spacing:0;text-transform:none;font-weight:400;color:var(--ink-2);margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:68%}
+details.panel>summary.acc-head:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.thumb-strip{display:flex;gap:6px;overflow-x:auto;padding:4px 2px 6px;width:100%;scrollbar-width:thin}
+.thumb-card{flex:0 0 104px;width:104px;max-width:104px;min-width:104px;display:flex;flex-direction:column;gap:2px;padding:5px;background:var(--paper);border:1px solid var(--rule);border-radius:5px;text-align:left;cursor:pointer;overflow:hidden;transition:border-color .12s,transform .12s}
+.thumb-card:hover{border-color:var(--accent);transform:translateY(-1px)}
+.thumb-card[hidden]{display:none}
+.thumb-card[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent);background:color-mix(in srgb,var(--accent) 8%,var(--sheet))}
+.thumb-card canvas{width:100%;height:50px;object-fit:cover;border-radius:3px;background:var(--grid);image-rendering:pixelated;display:block}
+.thumb-card .t-title{display:block;width:100%;font:600 10px/1.2 var(--mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thumb-card .t-tech{display:block;width:100%;font:500 9.5px/1.2 var(--mono);color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thumb-card .t-meta{display:block;width:100%;font:400 9px/1.2 var(--mono);color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.canvas-stage{position:relative}
+.stage-controls{position:absolute;top:10px;left:10px;right:10px;z-index:6;display:flex;gap:6px;align-items:center;pointer-events:none}
+.stage-controls>*{pointer-events:auto}
+.play-floating{background:var(--accent);border:1px solid var(--accent);color:var(--sheet);font:600 11.5px var(--mono);padding:5px 10px;border-radius:5px;box-shadow:0 4px 14px #0005;flex:none}
+.play-floating.autoplay-btn{background:var(--sheet);color:var(--ink);border-color:var(--rule);opacity:.92}
+.play-floating.autoplay-btn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.play-floating:hover{filter:brightness(1.08)}
+.byte-scrubber{flex:1;min-width:90px;max-width:240px;accent-color:var(--play);cursor:ew-resize;background:var(--sheet);padding:2px 6px;border-radius:5px;border:1px solid var(--rule);box-shadow:0 4px 14px #0004}
+.scrubber-row{display:flex;align-items:center;gap:8px;padding:4px 10px 8px;font:11px var(--mono);color:var(--ink-2)}
+.scrubber-row input[type="range"]{flex:1;accent-color:var(--play);cursor:ew-resize}
+.site-nav{display:flex;gap:8px;align-items:center;font:500 12px var(--mono)}
+.site-nav a{color:var(--ink-2);text-decoration:none;padding:4px 8px;border:1px solid var(--rule);border-radius:4px;background:var(--sheet)}
+.site-nav a:hover,.site-nav a[aria-current="page"]{color:var(--accent);border-color:var(--accent)}
+.encgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;padding:8px 10px 10px}
+.encgrid fieldset{border:1px solid var(--rule);border-radius:3px;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;min-width:0;margin:0}
+.encgrid legend{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2)}
+.encgrid label{font:12.5px var(--mono);display:inline-flex;flex-wrap:wrap;gap:5px;align-items:center;min-width:0;max-width:100%}
+.encgrid input,.encgrid select{font:12.5px var(--mono);color:var(--ink);background:var(--paper);border:1px solid var(--rule);border-radius:3px;padding:2px 4px;max-width:100%}
+.encgrid fieldset[disabled]{opacity:.45}
+.encrun{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.encrun code{font:11.5px var(--mono);color:var(--ink-2);overflow-wrap:anywhere;min-width:0}
+#repr dt{white-space:nowrap}
+#map{display:block;width:100%;height:150px;cursor:crosshair}
+#axis{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--ink-2);padding:2px 10px 6px;font-variant-numeric:tabular-nums}
+.bench{display:grid;grid-template-columns:var(--col-left,minmax(0,1fr)) minmax(0,1.5fr) var(--col-right,minmax(0,1.1fr));gap:10px;margin-top:8px;transition:grid-template-columns .15s}
+.panel.collapsed{overflow:hidden}
+.panel.collapsed>*:not(h2){display:none!important}
+.panel.collapsed h2{border-bottom:0;writing-mode:vertical-rl;text-orientation:mixed;padding:12px 6px;height:100%;justify-content:flex-start;gap:12px}
+.panel.collapsed h2 span:not(.collapse-btn){display:inline}
+.collapse-btn{font:600 11px/1 var(--mono);padding:2px 6px;border-radius:3px;background:var(--paper);border:1px solid var(--rule);color:var(--ink-2);cursor:pointer}
+.collapse-btn:hover{color:var(--accent);border-color:var(--accent)}
+@media (max-width:1050px){.bench{grid-template-columns:minmax(0,1fr) minmax(0,1fr)} #sheet{grid-column:1 / -1}}
+#tree{max-height:520px;overflow:auto;scrollbar-gutter:stable;font:12.5px/1.5 var(--mono);padding:4px 0}
+.node{display:flex;gap:6px;padding:1px 10px;cursor:pointer;white-space:nowrap;align-items:baseline}
+.node:hover{background:var(--grid)}
+.node.sel{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.node .sw{flex:0 0 8px;height:8px;border-radius:1px;align-self:center}
+.node .lab{overflow:hidden;text-overflow:ellipsis}
+.node .val{color:var(--ink-2);overflow:hidden;text-overflow:ellipsis}
+.node .rng{margin-left:auto;color:var(--ink-2);font-size:11px;font-variant-numeric:tabular-nums}
+.node .tw{width:10px;color:var(--ink-2)}
+#imgbox{position:relative}
+#img,#three{display:block;width:100%;aspect-ratio:3/2;max-width:100%;background:var(--grid)}
+#three[hidden],#img[hidden]{display:none!important}
+.legend{display:flex;flex-wrap:wrap;gap:4px 12px;padding:6px 10px;font:11.5px var(--mono);color:var(--ink-2)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:1px;margin-right:4px;vertical-align:-1px}
+.seg{display:flex;gap:4px}
+#sheet .body{padding:8px 10px 12px;display:grid;gap:10px}
+dl.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0;margin:0;font:12.5px/1.5 var(--mono)}
+dl.kv dt,dl.kv dd{padding:5px 7px;border-bottom:1px solid var(--grid)}
+dl.kv dt:nth-of-type(even),dl.kv dd:nth-of-type(even){background:var(--row-alt)}
+dl.kv dt{color:var(--ink-2);padding-right:18px} dl.kv dt small{font-size:10.5px;opacity:.8} dl.kv dd{margin:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+@media (max-width:700px){
+  .bench{grid-template-columns:minmax(0,1fr)}
+  .panel h2{flex-wrap:wrap}
+  dl.kv{grid-template-columns:minmax(0,1fr)}
+  dl.kv dt,#repr dt{white-space:normal;border-bottom:0;padding-bottom:1px}
+  dl.kv dd{padding-top:1px}
+}
+.spec{border-left:3px solid var(--accent);padding:4px 0 4px 10px;font-size:13.5px}
+.spec b{font:600 12px var(--mono);display:block;margin-bottom:3px}
+.spec pre{white-space:pre-wrap;font:12px/1.45 var(--mono);margin:0;max-height:220px;overflow:auto;color:var(--ink-2)}
+#hex{font:12px/1.55 var(--mono);overflow-x:auto;white-space:pre;margin:0;font-variant-numeric:tabular-nums}
+#hex span{border-radius:2px}
+#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--paper);font:12px var(--mono);padding:4px 7px;border-radius:3px;z-index:9;max-width:360px}
+#timing{margin-top:10px}
+#timing .body{padding:8px 10px 12px;display:grid;gap:8px}
+#t-summary{margin:0;font:12.5px/1.6 var(--mono);color:var(--ink-2);font-variant-numeric:tabular-nums}
+#t-chart{display:block;width:100%;height:0}
+footer{margin-top:14px;color:var(--ink-2);font-size:13px;max-width:90ch}
+footer code{font:12px var(--mono)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <h1>Codestream Atlas <small>IMI · zen-codestream-trace/0</small></h1>
+  <nav class="site-nav" aria-label="IMI navigation">
+    <a href="../imi/">IMI Home</a>
+    <a href="../imi/why.html">Why IMI?</a>
+    <a href="../imi/encode.html">Encoder Lab</a>
+    <a href="../imi/benchmarks.html">Benchmarks</a>
+    <a href="../gigapixel/">Gigapixel Explorer</a>
+    <a href="./" aria-current="page">Codestream Atlas</a>
+    <a href="../imi/spec.html">Format Spec</a>
+  </nav>
+  <div class="appearance"><label for="theme">Theme</label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option></select></div>
+</header>
+
+<div class="controls" role="group" aria-label="Step 1: choose a file">
+  <span class="step"><span class="step-number">1</span>Choose an encoded IMI file</span>
+  <button id="run-3d-tournament" type="button" style="background:var(--accent);color:var(--sheet);border-color:var(--accent);font-weight:600">★ 3D Auto-Optimize Tournament (Watch Methods Compete)</button>
+  <span class="stat" id="tournament-status"></span>
+  <span class="stat" id="checks" style="margin-left:auto"></span>
+  <label id="fixture-filter" hidden><input id="show-fixtures" type="checkbox"> Include structural test fixtures</label>
+  <select id="file" hidden></select>
+  <div id="file-thumbs" class="thumb-strip" role="listbox" aria-label="Encoded IMI fixtures"></div>
+</div>
+
+<details class="panel" id="encpanel">
+  <summary class="acc-head"><span>Optional: encode an IMI file</span><span class="acc-sub">in your browser (WASI engine in a worker)</span></summary>
+  <div class="controls" style="padding:8px 10px 0;gap:6px" role="group" aria-label="Encode presets">
+    <span class="stat">Presets:</span>
+    <button type="button" data-preset="lossy-xyb">Lossy XYB rANS (Q75)</button>
+    <button type="button" data-preset="lossy-fast">Fast SplitHuf (Q70, groups)</button>
+    <button type="button" data-preset="lossy-adaptive">Adaptive 4×4 + Chroma ½</button>
+    <button type="button" data-preset="lossless-e10">Lossless 16-lane rANS (e10)</button>
+    <button type="button" data-preset="roi-ordinals">Indexed ROI (V4 group IDs)</button>
+    <button type="button" data-preset="quick-packets">Quick QOI Packets</button>
+    <button type="button" data-preset="quick-bits">16-bit Bit-Smart Planes</button>
+  </div>
+  <form id="encform" class="encgrid">
+    <fieldset><legend>Source</legend>
+      <label>Fixture <select id="e-src"></select></label>
+      <label>or your PNG <input type="file" id="e-file" accept="image/png"></label>
+      <label>channels <select id="e-ch"><option value="">as source</option><option>gray</option><option>ga</option><option>rgb</option><option>rgba</option></select></label>
+      <label>sample <select id="e-sample"><option value="">as source</option><option>u8</option><option>u16</option><option>f16</option><option>u32</option><option>i32</option><option>f32</option></select></label>
+      <label>widening <select id="e-expand"><option>replicate</option><option>shift</option><option>scale</option></select></label>
+      <label>significant bits <input id="e-sbits" placeholder="e.g. 10 or 10,10,10" size="9"></label>
+    </fieldset>
+    <fieldset><legend>Mode</legend>
+      <label><input type="radio" name="e-mode" value="lossy" checked> lossy</label>
+      <label><input type="radio" name="e-mode" value="lossless"> lossless</label>
+      <label><input type="radio" name="e-mode" value="quick"> quick</label>
+      <label>effort <input type="number" id="e-effort" min="0" max="10" step="0.5" value="7.5"></label>
+      <label>column groups <input id="e-groups" value="auto" size="5"></label>
+      <label>group IDs <select id="e-ordinals" disabled><option value="on">always (V4)</option></select></label>
+    </fieldset>
+    <fieldset id="e-lossy"><legend>Lossy</legend>
+      <label>quality <input type="number" id="e-q" min="1" max="116" step="1" value="50"></label>
+      <label>color <select id="e-color"><option value="">auto</option><option>xyb</option><option>ycocg</option></select></label>
+      <label>entropy <select id="e-entropy"><option>runlevel</option><option>splithuf</option></select></label>
+      <label>decode speed <select id="e-speed"><option value="">(use entropy)</option><option>compact</option><option>balanced</option><option>fast</option><option>fastest</option></select></label>
+      <label>compact streams <select id="e-compact"><option>on</option><option>off</option></select></label>
+      <label>stripe block rows <input type="number" id="e-sbr" min="1" max="64" value="1"></label>
+      <label>AQ gamma <input type="number" id="e-aq" min="0" max="2" step="0.1" value="0"></label>
+      <label>plane 1 <select id="e-l1"><option value="">dct8,full</option><option>dct4,full</option><option>dct2,full</option><option>adaptive4,full</option></select></label>
+      <label>plane 2 <select id="e-l2"><option value="">dct8,full</option><option>dct8,both</option><option>dct4,full</option><option>adaptive4,full</option><option>adaptive4,both</option><option>dct8,h</option><option>dct8,v</option></select></label>
+      <label>plane 3 <select id="e-l3"><option value="">dct8,full</option><option>dct8,both</option><option>dct4,full</option><option>adaptive4,full</option><option>adaptive4,both</option><option>dct8,h</option><option>dct8,v</option></select></label>
+    </fieldset>
+    <fieldset id="e-quick" disabled><legend>Quick (exact, QOI-style packets)</legend>
+      <label>bit smarts <select id="e-qbits"><option>off</option><option>packed</option><option>packets</option></select></label>
+    </fieldset>
+    <fieldset id="e-lossless" disabled><legend>Lossless</legend>
+      <label>stripe rows <input type="number" id="e-rows" min="1" placeholder="auto"></label>
+      <label>lanes <input type="number" id="e-lanes" min="1" max="16" placeholder="auto"></label>
+      <label>palette <select id="e-pal"><option>on</option><option>off</option></select></label>
+    </fieldset>
+    <div class="encrun"><button type="submit" id="e-go">Encode, trace and open</button> <code id="e-args"></code> <span class="stat" id="e-status"></span></div>
+  </form>
+</details>
+
+<details class="panel" id="repr">
+  <summary class="acc-head"><span>Representation</span><span class="acc-sub" id="repr-summary">output format vs what the payload codes</span></summary>
+  <dl class="kv" id="reprkv"></dl>
+</details>
+
+<details class="panel" id="mapwrap" open>
+  <summary class="acc-head"><span class="step"><span class="step-number">2</span>Byte map &amp; timeline scrubber</span><span class="map-actions" style="margin-left:auto"><span id="maprange" class="acc-sub" style="max-width:none"></span><button id="zoomout" type="button">show all</button></span></summary>
+  <canvas id="map" aria-label="Byte-offset map of nested syntax spans"></canvas>
+  <div id="axis"><span id="ax0"></span><span id="ax1"></span><span id="ax2"></span></div>
+  <div class="scrubber-row"><span>Scrub decode byte offset:</span><input id="map-scrubber" type="range" min="0" max="1000" value="1000" aria-label="Scrub decode order byte position"><span id="scrub-label">100%</span></div>
+</details>
+
+<div class="section-label"><span class="step-number">3</span>Explore 3D syntax layers &amp; technique <small>Exploded 3D layers over the image plane show each coding stage (DC base, ordinal/transform/palette maps, MSB/LSB smart-bit byte planes, and rANS/SplitHuf entropy streams). Hover or click any 3D layer.</small></div>
+<div class="bench" id="bench-grid">
+  <section class="panel" id="tree-panel">
+    <h2><button type="button" id="toggle-tree" class="collapse-btn" title="Collapse or expand Syntax tree" aria-expanded="true">◀</button> Syntax tree <span id="treecount"></span></h2>
+    <div id="tree" role="tree"></div>
+  </section>
+  <section class="panel" id="imgbox">
+    <h2>Image plane · <span id="tech-badge" style="color:var(--accent);font-family:var(--mono)">3D syntax</span>
+      <span class="seg">
+        <button type="button" id="m-3d" aria-pressed="false">3D</button>
+        <button type="button" id="m-px" aria-pressed="true">pixels</button>
+        <button type="button" id="m-bpp" aria-pressed="false">bits/px</button>
+        <button type="button" id="m-grid" aria-pressed="false" title="Resolved transforms, sampling and merged blocks">blocks</button>
+        <select id="grid-plane" aria-label="Transform grid color plane" hidden><option value="0">Y</option><option value="1">X / Co</option><option value="2">B−Y / Cg</option></select>
+      </span>
+    </h2>
+    <div class="canvas-stage">
+      <div class="stage-controls">
+        <button id="play" type="button" class="play-floating">▶ Play decode order</button>
+        <button id="autoplay-toggle" type="button" class="play-floating autoplay-btn" aria-pressed="false" title="Automatically play decode order when switching files">Autoplay: Off</button>
+        <input id="stage-scrubber" class="byte-scrubber" type="range" min="0" max="1000" value="1000" title="Scrub or rewind decode animation" aria-label="Scrub decode animation">
+      </div>
+      <canvas id="img" aria-label="Image with record regions"></canvas>
+      <canvas id="three" hidden aria-label="3D view: syntax tree and coding technique over the image plane"></canvas>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div class="legend" id="gridlegend" hidden></div>
+  </section>
+  <section class="panel" id="sheet">
+    <h2>Field sheet <span id="sheetid"></span> <button type="button" id="toggle-sheet" class="collapse-btn" title="Collapse or expand Field sheet" aria-expanded="true">▶</button></h2>
+    <div class="body">
+      <dl class="kv" id="kv"></dl>
+      <div class="spec" id="spec"></div>
+      <pre id="hex"></pre>
+    </div>
+  </section>
+</div>
+
+<section class="panel" id="timing">
+  <h2><span class="step"><span class="step-number">4</span>Decode timing</span><span class="map-actions"><span class="stat" id="t-status"></span><button id="t-browser" type="button">Time in this browser</button></span></h2>
+  <div class="body">
+    <p id="t-summary"></p>
+    <canvas id="t-chart" aria-label="When each unit decoded, per worker lane"></canvas>
+  </div>
+</section>
+
+<footer>
+  Generated with <code>cargo run --release -p imij --features lab --example codestream_trace -- FILE.imi --rgba OUT</code>. Self-checks: every child lies inside its parent, leaves tile the file without overlap, and any unattributed bytes are listed. In 3D, bar height is the bits per pixel each record spends on its region; DC records sit under the AC layer. Drag to orbit, scroll to zoom.
+</footer>
+<div id="tip" hidden></div>
+
+<script src="v4-grid.js"></script>
+<script src="data.js"></script>
+<script>
+(() => {
+const A = window.ATLAS;
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = n => n.toLocaleString('en-US');
+let F, N, kids, sel = 0, view = [0, 1], mode = 'px', playing = null, revealed = Infinity, bytes, autoplay = false;
+$('mapwrap').addEventListener('toggle', () => { if ($('mapwrap').open && F) drawMap(); });
+function syncBenchColumns() {
+  const bg = $('bench-grid');
+  if (!bg) return;
+  const treeCol = $('tree-panel')?.classList.contains('collapsed');
+  const sheetCol = $('sheet')?.classList.contains('collapsed');
+  bg.style.setProperty('--col-left', treeCol ? '38px' : 'minmax(0,1fr)');
+  bg.style.setProperty('--col-right', sheetCol ? '38px' : 'minmax(0,1.1fr)');
+  requestAnimationFrame(() => { drawImg(); if (mode === '3d') build3d(); });
+}
+if ($('toggle-tree')) {
+  $('toggle-tree').onclick = () => {
+    const p = $('tree-panel'), c = p.classList.toggle('collapsed');
+    $('toggle-tree').textContent = c ? '▶' : '◀';
+    $('toggle-tree').setAttribute('aria-expanded', String(!c));
+    syncBenchColumns();
+  };
+}
+if ($('toggle-sheet')) {
+  $('toggle-sheet').onclick = () => {
+    const p = $('sheet'), c = p.classList.toggle('collapsed');
+    $('toggle-sheet').textContent = c ? '◀' : '▶';
+    $('toggle-sheet').setAttribute('aria-expanded', String(!c));
+    syncBenchColumns();
+  };
+}
+if ($('autoplay-toggle')) {
+  $('autoplay-toggle').onclick = () => {
+    autoplay = !autoplay;
+    $('autoplay-toggle').setAttribute('aria-pressed', String(autoplay));
+    $('autoplay-toggle').textContent = autoplay ? 'Autoplay: On' : 'Autoplay: Off';
+    if (autoplay && !playing) startPlayback(3600);
+    else if (!autoplay && playing) { stopPlay(); revealed = Infinity; if ($('mapwrap').open) drawMap(); drawImg(); paint3d(); }
+  };
+}
+
+function detectTechnique() {
+  if (!N) return 'IMI';
+  const labels = N.map(n => `${n.label} ${n.value ?? ''}`).join(' ');
+  const coef = noteVal('coefficients') || '';
+  // V4 describes coding in its header and setup. A nested numeric DC model's
+  // notes must not classify the enclosing lossy image as lossless.
+  const coding = N.find(n => n.label === 'coding')?.value || '';
+  if (/^1 = lossy/.test(coding)) {
+    const coder = N.find(n => n.label === 'AC coder')?.value;
+    const ent = coder === '3' ? 'SplitHuf' : coder === '0' ? 'rANS' : 'declared AC coder';
+    return `Lossy DCT + ${ent} (DC lossless rANS + AC ${ent})`;
+  }
+  if (/quick-pixel|packet stream|bit-smart/i.test(labels)) return /bit-smart|byte plane/i.test(labels) ? 'Quick Bit-Smart Planes + Packets' : 'Quick QOI-style Packets';
+  if (/template palette/i.test(labels)) return 'Template Palette + Context rANS';
+  if (/bilevel/i.test(labels)) return 'Bilevel Context Coding';
+  if (/value table/i.test(labels)) return 'Scientific Value-Table Map + 16-lane rANS';
+  if (coef) {
+    const ent = /entropy (\w+)/.exec(coef)?.[1] || 'rANS';
+    const ord = /unit record ordinal/.test(labels) ? ' + Unit Ordinals' : '';
+    return `Lossy DCT + ${ent}${ord} (DC lossless rANS + AC ${ent})`;
+  }
+  return /unit record ordinal/.test(labels) ? 'Lossless 16-lane Interleaved rANS + Unit Ordinals' : 'Lossless 16-lane Interleaved rANS';
+}
+
+function displayValue(n) {
+  // Retained trace engines can predate the V4 presentation-enum description.
+  // Display the known header value without changing the trace or byte ranges.
+  if (n.label === 'header version' && n.value === '4 = unknown') return '4 = IMI header version 4';
+  return n.value;
+}
+
+function kindVar(n) {
+  if (n.kind === 'records') return '--k-head';
+  if (n.kind === 'record') {
+    const l = n.label;
+    if (/^record \d/.test(l)) return '--k-head';
+    if (l.startsWith('DC')) return '--k-dc';
+    if (l.startsWith('AC')) return '--k-ac';
+    if (l.startsWith('alpha')) return '--k-alpha';
+    return '--k-rec';
+  }
+  return '--k-' + (n.kind in {file:1,header:1,chunk:1,head:1,stripe:1,field:1,payload:1,stream:1} ? n.kind : 'field');
+}
+const color = n => css(kindVar(n));
+
+function load(i) {
+  F = A.files[i]; N = F.nodes;
+  kids = N.map(() => []);
+  N.forEach(n => { if (n.parent !== null) kids[n.parent].push(n.id); });
+  // Trace annotations may be emitted after their children. Resolve parents
+  // first instead of allowing one undefined depth to blank the whole byte map.
+  const depths = new Map();
+  const depthOf = id => {
+    if (depths.has(id)) return depths.get(id);
+    const parent = N[id].parent;
+    const depth = parent === null ? 0 : depthOf(parent) + 1;
+    depths.set(id, depth);
+    return depth;
+  };
+  N.forEach(n => n.depth = depthOf(n.id));
+  bytes = Uint8Array.from(atob(F.file.base64), c => c.charCodeAt(0));
+  view = [0, F.file.bytes]; sel = 0; revealed = Infinity; stopPlay();
+  const c = F.checks, gaps = c.unattributed.reduce((s, [a, b]) => s + b - a, 0);
+  const raw = F.image ? bitmapBytes(F.image.width, F.image.height) : null;
+  const px = F.image ? F.image.width * F.image.height : 0;
+  $('checks').innerHTML = `<b title="${raw ? `bitmap: ${fmt(raw)} bytes` : ''}">${sizeText(F.file.bytes, raw, px)}</b> · ${F.image ? `${F.image.width}×${F.image.height} ${F.image.channels} ${F.image.sample}` : 'no image'}` +
+    ` · decode ${F.decode === 'ok' ? '<span class="ok">ok</span>' : `<span class="bad">${F.decode}</span>`} · ` +
+    (c.problems.length || gaps ? `<span class="bad">${c.problems.length} problems, ${gaps} unattributed bytes</span>` : '<span class="ok">all bytes attributed, 0 problems</span>');
+  const rk = [];
+  for (const n of N) for (const [k, v] of (n.notes || [])) rk.push([`${k}<small> · ${esc(n.label)}</small>`, v]);
+  $('reprkv').innerHTML = rk.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('') || '<dt>notes</dt><dd>none in this trace</dd>';
+  const tech = detectTechnique();
+  syncScrubbers(Infinity);
+  if ($('tech-badge')) $('tech-badge').textContent = tech;
+  if ($('repr-summary')) {
+    const firstNote = rk[0] ? `${rk[0][0].replace(/<[^>]+>/g, '')}: ${rk[0][1].slice(0, 90)}` : 'click to expand coding notes';
+    $('repr-summary').textContent = `${tech} — ${firstNote}`;
+  }
+  if (three) { three.bars = []; three.scene = null; }
+  buildTree(); legend(); drawImgBase(); select(0); if ($('mapwrap').open) drawMap(); drawTiming();
+  if (mode === '3d') build3d().then(() => { if (autoplay) startPlayback(3600); });
+  else if (autoplay) startPlayback(3600);
+}
+
+/* ---------- byte map (icicle over byte offsets) ---------- */
+const map = $('map'), mctx = map.getContext('2d');
+let rects = [];
+function drawMap() {
+  if (!F || !$('mapwrap').open || !map.clientWidth) return;
+  const dpr = devicePixelRatio || 1, W = map.clientWidth, H = map.clientHeight;
+  map.width = W * dpr; map.height = H * dpr; mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  mctx.fillStyle = css('--sheet'); mctx.fillRect(0, 0, W, H);
+  const maxD = Math.max(...N.map(n => n.depth)), rowH = Math.min(26, (H - 4) / Math.max(1, maxD));
+  const [a, b] = view, sx = W / (b - a);
+  rects = [];
+  mctx.font = `500 11px ${css('--mono')}`; mctx.textBaseline = 'middle';
+  for (const n of N) {
+    if (n.depth === 0 || n.end <= a || n.start >= b) continue;
+    const x0 = Math.max(0, (n.start - a) * sx), x1 = Math.min(W, (Math.max(n.end, n.start + 0.5) - a) * sx);
+    const y = 2 + (n.depth - 1) * rowH, w = Math.max(1, x1 - x0);
+    const dim = n.start >= revealed;
+    mctx.globalAlpha = dim ? 0.18 : (n.id === sel ? 1 : 0.82);
+    mctx.fillStyle = color(n); mctx.fillRect(x0, y, w, rowH - 2);
+    mctx.globalAlpha = 1;
+    if (n.id === sel) { mctx.strokeStyle = css('--ink'); mctx.lineWidth = 2; mctx.strokeRect(x0 + 1, y + 1, w - 2, rowH - 4); }
+    if (w > 46) {
+      mctx.fillStyle = '#fff'; mctx.save(); mctx.beginPath(); mctx.rect(x0, y, w, rowH); mctx.clip();
+      mctx.fillText(n.label, x0 + 4, y + rowH / 2 - 1); mctx.restore();
+    }
+    rects.push([x0, y, w, rowH - 2, n.id]);
+  }
+  if (revealed !== Infinity && revealed >= a && revealed <= b) {
+    const px = (revealed - a) * sx; mctx.fillStyle = css('--play'); mctx.fillRect(px - 1, 0, 2, H);
+  }
+  $('ax0').textContent = fmt(Math.round(a)); $('ax1').textContent = fmt(Math.round((a + b) / 2)); $('ax2').textContent = fmt(Math.round(b));
+  $('maprange').textContent = `bytes ${fmt(Math.round(a))}–${fmt(Math.round(b))} of ${fmt(F.file.bytes)}`;
+}
+function hitMap(ev) {
+  const r = map.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+  let best = null;
+  for (const q of rects) if (x >= q[0] && x <= q[0] + q[2] && y >= q[1] && y <= q[1] + q[3]) best = q[4];
+  return best;
+}
+map.addEventListener('mousemove', ev => { const id = hitMap(ev); tip(ev, id === null ? null : describe(N[id])); });
+map.addEventListener('mouseleave', () => tip(null));
+map.addEventListener('click', ev => { const id = hitMap(ev); if (id !== null) { select(id); zoomTo(id); } });
+$('zoomout').onclick = () => { view = [0, F.file.bytes]; drawMap(); };
+function zoomTo(id) {
+  const n = N[id], pad = Math.max(2, (n.end - n.start) * 0.06);
+  view = [Math.max(0, n.start - pad), Math.min(F.file.bytes, n.end + pad)];
+  if (view[1] - view[0] < 8) view = [Math.max(0, n.start - 4), Math.min(F.file.bytes, n.start + 8)];
+  drawMap();
+}
+
+/* ---------- tree ---------- */
+const open = new Set();
+function buildTree() {
+  open.clear(); open.add(0);
+  N.forEach(n => { if (n.kind === 'file' || n.kind === 'chunk' || n.kind === 'header') open.add(n.id); });
+  renderTree();
+  $('treecount').textContent = `${fmt(N.length)} nodes`;
+}
+function renderTree() {
+  const out = [];
+  const walk = (id, d) => {
+    const n = N[id], k = kids[id], isOpen = open.has(id);
+    out.push(`<div class="node${id === sel ? ' sel' : ''}" role="treeitem" tabindex="0" data-id="${id}" style="padding-left:${10 + d * 12}px">` +
+      `<span class="tw">${k.length ? (isOpen ? '▾' : '▸') : ''}</span><span class="sw" style="background:${color(n)}"></span>` +
+      `<span class="lab">${esc(n.label)}</span>${n.value !== undefined ? `<span class="val">= ${esc(displayValue(n))}</span>` : ''}` +
+      `<span class="rng">${fmt(n.end - n.start)} B</span></div>`);
+    if (isOpen) k.forEach(c => walk(c, d + 1));
+  };
+  walk(0, 0);
+  $('tree').innerHTML = out.join('');
+}
+$('tree').addEventListener('click', ev => {
+  const el = ev.target.closest('.node'); if (!el) return;
+  const id = +el.dataset.id;
+  if (ev.target.classList.contains('tw')) { open.has(id) ? open.delete(id) : open.add(id); renderTree(); return; }
+  if (kids[id].length && sel === id) { open.has(id) ? open.delete(id) : open.add(id); }
+  select(id); zoomTo(id);
+});
+$('tree').addEventListener('keydown', ev => { if (ev.key === 'Enter') ev.target.click(); });
+
+/* ---------- selection & field sheet ---------- */
+function ancestors(id) { const a = []; while (id !== null) { a.push(id); id = N[id].parent; } return a; }
+function select(id) {
+  sel = id;
+  ancestors(id).forEach(a => open.add(a));
+  renderTree(); if ($('mapwrap').open) drawMap(); drawImg(); if (three && three.scene) paint3d();
+  const n = N[id];
+  $('sheetid').textContent = `#${id} · ${n.kind}`;
+  const reg = regionOf(id);
+  const rows = [
+    ['label', n.label], ['kind', n.kind], ['bytes', `${fmt(n.start)} … ${fmt(n.end)}  (${fmt(n.end - n.start)} B)`],
+  ];
+  if (n.value !== undefined) rows.push(['value', displayValue(n)]);
+  if (reg) {
+    const [x, y, w, h] = reg.region;
+    rows.push(['region', `x ${x} y ${y} · ${w}×${h} px`]);
+    const rb = bitmapBytes(w, h);
+    rows.push(['size', `${sizeText(reg.end - reg.start, rb, w * h)}${rb ? ` of a ${fmt(rb)}-byte bitmap` : ''}${reg.id !== id ? ' (enclosing span)' : ''}${reg.label.startsWith('DC') ? ' (DC covers its region at 1/64 resolution)' : ''}`]);
+  }
+  rows.push(['children', kids[id].length]);
+  for (const [k, v] of (n.notes || [])) rows.push([k, v]);
+  for (const [term, text] of glossaryFor(id)) rows.push([`what is ${/^[aeiou]/i.test(term) ? 'an' : 'a'} ${term}?`, text]);
+  $('kv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(String(v))}</dd>`).join('');
+  const sp = A.spec[n.spec];
+  const section = n.spec.startsWith('V4:') ? 'V4 §' + n.spec.slice(3) + ' ' : n.spec === 'LOSSY' ? '' : '§' + n.spec + ' ';
+  $('spec').innerHTML = sp ? `<b>${section}${esc(sp.title)}</b><pre>${esc(sp.text || '')}</pre>` : '<b>no spec section</b>';
+  hexdump(n);
+  const el = document.querySelector(`.node[data-id="${id}"]`); if (el) el.scrollIntoView({block: 'nearest'});
+}
+function regionOf(id) { for (const a of ancestors(id)) if (N[a].region) return N[a]; return null; }
+function hexdump(n) {
+  const start = n.start, end = Math.min(n.end, n.start + 256), fields = [];
+  const collect = id => { for (const c of kids[id]) { if (!kids[c].length) fields.push(N[c]); else collect(c); } };
+  collect(n.id); if (!kids[n.id].length) fields.push(n);
+  const owner = new Map();
+  fields.forEach((f, i) => { for (let b = Math.max(f.start, start); b < Math.min(f.end, end); b++) owner.set(b, i); });
+  let s = '';
+  for (let row = start - (start % 16); row < end; row += 16) {
+    s += row.toString(16).padStart(6, '0') + '  ';
+    for (let b = row; b < row + 16; b++) {
+      if (b < start || b >= end) { s += '   '; continue; }
+      const i = owner.get(b), hex = bytes[b].toString(16).padStart(2, '0');
+      s += i === undefined ? hex + ' ' : `<span style="background:color-mix(in srgb,${color(fields[i])} ${i % 2 ? 28 : 46}%,transparent)" title="${esc(fields[i].label)}">${hex}</span> `;
+    }
+    s += '\n';
+  }
+  if (n.end > end) s += `… ${fmt(n.end - end)} more bytes`;
+  $('hex').innerHTML = s;
+}
+
+/* ---------- image plane ---------- */
+const img = $('img'), ictx = img.getContext('2d');
+let base = null;
+function drawImgBase() {
+  base = null;
+  if (!F.image) return;
+  const { width: w, height: h } = F.image;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  if (F.rgba) {
+    const d = Uint8ClampedArray.from(atob(F.rgba), ch => ch.charCodeAt(0));
+    c.getContext('2d').putImageData(new ImageData(d, w, h), 0, 0);
+  }
+  base = c;
+}
+const records = () => N.filter(n => n.kind === 'record' && n.region);
+function drawImg() {
+  if (!F.image) { ictx.clearRect(0, 0, img.width, img.height); return; }
+  const dpr = devicePixelRatio || 1, W = img.clientWidth, H = img.clientHeight;
+  img.width = W * dpr; img.height = H * dpr; ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const { width: w, height: h } = F.image, s = Math.min(W / w, H / h), ox = (W - w * s) / 2, oy = (H - h * s) / 2;
+  img._t = [s, ox, oy];
+  ictx.fillStyle = css('--grid'); ictx.fillRect(0, 0, W, H);
+  ictx.imageSmoothingEnabled = false;
+  const recs = records();
+  const maxBpp = Math.max(...recs.map(r => 8 * (r.end - r.start) / (r.region[2] * r.region[3])));
+  if (base) {
+    ictx.save();
+    if (revealed !== Infinity) { // only rows whose records have been read are decodable
+      ictx.beginPath();
+      recs.filter(r => r.end <= revealed && !r.label.startsWith('DC')).forEach(r => { const [x, y, rw, rh] = r.region; ictx.rect(ox + x * s, oy + y * s, rw * s, rh * s); });
+      ictx.clip();
+    }
+    ictx.globalAlpha = mode === 'bpp' ? 0.35 : 1;
+    ictx.drawImage(base, ox, oy, w * s, h * s);
+    ictx.restore();
+  }
+  ictx.globalAlpha = 1;
+  for (const r of recs) {
+    const [x, y, rw, rh] = r.region, X = ox + x * s, Y = oy + y * s;
+    if (mode === 'bpp' && !r.label.startsWith('DC')) {
+      const t = (8 * (r.end - r.start) / (rw * rh)) / maxBpp;
+      ictx.fillStyle = rgba(css('--k-ac'), 0.15 + 0.7 * t);
+      ictx.fillRect(X, Y, rw * s, rh * s);
+    }
+    ictx.strokeStyle = color(r); ictx.lineWidth = 1; ictx.globalAlpha = .55;
+    ictx.strokeRect(X + .5, Y + .5, rw * s - 1, rh * s - 1); ictx.globalAlpha = 1;
+  }
+  const tiles = N.filter(n => n.kind === 'tile' && n.region);
+  if (tiles.length) {
+    ictx.save(); ictx.strokeStyle = css('--accent'); ictx.lineWidth = 2;
+    ictx.setLineDash([6, 4]);
+    for (const tile of tiles) {
+      const [x, y, tw, th] = tile.region;
+      ictx.strokeRect(ox + x*s, oy + y*s, tw*s, th*s);
+    }
+    ictx.restore();
+  }
+  if (grid) drawGrid(s, ox, oy); else {
+    $('gridlegend').hidden = true; $('grid-plane').hidden = true;
+    delete img.dataset.v4GridShapes; delete img.dataset.v4GridPlane;
+  }
+  const g = regionOf(sel);
+  if (g) {
+    const [x, y, rw, rh] = g.region;
+    ictx.strokeStyle = css('--play'); ictx.lineWidth = 2.5;
+    ictx.strokeRect(ox + x * s, oy + y * s, rw * s, rh * s);
+  }
+}
+/* ---------- block grid (lossy) ---------- */
+let grid = false;
+$('grid-plane').onchange = () => drawImg();
+$('m-grid').onclick = () => { grid = !grid; $('m-grid').setAttribute('aria-pressed', String(grid)); drawImg(); };
+function noteVal(key) { for (const n of N) for (const [k, v] of (n.notes || [])) if (k === key) return v; return null; }
+/* Plane names and per-plane transform/sampling, from the decoder's notes. */
+function planes() {
+  const ic = noteVal('internal color'), co = noteVal('coefficients');
+  if (!ic || !co) return null;
+  const names = ic.startsWith('Xyb') ? ['Y', 'X', 'B-Y'] : ['Y', 'Co', 'Cg'];
+  const lay = [...co.matchAll(/"(\w+) (\w+)"/g)].map(m => ({ t: m[1], s: m[2] }));
+  return names.map((name, c) => ({ name, t: (lay[c] || {}).t || 'Dct8', s: (lay[c] || {}).s || 'Full' }));
+}
+function findField(id, label) {
+  for (const c of kids[id]) { if (N[c].label === label) return N[c]; const r = findField(c, label); if (r) return r; }
+  return null;
+}
+function drawGrid(s, ox, oy) {
+  const v4 = records().filter(r => (r.notes || []).some(n => n[0] === 'V4 effective cells'));
+  $('grid-plane').hidden = !v4.length;
+  if (v4.length) {
+    const plane = Number($('grid-plane').value), names = noteVal('V4 color') === 'Xyb' ? ['Y','X','B−Y'] : ['Y','Co','Cg'];
+    const lg = $('gridlegend'); lg.hidden = false;
+    if (s*8 < 4) { delete img.dataset.v4GridShapes; delete img.dataset.v4GridPlane; lg.textContent = `V4 · ${names[plane]} · zoom in to see resolved transform boundaries`; return; }
+    let count = 0; const plans = new Set();
+    ictx.save(); ictx.strokeStyle = css(`--p${plane}`); ictx.lineWidth = 1; ictx.beginPath();
+    for (const record of v4) count += ImiV4Grid.visit(record, plane, shape => {
+      ictx.rect(ox + shape.x*s + .5, oy + shape.y*s + .5, Math.max(0,shape.width*s-1), Math.max(0,shape.height*s-1));
+      plans.add(shape.transform.name);
+    });
+    ictx.stroke(); ictx.restore();
+    img.dataset.v4GridShapes = String(count); img.dataset.v4GridPlane = String(plane);
+    lg.textContent = `V4 · ${names[plane]} · ${count} transforms · ${[...plans].join('; ')}`;
+    return;
+  }
+  delete img.dataset.v4GridShapes; delete img.dataset.v4GridPlane;
+  const P = planes();
+  const lg = $('gridlegend');
+  if (!P) { lg.hidden = false; lg.textContent = 'Block grid applies to lossy files.'; return; }
+  const { width: w, height: h } = F.image, pc = [css('--p0'), css('--p1'), css('--p2')];
+  ictx.save();
+  // 8x8 blocks
+  if (s * 8 >= 4) {
+    ictx.strokeStyle = rgba(css('--ink'), 0.18); ictx.lineWidth = 1; ictx.beginPath();
+    for (let x = 8; x < w; x += 8) { ictx.moveTo(ox + x * s + .5, oy); ictx.lineTo(ox + x * s + .5, oy + h * s); }
+    for (let y = 8; y < h; y += 8) { ictx.moveTo(ox, oy + y * s + .5); ictx.lineTo(ox + w * s, oy + y * s + .5); }
+    ictx.stroke();
+  }
+  // Stripes and groups
+  ictx.strokeStyle = rgba(css('--k-stripe'), 0.9); ictx.lineWidth = 1.5;
+  for (const r of records()) {
+    if (!r.label.startsWith('AC')) continue;
+    const [x, y, rw, rh] = r.region; ictx.strokeRect(ox + x * s, oy + y * s, rw * s, rh * s);
+  }
+  // 4x4 (and 2x2) transform choices per block and plane
+  const fixedSub = P.map(p => p.t === 'Dct4' ? 4 : p.t === 'Dct2' ? 2 : 0);
+  const mark = (c, X, Y, sub) => {
+    const cs = 8 * s;
+    if (c === 0) {
+      ictx.strokeStyle = pc[0]; ictx.lineWidth = 1.2; ictx.beginPath();
+      for (let k = sub; k < 8; k += sub) {
+        ictx.moveTo(X + k * s, Y + 1); ictx.lineTo(X + k * s, Y + cs - 1);
+        ictx.moveTo(X + 1, Y + k * s); ictx.lineTo(X + cs - 1, Y + k * s);
+      }
+      ictx.stroke();
+    } else {
+      const d = Math.max(2, cs / 6);
+      ictx.fillStyle = pc[c]; ictx.fillRect(c === 1 ? X + 1 : X + cs - d - 1, Y + 1, d, d);
+    }
+  };
+  let marked = [0, 0, 0], total = 0;
+  for (const r of records()) {
+    if (!r.label.startsWith('AC')) continue;
+    const [x0, y0, rw, rh] = r.region, bw = Math.ceil(rw / 8), bh = Math.ceil(rh / 8);
+    const f = findField(r.id, 'transform map');
+    let digits = null, constant = null;
+    if (f) {
+      const m = /per block \d+: ([0-7]+)/.exec(f.value), k = /constant (\d)/.exec(f.value);
+      if (m) digits = m[1]; else if (k) constant = +k[1];
+    }
+    for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
+      const b = by * bw + bx, mode = digits ? +digits[b] : constant !== null ? constant : 0;
+      const X = ox + (x0 + bx * 8) * s, Y = oy + (y0 + by * 8) * s;
+      total++;
+      for (let c = 0; c < 3; c++) {
+        const sub = (mode >> c) & 1 ? 4 : fixedSub[c];
+        if (sub) { marked[c]++; if (s * 8 >= 6) mark(c, X, Y, sub); }
+      }
+    }
+  }
+  ictx.restore();
+  const half = P.filter(p => p.s !== 'Full').map(p => `${p.name} (${p.s})`);
+  lg.hidden = false;
+  lg.innerHTML = `<span><i style="background:${rgba(css('--ink'), .35)}"></i>8×8 block</span><span><i style="background:var(--k-stripe)"></i>stripe / group record</span>` +
+    P.map((p, c) => `<span><i style="background:var(--p${c})"></i>${esc(p.name)}: ${p.t}${p.t === 'Adaptive4' ? ' (8×8 or 4×4 per block)' : ''} · 4×4 in ${marked[c]}/${total} blocks</span>`).join('') +
+    (half.length ? `<span>half-sampled, upsampled on decode: ${esc(half.join(', '))}</span>` : '<span>all planes full resolution (4:4:4)</span>');
+}
+
+function hitImg(ev) {
+  if (!img._t) return null;
+  const r = img.getBoundingClientRect(), [s, ox, oy] = img._t;
+  const x = (ev.clientX - r.left - ox) / s, y = (ev.clientY - r.top - oy) / s;
+  let best = null;
+  for (const n of records()) { const [rx, ry, rw, rh] = n.region; if (x >= rx && x < rx + rw && y >= ry && y < ry + rh && (!best || !n.label.startsWith('DC'))) best = n; }
+  return best;
+}
+img.addEventListener('mousemove', ev => { const n = hitImg(ev); tip(ev, n && describe(n)); });
+img.addEventListener('mouseleave', () => tip(null));
+img.addEventListener('click', ev => { const n = hitImg(ev); if (n) { select(n.id); zoomTo(n.id); } });
+function legend() {
+  const items = [
+    ['--k-dc','Layer 1: DC base / MSB byte-plane sheet'],
+    ['--k-head','Layer 2: Ordinal / transform / palette / bit-smart map'],
+    ['--k-stream','Layer 3: Entropy stream sheet (rANS / SplitHuf / LSB packets)'],
+    ['--k-ac','AC DCT unit'],['--k-rec','Lossless stripe unit'],['--k-alpha','Alpha plane']
+  ];
+  $('legend').innerHTML = items.map(([v, l]) => `<span><i style="background:var(${v})"></i>${l}</span>`).join('');
+}
+function make3dLabelSprite(text, borderHex) {
+  const c = document.createElement('canvas'); c.width = 280; c.height = 54;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(17, 20, 27, 0.88)';
+  g.strokeStyle = borderHex || '#6ea2ff';
+  g.lineWidth = 3;
+  g.beginPath(); g.roundRect(4, 4, 272, 46, 10); g.fill(); g.stroke();
+  g.fillStyle = '#f3f4f1';
+  g.font = '600 19px "IBM Plex Mono", monospace';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text.slice(0, 26), 140, 27);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(0.24, 0.046, 1);
+  return sp;
+}
+function shapeRoleFor(node, unit, childIdx) {
+  const l = `${node.label} ${node.value ?? ''}`.toLowerCase();
+  if (unit.label.startsWith('DC') || l.startsWith('dc')) return { color: css('--k-dc'), role: 'Layer 1 · DC 8×8 mean base sheet (lossless rANS)', badge: 'DC Base Layer' };
+  if (/ordinal/.test(l)) return { color: css('--k-head'), role: 'Layer · Self-identifying unit ordinal varint', badge: `Ordinal #${node.value ?? ''}` };
+  if (/high|msb|upper|plane 0|significant/.test(l) || (/quick-bits|Bit-Smart/i.test(detectTechnique()) && childIdx === 1)) {
+    return { color: css('--p0'), role: 'Smart-Bits Layer 1 · MSB / High-Byte Plane', badge: 'MSB Byte Plane' };
+  }
+  if (/low|lsb|lower|plane 1|packet/.test(l) && /quick-bits|Bit-Smart/i.test(detectTechnique())) {
+    return { color: css('--p2'), role: 'Smart-Bits Layer 2 · LSB Packet Plane', badge: 'LSB Packet Layer' };
+  }
+  if (/transform map|palette|value table|bilevel|predictor|header|head/.test(l) || node.kind === 'field') {
+    const tag = /palette/.test(l) ? 'Palette Layer' : /transform/.test(l) ? '4×4/8×8 Transform Layer' : /value table/.test(l) ? 'Value-Table Layer' : 'Header / Map Layer';
+    return { color: css('--k-head'), role: `${tag} (structural metadata sheet)`, badge: tag };
+  }
+  if (/splithuf/i.test(detectTechnique())) return { color: css('--k-ac'), role: 'Entropy Layer · SplitHuf Huffman + run-level AC sheet', badge: 'SplitHuf Layer' };
+  if (/quick/i.test(detectTechnique())) return { color: css('--k-stream'), role: 'Packet Layer · QOI-style run/diff/luma/index packets', badge: 'QOI Packet Layer' };
+  if (unit.label.startsWith('AC')) return { color: css('--k-ac'), role: 'Entropy Layer · Interleaved rANS AC coefficient sheet', badge: 'AC rANS Layer' };
+  return { color: css('--k-rec'), role: 'Entropy Layer · 16-lane interleaved rANS stripe sheet', badge: '16-lane rANS Layer' };
+}
+for (const [id, m] of [['m-px','px'],['m-bpp','bpp'],['m-3d','3d']]) $(id).onclick = () => {
+  mode = m; ['m-px','m-bpp','m-3d'].forEach(b => $(b).setAttribute('aria-pressed', String(b === id)));
+  $('img').hidden = m === '3d'; $('three').hidden = m !== '3d';
+  if (m === '3d') build3d(); else drawImg();
+};
+
+/* ---------- 3D: bit density over the image plane ---------- */
+// three.js loads on first use of the 3D view, so the other views never wait for it.
+const THREE_URL = 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
+let THREE = null, threeP = null, three = null;
+async function build3d() {
+  if (mode !== '3d' || !F.image) return;
+  if (!THREE) {
+    threeP = threeP || import(THREE_URL);
+    try { THREE = await threeP; } catch (e) {
+      threeP = null;
+      $('legend').textContent = `3D view unavailable: three.js did not load (${e.message || e}).`;
+      return;
+    }
+    if (mode !== '3d') return;
+  }
+  const cv = $('three'), W = cv.clientWidth, H = cv.clientHeight;
+  if (!three) {
+    let r;
+    try { r = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true }); }
+    catch (error) {
+      $('m-px').click();
+      $('legend').textContent = `3D unavailable (${error.message || error}); showing pixels. Byte fields and transform grids remain available.`;
+      return;
+    }
+    const cam = new THREE.PerspectiveCamera(40, W / H, 0.1, 5000);
+    three = { r, cam, scene: null, rot: [0.9, -0.6], dist: 1.9, bars: [] };
+    let drag = null, moved = false;
+    const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
+    const pick3d = ev => {
+      if (!three || !three.bars.length) return null;
+      const r = cv.getBoundingClientRect();
+      mouse.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
+      mouse.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, three.cam);
+      const hits = raycaster.intersectObjects(three.bars.filter(b => b.visible), false);
+      return hits.length ? hits[0].object : null;
+    };
+    cv.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; moved = false; cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener('pointermove', e => {
+      if (drag) {
+        if (Math.hypot(e.clientX - drag[0], e.clientY - drag[1]) > 3) moved = true;
+        three.rot[0] = Math.min(1.5, Math.max(0.15, three.rot[0] + (e.clientY - drag[1]) * 0.006));
+        three.rot[1] += (e.clientX - drag[0]) * 0.008;
+        drag = [e.clientX, e.clientY];
+        render3d();
+        return;
+      }
+      const hit = pick3d(e);
+      if (hit) {
+        const n = N[hit.userData.id];
+        tip(e, `[${hit.userData.role}] ${describe(n)}`);
+      } else tip(null);
+    });
+    cv.addEventListener('pointerup', e => {
+      const wasClick = drag && !moved;
+      drag = null;
+      if (wasClick) {
+        const hit = pick3d(e);
+        if (hit) { select(hit.userData.id); zoomTo(hit.userData.id); }
+      }
+    });
+    cv.addEventListener('pointerleave', () => tip(null));
+    cv.addEventListener('wheel', e => { e.preventDefault(); three.dist = Math.min(5, Math.max(0.6, three.dist * (1 + e.deltaY * 0.001))); render3d(); }, { passive: false });
+  }
+  legend();
+  three.r.setPixelRatio(devicePixelRatio || 1); three.r.setSize(W, H, false);
+  three.cam.aspect = W / H; three.cam.updateProjectionMatrix();
+  const scene = new THREE.Scene(); three.scene = scene; three.bars = [];
+  const { width: w, height: h } = F.image, S = 1 / Math.max(w, h);
+  if (base) {
+    const tex = new THREE.CanvasTexture(base); tex.magFilter = THREE.NearestFilter; tex.colorSpace = THREE.SRGBColorSpace;
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(w * S, h * S), new THREE.MeshBasicMaterial({ map: tex }));
+    plane.rotation.x = -Math.PI / 2; scene.add(plane);
+  }
+  // Light intensities in three's physical units (the former 0.65 and 0.7, times pi).
+  scene.add(new THREE.AmbientLight(0xffffff, 0.65 * Math.PI));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.7 * Math.PI); dl.position.set(0.5, 1.2, 0.8); scene.add(dl);
+  const recs = records(), maxBpp = Math.max(0.01, ...recs.map(r => 8 * (r.end - r.start) / (r.region[2] * r.region[3])));
+  // Render exploded horizontal 3D layer sheets over each spatial region so multi-stage
+  // structures (Smart-Bits MSB/LSB byte planes, DC base + transform/ordinal map + AC stream,
+  // palette/value-table + 16-lane rANS) read clearly as stacked architectural layers.
+  const labelStride = Math.max(1, Math.ceil(recs.length / 8));
+  recs.forEach((r, idx) => {
+    const [x, y, rw, rh] = r.region, bpp = 8 * (r.end - r.start) / (rw * rh), totalH = 0.28 * bpp / maxBpp + 0.018;
+    const dc = r.label.startsWith('DC'), isAlpha = r.label.startsWith('alpha');
+    const rawKids = kids[r.id]?.length ? kids[r.id].map(cid => N[cid]).filter(c => c.end > c.start) : [r];
+    // Expand nested stream/plane children one level further for smart-bits & multi-stream records.
+    const children = rawKids.flatMap(c => (kids[c.id]?.length && rawKids.length <= 2) ? kids[c.id].map(gc => N[gc]).filter(g => g.end > g.start) : [c]);
+    const layers = children.slice(0, 6);
+    const unitBytes = Math.max(1, r.end - r.start);
+    let yCursor = dc ? 0.014 : isAlpha ? 0.045 : 0.068;
+    const layerGap = 0.022;
+    const cx = (x + rw / 2) * S - w * S / 2, cz = (y + rh / 2) * S - h * S / 2;
+    const rx = rw * S * 0.94, rz = rh * S * 0.94;
+    let topBadge = null, topCol = color(r);
+    layers.forEach((child, cIdx) => {
+      const share = Math.max(0.12, (child.end - child.start) / unitBytes);
+      const hgt = Math.max(0.008, totalH * share);
+      const info = shapeRoleFor(child, r, cIdx);
+      const col = info.color || (child.id === r.id ? color(r) : color(child));
+      topBadge = info.badge; topCol = col;
+      const inset = 1 - cIdx * 0.03;
+      const geom = new THREE.BoxGeometry(rx * inset, hgt, rz * inset);
+      const m = new THREE.Mesh(
+        geom,
+        new THREE.MeshLambertMaterial({ color: new THREE.Color(col), transparent: true, opacity: dc ? 0.62 : 0.86 })
+      );
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(geom),
+        new THREE.LineBasicMaterial({ color: 0x0b0e14, transparent: true, opacity: 0.65 })
+      );
+      m.add(edges);
+      m.position.set(cx, yCursor + hgt / 2, cz);
+      m.userData.id = child.id;
+      m.userData.unitId = r.id;
+      m.userData.role = info.role;
+      m.userData.baseY = yCursor;
+      m.userData.hgt = hgt;
+      m.userData.baseOpacity = dc ? 0.62 : 0.86;
+      scene.add(m);
+      three.bars.push(m);
+      yCursor += hgt + layerGap;
+    });
+    if (!dc && idx % labelStride === 0 && topBadge) {
+      const sp = make3dLabelSprite(`${topBadge} · ${bpp >= 1 ? bpp.toFixed(1) : bpp.toFixed(2)} bpp`, topCol);
+      sp.position.set(cx, yCursor + 0.024, cz);
+      sp.userData.id = r.id;
+      sp.userData.isLabel = true;
+      scene.add(sp);
+      three.bars.push(sp);
+    }
+  });
+  paint3d();
+}
+function paint3d() {
+  if (!THREE || !three || !three.scene) return;
+  const g = regionOf(sel);
+  for (const m of three.bars) {
+    const n = N[m.userData.id];
+    if (!n) continue;
+    const span = Math.max(1, n.end - n.start);
+    const prog = revealed === Infinity ? 1 : Math.max(0, Math.min(1, (revealed - n.start) / span));
+    m.visible = prog > 0;
+    if (m.userData.isLabel) {
+      m.material.opacity = prog;
+      continue;
+    }
+    if (prog > 0) {
+      // Smoothly grow in height and fade in as bytes stream across [n.start, n.end]
+      const eased = 1 - Math.pow(1 - prog, 2);
+      const sy = Math.max(0.04, eased);
+      m.scale.set(1, sy, 1);
+      m.position.y = m.userData.baseY + (m.userData.hgt * sy) / 2;
+      m.material.opacity = m.userData.baseOpacity * (0.25 + 0.75 * eased);
+    }
+    const active = m.userData.id === sel || (g && g.id === m.userData.unitId);
+    m.material.emissive = new THREE.Color(active ? css('--play') : '#000');
+  }
+  render3d();
+}
+function render3d() {
+  if (!three || !three.scene) return;
+  const [el, az] = three.rot, d = three.dist;
+  three.cam.position.set(d * Math.cos(el) * Math.sin(az), d * Math.sin(el), d * Math.cos(el) * Math.cos(az));
+  three.cam.lookAt(0, 0.05, 0);
+  three.r.render(three.scene, three.cam);
+}
+
+/* ---------- decode-order playback & scrubber ---------- */
+function syncScrubbers(atBytes) {
+  const total = F?.file?.bytes || 1;
+  const frac = atBytes === Infinity ? 1 : Math.max(0, Math.min(1, atBytes / total));
+  const val = String(Math.round(frac * 1000));
+  if ($('stage-scrubber')) $('stage-scrubber').value = val;
+  if ($('map-scrubber')) $('map-scrubber').value = val;
+  if ($('scrub-label')) $('scrub-label').textContent = `${fmt(Math.round(frac * total))} / ${fmt(total)} B (${Math.round(frac * 100)}%)`;
+}
+function scrubToFraction(frac) {
+  stopPlay();
+  if (!F) return;
+  const total = F.file.bytes;
+  revealed = frac >= 0.999 ? Infinity : frac * total;
+  syncScrubbers(revealed);
+  const order = N.filter(n => n.kind === 'record');
+  const r = order.findIndex(n => n.start <= revealed && revealed < n.end);
+  if (r !== -1) select(order[r].id);
+  else { if ($('mapwrap').open) drawMap(); drawImg(); paint3d(); }
+}
+for (const id of ['stage-scrubber', 'map-scrubber']) {
+  if ($(id)) $(id).addEventListener('input', e => scrubToFraction(Number(e.target.value) / 1000));
+}
+function stopPlay() { if (playing) cancelAnimationFrame(playing); playing = null; $('play').textContent = '▶ Play decode order'; }
+function startPlayback(dur = 4500) {
+  stopPlay();
+  if (!F) return;
+  view = [0, F.file.bytes];
+  const order = N.filter(n => n.kind === 'record'), total = F.file.bytes;
+  const t0 = performance.now();
+  let cur = -1;
+  $('play').textContent = '■ Stop';
+  const tick = now => {
+    const at = Math.min(total, total * (now - t0) / dur);
+    revealed = at;
+    syncScrubbers(at);
+    if (three) three.rot[1] += 0.0025;
+    const r = order.findIndex(n => n.start <= at && at < n.end);
+    if (r !== -1 && r !== cur) { cur = r; select(order[r].id); } else { if ($('mapwrap').open) drawMap(); drawImg(); paint3d(); }
+    if (at >= total) { playing = requestAnimationFrame(() => { stopPlay(); revealed = Infinity; syncScrubbers(Infinity); if ($('mapwrap').open) drawMap(); drawImg(); paint3d(); }); return; }
+    playing = requestAnimationFrame(tick);
+  };
+  playing = requestAnimationFrame(tick);
+}
+$('play').onclick = () => {
+  if (playing) { stopPlay(); revealed = Infinity; syncScrubbers(Infinity); if ($('mapwrap').open) drawMap(); drawImg(); paint3d(); return; }
+  startPlayback(5000);
+};
+
+/* ---------- decode timing ---------- */
+// Native runs come from the bundle (profile_fixtures.sh); a browser run is
+// made on demand with the same engine command and kept per file.
+const browserRuns = new Map();
+const unitKey = task => { const m = /^stripe (\d+)(?: group (\d+))?/.exec(task); return m ? [+m[1], m[2] === undefined ? 0 : +m[2]] : null; };
+function timingRuns() {
+  const out = [], n = F.timing && F.timing.native;
+  if (n && n.runs) for (const th of Object.keys(n.runs).sort((a, b) => a - b)) out.push({ label: `${n.host || 'native'}, ${th} thread${th === '1' ? '' : 's'}`, run: n.runs[th] });
+  const b = browserRuns.get(F);
+  if (b) out.push({ label: 'this browser, 1 thread', run: b });
+  return out;
+}
+let tRects = [];
+function drawTiming() {
+  const n = F.timing && F.timing.native, b = browserRuns.get(F);
+  const ms = r => `${r.median_ms < 1 ? r.median_ms.toFixed(3) : r.median_ms.toFixed(2)} ms (${fmt(Math.round(r.mpx_s))} MPx/s)`;
+  const lines = [];
+  if (n && n.runs) {
+    lines.push(`Native, ${esc(n.cpu || n.host)}: median of ${n.reps} decodes, input and output in memory: ` +
+      Object.keys(n.runs).sort((a, c) => a - c).map(th => `${th} thread${th === '1' ? '' : 's'} ${ms(n.runs[th])}`).join(' · '));
+  } else lines.push('No native timing is stored for this file.');
+  if (b) {
+    const nat = n && n.runs && n.runs['1'];
+    lines.push(`This browser, WASI engine, 1 thread: ${ms(b)}${nat ? `, ${(b.median_ms / nat.median_ms).toFixed(2)}× the native 1-thread time` : ''}`);
+  }
+  const runs = timingRuns().map(r => ({ ...r, spans: r.run.spans.filter(s => s.kind === 'Work' && unitKey(s.task)) }));
+  if (runs.some(r => r.spans.length)) lines.push('Bars: one per unit, from the observed decode (a profiling pulse adds some time); rows are workers. Click a bar to open its record.');
+  else if (runs.length) lines.push('This payload reports no units to a pulse (native JPEG decodes as one phase).');
+  $('t-summary').innerHTML = lines.join('<br>');
+  const cv = $('t-chart'), ctx = cv.getContext('2d'), dpr = devicePixelRatio || 1, W = cv.clientWidth;
+  const laneH = 9, head = 18, gap = 10;
+  for (const r of runs) {
+    const lanes = [];
+    r.spans.sort((a, c) => a.start_us - c.start_us);
+    for (const s of r.spans) { let i = lanes.findIndex(end => end <= s.start_us); if (i < 0) { i = lanes.length; lanes.push(0); } lanes[i] = s.end_us; s.lane = i; }
+    r.lanes = Math.max(1, lanes.length);
+  }
+  const shown = runs.filter(r => r.spans.length);
+  const H = shown.reduce((h, r) => h + head + r.lanes * laneH + gap, shown.length ? 14 : 0);
+  cv.style.height = H + 'px'; cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H); tRects = [];
+  if (!shown.length) return;
+  const maxUs = Math.max(...shown.map(r => Math.max(...r.spans.map(s => s.end_us))));
+  const x = us => 4 + (W - 8) * us / maxUs;
+  ctx.font = `500 11px ${css('--mono')}`; ctx.textBaseline = 'middle';
+  let y = 0;
+  for (const r of shown) {
+    ctx.fillStyle = css('--ink'); ctx.fillText(`${r.label}: ${r.lanes} worker${r.lanes > 1 ? 's' : ''}, last unit done at ${(Math.max(...r.spans.map(s => s.end_us)) / 1000).toFixed(3)} ms`, 4, y + head / 2);
+    y += head;
+    for (const s of r.spans) {
+      const x0 = x(s.start_us), w = Math.max(1, x(s.end_us) - x0), yy = y + s.lane * laneH;
+      ctx.fillStyle = css('--k-stripe'); ctx.globalAlpha = 0.85; ctx.fillRect(x0, yy + 1, w, laneH - 2); ctx.globalAlpha = 1;
+      tRects.push([x0, yy, w, laneH, s]);
+    }
+    y += r.lanes * laneH + gap;
+  }
+  ctx.fillStyle = css('--ink-2');
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const t = maxUs * f / 1000, lbl = `${t < 1 ? t.toFixed(3) : t.toFixed(2)} ms`;
+    ctx.textAlign = f === 0 ? 'left' : f === 1 ? 'right' : 'center'; ctx.fillText(lbl, x(maxUs * f), y + 4);
+  }
+  ctx.textAlign = 'left';
+}
+function hitTiming(ev) {
+  const r = $('t-chart').getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top;
+  return (tRects.find(([x0, y0, w, h]) => px >= x0 - 1 && px <= x0 + w + 1 && py >= y0 && py <= y0 + h) || [])[4] || null;
+}
+$('t-chart').addEventListener('mousemove', ev => { const s = hitTiming(ev); tip(ev, s && `${s.task} · ${((s.end_us - s.start_us) / 1000).toFixed(3)} ms, from ${(s.start_us / 1000).toFixed(3)} ms`); });
+$('t-chart').addEventListener('mouseleave', () => tip(null));
+$('t-chart').addEventListener('click', ev => {
+  const s = hitTiming(ev), k = s && unitKey(s.task); if (!k) return;
+  const re = new RegExp(`^stripe ${k[0]} group ${k[1]}\\b`), so = new RegExp(`^stripe ${k[0]}\\b`);
+  const node = N.find(n => re.test(n.label)) || N.find(n => so.test(n.label));
+  if (node) { select(node.id); zoomTo(node.id); }
+});
+$('t-browser').onclick = async () => {
+  const st = $('t-status'), btn = $('t-browser'), file = F;
+  btn.disabled = true; st.textContent = 'decoding 16 times…';
+  try {
+    const r = await wasi(['profile-decode', '1', '15'], bytes.slice());
+    if (r.error || r.code) throw new Error(r.error || td.decode(r.stderr).trim() || `exit ${r.code}`);
+    browserRuns.set(file, JSON.parse(td.decode(r.stdout)));
+    st.textContent = '';
+    if (file === F) drawTiming();
+  } catch (e) { st.textContent = 'Timing failed: ' + e.message; }
+  finally { btn.disabled = false; }
+};
+
+/* ---------- misc ---------- */
+function describe(n) {
+  const rb = n.region ? bitmapBytes(n.region[2], n.region[3]) : null;
+  const r = n.region ? ` · ${n.region[2]}×${n.region[3]} px @ ${n.region[0]},${n.region[1]} · ${rb ? pct(n.end - n.start, rb) + ' of bitmap' : ''}` : '';
+  return `${n.label}${n.value !== undefined ? ' = ' + displayValue(n) : ''} · bytes ${fmt(n.start)}–${fmt(n.end)} (${fmt(n.end - n.start)})${r}`;
+}
+function tip(ev, text) {
+  const t = $('tip');
+  if (!text) { t.hidden = true; return; }
+  t.textContent = text; t.hidden = false;
+  t.style.left = Math.min(innerWidth - 370, ev.clientX + 12) + 'px'; t.style.top = (ev.clientY + 14) + 'px';
+}
+/* Uncompressed bitmap bytes of a region in the decoder's output format. */
+const SAMPLE_BYTES = { U8: 1, U16: 2, F16: 2, U32: 4, I32: 4, F32: 4 };
+const CHANNELS = { Gray: 1, GrayAlpha: 2, Rgb: 3, Rgba: 4 };
+function bitmapBytes(w, h) {
+  if (!F.image) return null;
+  return w * h * (CHANNELS[F.image.channels] || 0) * (SAMPLE_BYTES[F.image.sample] || 0);
+}
+/* "8,413 bytes (compressed to 32%, 2.7 bpp)": coded size against the
+   uncompressed bitmap of the output format, and bits per pixel. */
+function pct(coded, raw) {
+  const p = 100 * coded / raw;
+  return `${p >= 10 ? p.toFixed(0) : p >= 1 ? p.toFixed(1) : p.toFixed(2)}%`;
+}
+function sizeText(coded, raw, pixels) {
+  const bpp = pixels ? 8 * coded / pixels : 0, b = bpp >= 1 ? bpp.toFixed(1) : bpp.toFixed(2);
+  const parts = [raw ? `compressed to ${pct(coded, raw)}` : '', pixels ? `${b} bpp` : ''].filter(Boolean);
+  return `${fmt(coded)} bytes${parts.length ? ` (${parts.join(', ')})` : ''}`;
+}
+/* Glossary terms (from the trace) used by this node or its enclosing spans. */
+function glossaryFor(id) {
+  const g = F.glossary || {}, out = [], seen = new Set();
+  for (const a of ancestors(id)) {
+    const t = `${N[a].label} ${N[a].kind} ${N[a].value ?? ''}`;
+    for (const term of Object.keys(g)) {
+      if (!seen.has(term) && new RegExp(`\\b${term}s?\\b`, 'i').test(t)) { seen.add(term); out.push([term, g[term]]); }
+    }
+  }
+  return out;
+}
+function rgba(hex, a) {
+  const h = hex.replace('#', ''), v = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  return `rgba(${v >> 16 & 255},${v >> 8 & 255},${v & 255},${a})`;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+/* ---------- encode in the browser ---------- */
+const ENGINE = 'imij-wasm.wasm';
+let worker = null, jobId = 0;
+const pending = new Map();
+function wasi(args, stdin) {
+  if (!worker) {
+    worker = new Worker('wasi-worker.js');
+    worker.onmessage = (e) => { const p = pending.get(e.data.id); pending.delete(e.data.id); p && p(e.data); };
+    worker.onerror = (e) => { for (const p of pending.values()) p({ error: e.message || 'worker failed to start' }); pending.clear(); };
+  }
+  return new Promise((resolve) => { const id = ++jobId; pending.set(id, resolve); worker.postMessage({ id, url: ENGINE, args, stdin }, [stdin.buffer]); });
+}
+const FIXTURES = (A.sources || []);
+FIXTURES.forEach((f, i) => { const o = document.createElement('option'); o.value = i; o.textContent = f.title || f.name; $('e-src').appendChild(o); });
+if (!FIXTURES.length) { const o = document.createElement('option'); o.textContent = 'no bundled sources'; $('e-src').appendChild(o); }
+const modeOf = () => document.querySelector('input[name="e-mode"]:checked').value;
+function encArgs() {
+  const v = (id) => $(id).value.trim(), a = ['encode'];
+  if (v('e-ch')) a.push('--channels', v('e-ch'));
+  if (v('e-sample')) a.push('--sample', v('e-sample'), '--expand', v('e-expand'));
+  if (v('e-sbits')) a.push('--sbits', v('e-sbits'));
+  const lossy = modeOf() === 'lossy', quick = modeOf() === 'quick';
+  if (quick) {
+    a.push('--quick', '--column-groups', v('e-groups') || 'auto');
+    if (v('e-qbits') !== 'off') a.push('--quick-bits', v('e-qbits'));
+    return a;
+  }
+  a.push(lossy ? '--lossy' : '--lossless', '--effort', v('e-effort'), '--column-groups', v('e-groups') || 'auto');
+  if (lossy) {
+    a.push('--quality', v('e-q'), '--entropy', v('e-entropy'), '--compact-streams', v('e-compact'), '--stripe-block-rows', v('e-sbr'), '--aq-gamma', v('e-aq'));
+    if (v('e-color')) a.push('--color', v('e-color'));
+    if (v('e-speed')) a.push('--decode-speed', v('e-speed'));
+    ['e-l1', 'e-l2', 'e-l3'].forEach((id, i) => { if (v(id)) a.push(`--layout-${i + 1}`, v(id)); });
+  } else {
+    if (v('e-rows')) a.push('--stripe-rows', v('e-rows'));
+    if (v('e-lanes')) a.push('--lanes', v('e-lanes'));
+    a.push('--palette', v('e-pal'));
+  }
+  return a;
+}
+function showArgs() { $('e-args').textContent = 'imij-wasm ' + encArgs().join(' '); }
+$('encform').addEventListener('change', () => {
+  const m = modeOf();
+  $('e-lossy').disabled = m !== 'lossy'; $('e-lossless').disabled = m !== 'lossless'; $('e-quick').disabled = m !== 'quick'; showArgs();
+});
+$('encform').addEventListener('input', showArgs);
+document.querySelectorAll('[data-preset]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const p = btn.dataset.preset;
+    const setMode = m => { document.querySelector(`input[name="e-mode"][value="${m}"]`).checked = true; };
+    $('e-groups').value = 'auto'; $('e-l1').value = ''; $('e-l2').value = ''; $('e-l3').value = '';
+    if (p === 'lossy-xyb') { setMode('lossy'); $('e-q').value = '75'; $('e-color').value = 'xyb'; $('e-entropy').value = 'runlevel'; $('e-effort').value = '8'; }
+    else if (p === 'lossy-fast') { setMode('lossy'); $('e-q').value = '70'; $('e-entropy').value = 'splithuf'; $('e-groups').value = '64'; $('e-effort').value = '7.5'; }
+    else if (p === 'lossy-adaptive') { setMode('lossy'); $('e-q').value = '65'; $('e-l1').value = 'adaptive4,full'; $('e-l2').value = 'adaptive4,both'; $('e-l3').value = 'adaptive4,both'; }
+    else if (p === 'lossless-e10') { setMode('lossless'); $('e-effort').value = '10'; $('e-pal').value = 'on'; }
+    else if (p === 'roi-ordinals') { setMode('lossy'); $('e-q').value = '75'; $('e-groups').value = '64'; $('e-sbr').value = '2'; $('e-ordinals').value = 'on'; }
+    else if (p === 'quick-packets') { setMode('quick'); $('e-qbits').value = 'off'; }
+    else if (p === 'quick-bits') { setMode('quick'); $('e-qbits').value = 'packets'; $('e-sample').value = 'u16'; $('e-expand').value = 'shift'; }
+    $('encform').dispatchEvent(new Event('change'));
+  });
+});
+showArgs();
+const td = new TextDecoder();
+$('encform').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const st = $('e-status'), go = $('e-go');
+  let src, srcName;
+  const file = $('e-file').files[0];
+  if (file) { src = new Uint8Array(await file.arrayBuffer()); srcName = file.name.replace(/\.png$/i, ''); }
+  else if (FIXTURES.length) { const f = FIXTURES[+$('e-src').value]; src = Uint8Array.from(atob(f.png), c => c.charCodeAt(0)); srcName = f.name; }
+  else { st.textContent = 'Choose a PNG first.'; return; }
+  go.disabled = true; st.textContent = 'encoding…';
+  try {
+    const args = encArgs();
+    const enc = await wasi(args, src);
+    if (enc.error || enc.code) throw new Error(enc.error || td.decode(enc.stderr).trim() || `exit ${enc.code}`);
+    const summary = (() => { try { return JSON.parse(td.decode(enc.stderr).trim().split('\n').pop()); } catch { return {}; } })();
+    const imi = enc.stdout;
+    st.textContent = 'tracing…';
+    const tr = await wasi(['trace'], imi.slice());
+    if (tr.error || tr.code) throw new Error(tr.error || td.decode(tr.stderr).trim());
+    const trace = JSON.parse(td.decode(tr.stdout));
+    const dec = await wasi(['decode-rgba'], imi.slice());
+    if (!dec.error && !dec.code) {
+      let b = '';
+      for (let i = 0; i < dec.stdout.length; i += 32768) b += String.fromCharCode(...dec.stdout.subarray(i, i + 32768));
+      trace.rgba = btoa(b);
+    }
+    // Short name for the picker; the full argument list stays in the tooltip.
+    const v = (id) => $(id).value.trim();
+    const conv = [v('e-ch'), v('e-sample'), v('e-sbits') && `${v('e-sbits')}b`].filter(Boolean).join(' ');
+    const how = modeOf() === 'lossy'
+      ? `lossy q${v('e-q')} ${v('e-speed') || v('e-entropy')}${v('e-aq') !== '0' ? ` aq${v('e-aq')}` : ''}${['e-l1', 'e-l2', 'e-l3'].some(i => v(i)) ? ' layouts' : ''}`
+      : modeOf() === 'quick' ? `quick${v('e-qbits') !== 'off' ? ' bits ' + v('e-qbits') : ''}` : `lossless e${v('e-effort')}`;
+    trace.name = `${srcName}${conv ? ' → ' + conv : ''} · ${how}`;
+    A.files.push(trace);
+    const newIdx = A.files.length - 1;
+    addThumbCard(trace, newIdx);
+    const im = trace.image, raw = im ? im.width * im.height * (CHANNELS[im.channels] || 0) * (SAMPLE_BYTES[im.sample] || 0) : 0;
+    sel_.value = String(newIdx); syncThumbSelection(newIdx); load(newIdx);
+    st.innerHTML = `${sizeText(imi.length, raw, im ? im.width * im.height : 0)}, encoded in ${(summary.encode_ms ?? enc.ms).toFixed ? (summary.encode_ms ?? enc.ms).toFixed(1) : enc.ms} ms (wasm, 1 thread)`;
+    offerSave(st, `${srcName}.imi`, imi);
+  } catch (e) {
+    st.textContent = 'Encoder said: ' + e.message;
+  } finally { go.disabled = false; }
+});
+
+// Saving an encoded file. A plain page gets a blob link. Inside the
+// artifact viewer, pages save only through the `downloads`
+// capability, whose extension allowlist has no .imi, so the file goes out
+// as a stored (uncompressed) zip holding the .imi unchanged.
+const inArtifact = !!(window.claude && typeof window.claude.use === 'function');
+const downloadsP = inArtifact ? window.claude.use('downloads').catch(() => null) : Promise.resolve(null);
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(b) {
+  let c = 0xffffffff;
+  for (let i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function zipStore(name, data) {
+  const fn = new TextEncoder().encode(name), crc = crc32(data), n = data.length;
+  const out = new Uint8Array(30 + fn.length + n + 46 + fn.length + 22), v = new DataView(out.buffer);
+  let o = 0;
+  const u32 = (x) => { v.setUint32(o, x, true); o += 4; }, u16 = (x) => { v.setUint16(o, x, true); o += 2; };
+  // Local header, then the data, then one central directory entry, then the end record.
+  u32(0x04034b50); u16(20); u16(0x0800); u16(0); u16(0); u16(0x21); u32(crc); u32(n); u32(n); u16(fn.length); u16(0);
+  out.set(fn, o); o += fn.length; out.set(data, o); o += n;
+  const cd = o;
+  u32(0x02014b50); u16(20); u16(20); u16(0x0800); u16(0); u16(0); u16(0x21); u32(crc); u32(n); u32(n);
+  u16(fn.length); u16(0); u16(0); u16(0); u16(0); u32(0); u32(0);
+  out.set(fn, o); o += fn.length;
+  const cdSize = o - cd;
+  u32(0x06054b50); u16(0); u16(0); u16(1); u16(1); u32(cdSize); u32(cd); u16(0);
+  return out;
+}
+function offerSave(st, filename, bytes) {
+  if (!inArtifact) {
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+    st.insertAdjacentHTML('beforeend', ` · <a href="${url}" download="${esc(filename)}">save .imi</a>`);
+    return;
+  }
+  downloadsP.then((downloads) => {
+    if (!downloads) return;
+    const sep = document.createTextNode(' · '), btn = document.createElement('button'), note = document.createElement('span');
+    btn.textContent = 'save .imi (in a .zip)';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await downloads.save({ filename: filename.replace(/\.imi$/, '') + '.zip', data: zipStore(filename, bytes) });
+        note.textContent = ' saved';
+      } catch (e) {
+        const code = e && e.code;
+        if (code === 'declined') note.textContent = '';
+        else if (code === 'rate_limited') note.textContent = ' a save prompt is already open';
+        else { note.textContent = ' saving is unavailable here'; btn.remove(); sep.remove(); return; }
+      }
+      btn.disabled = false;
+    });
+    st.append(sep, btn, note);
+  });
+}
+
+const sel_ = $('file'), thumbsWrap = $('file-thumbs');
+function shortTechForFile(f) {
+  const n = f.name.toLowerCase();
+  if (n.includes('ordinals')) return 'DCT + rANS + Ordinals';
+  if (n.includes('splithuf') || n.includes('-sh-')) return 'DCT + SplitHuf';
+  if (n.includes('adaptive4')) return 'Adaptive 8×8/4×4 + ½ Chroma';
+  if (n.includes('dct4')) return '4×4 Luma DCT + rANS';
+  if (n.includes('groups64')) return '64-col Groups + rANS';
+  if (n.includes('lossy')) return 'XYB DCT + rANS';
+  if (n.includes('quick-bits')) return '16-bit Bit-Smart Planes';
+  if (n.includes('quick')) return 'Quick QOI Packets';
+  if (n.includes('64units')) return '64-Unit Parallel rANS';
+  if (n.includes('dither16') && !n.includes('nopal')) return 'Template Palette + rANS';
+  if (n.includes('bilevel')) return 'Bilevel Context rANS';
+  if (n.includes('sparse16')) return 'Value-Table + 16-lane rANS';
+  return '16-lane Lossless rANS';
+}
+function addThumbCard(f, i) {
+  const o = document.createElement('option'); o.value = i;
+  const im = f.image, raw = im ? im.width * im.height * (CHANNELS[im.channels] || 0) * (SAMPLE_BYTES[im.sample] || 0) : 0;
+  const px = im ? im.width * im.height : 0, bpp = px ? (8 * f.file.bytes / px).toFixed(2) : '—';
+  o.textContent = `${f.name} · ${fmt(f.file.bytes)} B${raw ? ` (${pct(f.file.bytes, raw)})` : ''}`;
+  sel_.appendChild(o);
+  if (!thumbsWrap) return;
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'thumb-card'; btn.dataset.index = String(i);
+  btn.hidden = !!A.reviewGallery && !f.review;
+  btn.setAttribute('aria-pressed', 'false');
+  const cv = document.createElement('canvas');
+  if (im && f.rgba) {
+    cv.width = im.width; cv.height = im.height;
+    try {
+      const d = Uint8ClampedArray.from(atob(f.rgba), ch => ch.charCodeAt(0));
+      cv.getContext('2d').putImageData(new ImageData(d, im.width, im.height), 0, 0);
+    } catch {}
+  }
+  const tTitle = document.createElement('span'); tTitle.className = 't-title'; tTitle.textContent = f.name;
+  const tTech = document.createElement('span'); tTech.className = 't-tech'; tTech.textContent = shortTechForFile(f);
+  const tMeta = document.createElement('span'); tMeta.className = 't-meta';
+  tMeta.textContent = `${bpp} bpp · ${f.file.bytes >= 1024 ? (f.file.bytes / 1024).toFixed(1) + ' KB' : f.file.bytes + ' B'}`;
+  btn.append(cv, tTitle, tTech, tMeta);
+  btn.onclick = () => { sel_.value = String(i); syncThumbSelection(i); load(i); };
+  thumbsWrap.appendChild(btn);
+}
+function syncThumbSelection(idx) {
+  if (!thumbsWrap) return;
+  for (const b of thumbsWrap.children) {
+    const active = +b.dataset.index === idx;
+    b.setAttribute('aria-pressed', String(active));
+  }
+}
+A.files.forEach((f, i) => addThumbCard(f, i));
+let start = Math.max(0, A.reviewGallery ? A.files.findIndex(f => f.review) : A.files.findIndex(f => /ordinals/.test(f.name) || f.name.startsWith('01_')));
+if (A.reviewGallery) {
+  $('fixture-filter').hidden = false;
+  $('show-fixtures').onchange = () => {
+    for (const card of thumbsWrap.children) card.hidden = !$('show-fixtures').checked && !A.files[+card.dataset.index].review;
+  };
+}
+async function playCandidateSeriesIn3D(traces, statusEl) {
+  for (let i = 0; i < traces.length; i++) {
+    const tr = traces[i];
+    const isLast = i === traces.length - 1;
+    A.files.push(tr);
+    const idx = A.files.length - 1;
+    addThumbCard(tr, idx);
+    sel_.value = String(idx);
+    syncThumbSelection(idx);
+    load(idx);
+    if (statusEl) {
+      statusEl.innerHTML = isLast
+        ? `<strong class="ok">★ Winner Chosen (${i + 1}/${traces.length}): ${esc(tr.name)} (${fmt(tr.file.bytes)} B)</strong>`
+        : `Trying ${i + 1}/${traces.length} in 3D: <b>${esc(tr.name)}</b> (${fmt(tr.file.bytes)} B)…`;
+    }
+    if (!isLast) await new Promise(r => setTimeout(r, 1300));
+  }
+}
+if ($('run-3d-tournament')) {
+  $('run-3d-tournament').onclick = async () => {
+    const btn = $('run-3d-tournament'), st = $('tournament-status');
+    btn.disabled = true;
+    try {
+      const stem = (F?.name || '').split(' · ')[0].replace(/^\d+_/, '');
+      const src = (A.sources || []).find(s => s.name === stem) || A.sources.find(s => s.name === 'dither16') || A.sources[0];
+      const png = Uint8Array.from(atob(src.png), c => c.charCodeAt(0));
+      const isSmall = ['dither16', 'bilevel', 'sparse16'].includes(src.name);
+      const cropArgs = isSmall ? [] : ['--crop', '384x256'];
+      const candidates = [
+        { label: '1/4 Quick Monolithic', args: ['encode', ...cropArgs, '--quick', '--quick-bits', 'off'] },
+        { label: '2/4 Quick Bit-Smart Planes', args: ['encode', ...cropArgs, '--quick', '--quick-bits', 'packets'] },
+        { label: '3/4 Lossless Predictor (No Palette)', args: ['encode', ...cropArgs, '--lossless', '--palette', 'off'] },
+        { label: '★ 4/4 Auto Effort 10 (Palette/Map9 + rANS)', args: ['encode', ...cropArgs, '--lossless', '--effort', '10', '--unit-ordinals', 'on'] },
+      ];
+      const traces = [];
+      for (const c of candidates) {
+        st.textContent = `Encoding ${c.label}…`;
+        const enc = await wasi(c.args, png.slice());
+        if (enc.error || enc.code) continue;
+        const trRes = await wasi(['trace'], enc.stdout.slice());
+        if (trRes.error || trRes.code) continue;
+        const trace = JSON.parse(td.decode(trRes.stdout));
+        const dec = await wasi(['decode-rgba'], enc.stdout.slice());
+        if (!dec.error && !dec.code) {
+          let b = '';
+          for (let k = 0; k < dec.stdout.length; k += 32768) b += String.fromCharCode(...dec.stdout.subarray(k, k + 32768));
+          trace.rgba = btoa(b);
+        }
+        trace.name = `${src.name} · ${c.label}`;
+        traces.push(trace);
+      }
+      traces.sort((a, b) => b.file.bytes - a.file.bytes); // Largest first -> shrinks to ★ Winner last!
+      await playCandidateSeriesIn3D(traces, st);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+try {
+  const tourRaw = sessionStorage.getItem('imi-custom-atlas-tournament');
+  const customRaw = sessionStorage.getItem('imi-custom-atlas-trace');
+  if (tourRaw && location.hash === '#tournament') {
+    const traces = JSON.parse(tourRaw).sort((a, b) => b.file.bytes - a.file.bytes);
+    setTimeout(() => playCandidateSeriesIn3D(traces, $('tournament-status')), 200);
+  } else if (customRaw && location.hash === '#custom') {
+    const customTrace = JSON.parse(customRaw);
+    A.files.push(customTrace);
+    start = A.files.length - 1;
+    addThumbCard(customTrace, start);
+  }
+} catch (_) {}
+sel_.value = start;
+syncThumbSelection(start);
+sel_.onchange = () => { syncThumbSelection(+sel_.value); load(+sel_.value); };
+const themeSelect = $('theme');
+const preferredDark = matchMedia('(prefers-color-scheme: dark)');
+themeSelect.value = document.documentElement.dataset.theme || (preferredDark.matches ? 'dark' : 'light');
+themeSelect.addEventListener('change', () => {
+  document.documentElement.dataset.theme = themeSelect.value;
+  try { localStorage.setItem('codestream-atlas-theme', themeSelect.value); } catch (_) { /* Optional. */ }
+  drawMap(); drawImg(); drawTiming(); if (mode === '3d') build3d();
+});
+addEventListener('resize', () => { drawMap(); drawImg(); drawTiming(); if (mode === '3d') build3d(); });
+preferredDark.addEventListener('change', () => {
+  if (!document.documentElement.dataset.theme) themeSelect.value = preferredDark.matches ? 'dark' : 'light';
+  drawMap(); drawImg(); drawTiming(); if (mode === '3d') build3d();
+});
+load(start);
+})();
+</script>
+</body>
+</html>

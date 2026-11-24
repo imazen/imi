@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>IMI Encoder Lab · Encode images in your browser</title>
+  <link rel="canonical" href="__PAGE_ORIGIN__/imi/encode">
+  <script src="../imi/site-origin.js"></script>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    .container { max-width: 1480px; }
+    .lab {
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+      margin: 20px 0 40px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .controls { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 68px; max-height: calc(100dvh - 84px); overflow-y: auto; }
+    .controls h2, .workspace h2 { font-size: 13px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; font-family: var(--mono); }
+    fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    [hidden] { display: none !important; }
+    legend { padding: 0; font: 600 12px var(--mono); color: var(--muted); margin-bottom: 6px; }
+    .field { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; font-size: 13px; }
+    .field > label { color: var(--ink); }
+    .field output { font: 600 12.5px var(--mono); color: var(--accent); min-width: 3.5em; text-align: right; }
+    .field input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+    .field select, .field input[type=number], .field input[type=text] {
+      font: 500 12.5px var(--mono); background: var(--bg); color: var(--ink);
+      border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px; min-width: 0; max-width: 170px;
+    }
+    .field .hint { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); }
+    .field.unavailable { opacity: .5; }
+    .field.changed > label, .field.changed output { color: var(--warm); }
+    .field.animate { animation: pulse .7s ease-out; border-radius: 6px; }
+    @keyframes pulse { 0% { background: #f3d29344; } 100% { background: transparent; } }
+    .segmented { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+    .segmented label { position: relative; }
+    .segmented input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+    .segmented span {
+      display: block; text-align: center; font: 600 12px var(--mono); padding: 7px 4px;
+      border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink);
+    }
+    .segmented input:checked + span { background: #b5d98b1f; border-color: var(--accent); color: var(--accent); }
+    .segmented input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+    details.adv > summary { cursor: pointer; font: 600 12px var(--mono); color: var(--muted); margin: 2px 0 10px; }
+    details.adv[open] > summary { color: var(--ink); }
+    .samples { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .sample {
+      all: unset; cursor: pointer; display: flex; flex-direction: column; gap: 3px;
+      border: 1px solid var(--line); border-radius: 6px; padding: 4px; background: var(--bg);
+    }
+    .sample:focus-visible { outline: 2px solid var(--accent); }
+    .sample[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .sample canvas { width: 100%; aspect-ratio: 1; object-fit: cover; image-rendering: pixelated; border-radius: 3px; background: #000; }
+    .sample span { font: 500 9.5px/1.2 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    button.btn { cursor: pointer; }
+    button.btn:disabled { opacity: .5; cursor: progress; }
+    .workspace { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+    .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .compare figure { margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .compare figcaption { font: 600 11.5px var(--mono); color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+    .viewport { background: #050706 repeating-conic-gradient(#0b0f0d 0 25%, #050706 0 50%) 0 0 / 16px 16px; border: 1px solid var(--line); border-radius: 6px; overflow: auto; aspect-ratio: 4 / 3; display: grid; place-items: center; }
+    .viewport canvas { image-rendering: pixelated; display: block; }
+    .view-bar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; font: 500 12px var(--mono); color: var(--muted); }
+    .view-bar select { font: 500 12px var(--mono); background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0; }
+    .metrics div { background: var(--panel-alt); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; }
+    .metrics dt { font: 600 10.5px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+    .metrics dd { margin: 2px 0 0; font: 700 16px var(--mono); color: var(--ink); }
+    .metrics dd small { display: block; font: 500 11px var(--mono); color: var(--muted); }
+    .cmd { font: 12px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: var(--ink); margin: 8px 0 0; }
+    .error { color: var(--danger); font: 12.5px var(--mono); white-space: pre-wrap; }
+    .status { font: 12px var(--mono); color: var(--muted); }
+    .opt-head { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; justify-content: space-between; }
+    progress { width: 100%; height: 8px; accent-color: var(--accent); }
+    .opt-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: start; }
+    .plot { width: 100%; height: 220px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+    .plot .pt { fill: var(--codec-imi); opacity: .55; }
+    .plot .pt.ok { fill: var(--accent); opacity: .9; }
+    .plot .pt.best { fill: var(--warm); opacity: 1; stroke: #000; stroke-width: 1; }
+    .plot .pt.current { stroke: var(--ink); stroke-width: 2; }
+    .plot text { fill: var(--muted); font: 10px var(--mono); }
+    .plot line { stroke: var(--line); }
+    .plot .target { stroke: var(--warm); stroke-dasharray: 4 3; }
+    table.cands { margin: 0; font-size: 12px; }
+    table.cands td, table.cands th { padding: 6px 8px; white-space: nowrap; }
+    table.cands tr.best td { background: #f3d29318; }
+    table.cands tr.selected td { outline: 1px solid var(--accent); }
+    table.cands tr.miss td { color: var(--muted); }
+    table.cands button { font: 600 11px var(--mono); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--line); background: var(--panel-alt); color: var(--accent); cursor: pointer; }
+    .cands-wrap { max-height: 320px; overflow: auto; border-radius: 8px; position: relative; }
+    .badge { display: inline-block; font: 700 10px var(--mono); padding: 1px 6px; border-radius: 4px; background: var(--warm); color: #201a0a; margin-left: 6px; }
+    @media (max-width: 1000px) {
+      .lab { grid-template-columns: minmax(0, 1fr); }
+      .controls { position: static; max-height: none; }
+      .opt-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (max-width: 560px) {
+      .compare { grid-template-columns: minmax(0, 1fr); }
+      .samples { grid-template-columns: repeat(3, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./index.html"><span class="mark">i</span> IMI <span>FORMAT</span> <small>Encoder Lab</small></a>
+    <nav class="nav" aria-label="IMI site navigation">
+      <a href="./index.html">IMI Home</a>
+      <a href="./why.html">Why IMI?</a>
+      <a href="./encode.html" aria-current="page">Encoder Lab</a>
+      <a href="./benchmarks.html">Benchmarks</a>
+      <a href="../gigapixel/">Gigapixel Explorer</a>
+      <a href="../codestream-atlas/">3D Codestream Atlas</a>
+      <a href="./spec.html">Format Spec</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="hero" style="padding-bottom:20px">
+      <p class="eyebrow">Encoder Lab</p>
+      <h1>Encode an image as IMI, in your browser</h1>
+      <p class="lede">Pick an image and the encoder settings, then encode. The page decodes the result, measures size, error and time,
+        and lets you download the file. <strong>Auto-optimize</strong> starts from your settings and searches toward a target you choose,
+        showing every candidate it measures.</p>
+    </section>
+
+    <div class="lab">
+      <form class="controls panel" id="controls" aria-label="Encoder settings" onsubmit="return false">
+        <section>
+          <h2>Image</h2>
+          <div class="samples" id="samples" role="group" aria-label="Sample images"></div>
+          <div class="btn-row" style="margin-top:8px;align-items:center">
+            <label class="btn" style="cursor:pointer;padding:6px 10px">Upload PNG<input type="file" id="upload" accept="image/png" hidden></label>
+            <span class="status" id="input-desc"></span>
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label for="crop">Area</label>
+            <select id="crop">
+              <option value="">Whole image</option>
+              <option value="1024x1024">Center 1024 × 1024</option>
+              <option value="512x512" selected>Center 512 × 512</option>
+              <option value="256x256">Center 256 × 256</option>
+            </select>
+          </div>
+        </section>
+
+        <section>
+          <h2>Mode</h2>
+          <div class="segmented" role="radiogroup" aria-label="Encoding mode">
+            <label><input type="radio" name="mode" value="lossy" checked><span>Lossy</span></label>
+            <label><input type="radio" name="mode" value="lossless"><span>Lossless</span></label>
+            <label><input type="radio" name="mode" value="near"><span>Near-lossless</span></label>
+            <label><input type="radio" name="mode" value="quick"><span>Quick</span></label>
+          </div>
+          <p class="status" id="mode-hint" style="margin:8px 0 0"></p>
+        </section>
+
+        <fieldset data-modes="lossy">
+          <legend>Lossy</legend>
+          <div class="field" data-key="quality"><label for="quality">Quality</label><output for="quality" id="quality-out"></output>
+            <input type="range" id="quality" min="0" max="100" step="1" value="80"></div>
+          <div class="field" data-key="speed"><label for="speed">Decode speed</label>
+            <select id="speed"><option value="">Encoder choice</option><option value="compact">Compact (smallest)</option><option value="balanced">Balanced</option><option value="fast">Fast</option><option value="fastest">Fastest</option></select>
+            <span class="hint">A decode speed picks the entropy coder; Fastest also uses YCoCg color.</span></div>
+          <div class="field" data-key="color"><label for="color">Color</label>
+            <select id="color"><option value="xyb">XYB</option><option value="ycocg">YCoCg</option><option value="identity">Original channels</option></select></div>
+          <div class="field" data-key="entropy"><label for="entropy">Entropy coder</label>
+            <select id="entropy"><option value="runlevel">Run-level rANS</option><option value="splithuf">Split Huffman</option></select></div>
+        </fieldset>
+
+        <fieldset data-modes="near">
+          <legend>Near-lossless</legend>
+          <div class="field" data-key="maxerr"><label for="maxerr">Largest sample error</label><output for="maxerr" id="maxerr-out"></output>
+            <input type="range" id="maxerr" min="1" max="32" step="1" value="2">
+            <span class="hint">Every decoded sample stays within this many code values of the input. Integer samples only.</span></div>
+        </fieldset>
+
+        <fieldset data-modes="lossy lossless near">
+          <legend>Effort</legend>
+          <div class="field" data-key="effort"><label for="effort">Encoder effort</label><output for="effort" id="effort-out"></output>
+            <input type="range" id="effort" min="0" max="10" step="0.5" value="7.5">
+            <span class="hint">More effort searches more coding choices. 7.5 is the encoder default.</span></div>
+        </fieldset>
+
+        <fieldset data-modes="lossless near">
+          <legend>Lossless tools</legend>
+          <div class="field" data-key="palette"><label for="palette">Palettes</label>
+            <select id="palette"><option value="on">On</option><option value="off">Off</option></select></div>
+        </fieldset>
+
+        <fieldset data-modes="quick">
+          <legend>Quick</legend>
+          <div class="field" data-key="quickbits"><label for="quickbits">Byte-plane packing</label>
+            <select id="quickbits"><option value="off">Off</option><option value="packed">Packed</option><option value="packets">Packets</option></select>
+            <span class="hint">Helps samples whose low or high byte is constant (for example 8-bit data stored as 16-bit).</span></div>
+        </fieldset>
+
+        <details class="adv" id="adv">
+          <summary>Pixel format and advanced settings</summary>
+          <fieldset>
+            <legend>Pixel format (converted before encoding)</legend>
+            <div class="field" data-key="channels"><label for="channels">Channels</label>
+              <select id="channels"><option value="">As input</option><option value="gray">Gray</option><option value="ga">Gray + alpha</option><option value="rgb">RGB</option><option value="rgba">RGBA</option></select></div>
+            <div class="field" data-key="sample"><label for="sample">Sample type</label>
+              <select id="sample"><option value="">As input</option><option value="u8">u8</option><option value="u16">u16</option><option value="u32">u32</option><option value="f16">f16</option><option value="f32">f32</option><option value="i8">i8</option><option value="i16">i16</option><option value="i32">i32</option><option value="u64">u64</option><option value="i64">i64</option><option value="f64">f64</option></select></div>
+            <div class="field" data-key="expand"><label for="expand">Widening rule</label>
+              <select id="expand"><option value="scale">Scale</option><option value="shift">Shift (low bits zero)</option><option value="replicate">Replicate bits</option></select></div>
+          </fieldset>
+          <fieldset data-modes="lossy" style="margin-top:12px">
+            <legend>Lossy, advanced</legend>
+            <div class="field" data-key="zerobias"><label for="zerobias">Frequency zero-bias</label>
+              <select id="zerobias"><option value="off">Off</option><option value="on">On</option></select></div>
+            <div class="field" data-key="partitions"><label for="partitions">Adaptive block sizes</label>
+              <select id="partitions"><option value="off">Off</option><option value="on">On</option></select>
+              <span class="hint">Lets the encoder merge 16×16 blocks and split 4×4 blocks where it saves rate.</span></div>
+            <div class="field" data-key="chroma"><label for="chroma">Color-plane sampling</label>
+              <select id="chroma"><option value="full">Full</option><option value="h">Half width</option><option value="both">Half width and height</option></select></div>
+            <div class="field" data-key="aq"><label for="aq">Adaptive quantization strength</label><output for="aq" id="aq-out"></output>
+              <input type="range" id="aq" min="0" max="1" step="0.05" value="0">
+              <span class="hint">0 is off (encoder default). Larger values vary the AC step per block with local activity.</span></div>
+            <div class="field" data-key="round"><label for="round">Rounding offset</label><output for="round" id="round-out"></output>
+              <input type="range" id="round" min="0.2" max="0.5" step="0.01" value="0.4"></div>
+          </fieldset>
+          <fieldset style="margin-top:12px">
+            <legend>Layout</legend>
+            <div class="field" data-key="groups"><label for="groups">Column groups</label>
+              <select id="groups"><option value="">Encoder choice</option><option value="none">None</option><option value="64">64 px</option><option value="256">256 px</option><option value="1024">1024 px</option></select>
+              <span class="hint">Narrower groups allow smaller region reads, at some size cost.</span></div>
+            <div class="field" data-key="ordinals"><label for="ordinals">Group IDs</label>
+              <select id="ordinals" disabled><option value="off">Always (V4)</option><option value="on">Always (V4)</option></select></div>
+          </fieldset>
+        </details>
+
+        <div class="btn-row">
+          <button type="button" class="btn primary" id="encode">Encode</button>
+          <button type="button" class="btn" id="reset">Reset settings</button>
+        </div>
+
+        <section class="panel" style="background:var(--panel-alt)" aria-labelledby="opt-title">
+          <h2 id="opt-title">Auto-optimize</h2>
+          <div class="field" data-key="objective"><label for="objective">Target</label>
+            <select id="objective"></select></div>
+          <div class="field" id="target-field"><label for="target">Threshold</label>
+            <input type="number" id="target" step="any"></div>
+          <p class="status" id="objective-hint" style="margin:6px 0 8px"></p>
+          <div class="btn-row">
+            <button type="button" class="btn primary" id="optimize">Auto-optimize</button>
+            <button type="button" class="btn" id="cancel" disabled>Cancel</button>
+          </div>
+        </section>
+      </form>
+
+      <div class="workspace">
+        <section class="panel" aria-label="Comparison">
+          <div class="view-bar">
+            <label>View <select id="view"><option value="side">Side by side</option><option value="diff">Difference ×8</option></select></label>
+            <label>Zoom <select id="zoom"><option value="fit">Fit</option><option value="1">1:1</option><option value="2">2×</option><option value="4">4×</option></select></label>
+            <span class="status" id="status" role="status" aria-live="polite">Loading the encoder…</span>
+          </div>
+          <div class="compare" style="margin-top:10px">
+            <figure><figcaption><span>Input</span><span id="in-dims"></span></figcaption><div class="viewport" id="vp-in"><canvas id="cv-in" width="1" height="1" aria-label="Input image"></canvas></div></figure>
+            <figure><figcaption><span id="out-label">Decoded IMI</span><span id="out-dims"></span></figcaption><div class="viewport" id="vp-out"><canvas id="cv-out" width="1" height="1" aria-label="Decoded image"></canvas></div></figure>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="res-title">
+          <div class="opt-head"><h2 id="res-title" style="margin:0">Result</h2>
+            <div class="btn-row"><a class="btn" id="download" hidden download>Download .imi</a></div></div>
+          <p class="error" id="error" hidden></p>
+          <dl class="metrics" id="metrics" style="margin-top:10px"></dl>
+          <pre class="cmd" id="cmd" aria-label="Equivalent command line"></pre>
+        </section>
+
+        <section class="panel" id="opt-panel" aria-labelledby="optp-title" hidden>
+          <div class="opt-head"><h2 id="optp-title" style="margin:0">Auto-optimize</h2>
+            <div class="btn-row">
+              <button type="button" class="btn" id="use-best" disabled>Use best</button>
+              <button type="button" class="btn" id="restore" disabled>Restore my settings</button>
+            </div></div>
+          <p class="status" id="opt-status" role="status" aria-live="polite" style="margin:8px 0"></p>
+          <progress id="opt-progress" value="0" max="1"></progress>
+          <div class="opt-grid" style="margin-top:12px">
+            <div class="cands-wrap"><table class="cands results">
+              <thead><tr><th scope="col">#</th><th scope="col">Change</th><th scope="col">Bytes</th><th scope="col" id="metric-col">Metric</th><th scope="col">Decode</th><th scope="col">Target</th><th scope="col"><span class="visually-hidden">Load</span></th></tr></thead>
+              <tbody id="cands"></tbody></table></div>
+            <svg class="plot" id="plot" role="img" aria-label="Candidates: file size against the target metric"></svg>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script src="../codestream-atlas/data.js"></script>
+  <script type="module">
+    const $ = id => document.getElementById(id);
+    const td = new TextDecoder();
+    const A = window.ATLAS || { sources: [] };
+    const ENGINE_URL = new URL('../codestream-atlas/imij-wasm.wasm', location.href).href;
+    const WORKER_URL = new URL('../codestream-atlas/wasi-worker.js', location.href).href;
+
+    // ---- Engine: the IMI command-line encoder built for WASI, in a worker. ----
+    let worker = null, jobId = 0;
+    const pending = new Map();
+    function startWorker() {
+      worker = new Worker(WORKER_URL);
+      worker.onmessage = e => { const p = pending.get(e.data.id); pending.delete(e.data.id); p?.resolve(e.data); };
+      worker.onerror = e => { for (const p of pending.values()) p.resolve({ error: e.message || 'worker error' }); pending.clear(); };
+    }
+    function run(args, stdin) {
+      if (!worker) startWorker();
+      return new Promise((resolve, reject) => {
+        const id = ++jobId;
+        pending.set(id, { resolve, reject });
+        const copy = stdin.slice();
+        worker.postMessage({ id, url: ENGINE_URL, args, stdin: copy }, [copy.buffer]);
+      });
+    }
+    // Cancelling stops the running WebAssembly job by ending its worker.
+    function cancelEngine() {
+      if (!worker) return;
+      worker.terminate();
+      worker = null;
+      for (const p of pending.values()) p.reject(new DOMException('Cancelled', 'AbortError'));
+      pending.clear();
+    }
+    async function cli(args, stdin) {
+      const r = await run(args, stdin);
+      if (r.error) throw new Error(r.error);
+      if (r.code) throw new Error(td.decode(r.stderr).trim().replace(/^error:\s*/, '') || `exit ${r.code}`);
+      return r;
+    }
+
+    // ---- Inputs ----
+    const SAMPLE_INFO = {
+      '1407': 'Photo', '7000_plots_line-00056-s6bcec02a_1024x1024': 'Line plot', dither16: 'Dithered art',
+      bilevel: 'Two-tone', sparse16: 'Sparse 16-bit', 'rgb16-pq': '16-bit PQ', rgba8: 'RGBA', gray16: 'Gray 16-bit',
+      rgb8: 'RGB 8-bit', gray8: 'Gray 8-bit', ga8: 'Gray + alpha', odd61x37: 'Odd size',
+    };
+    const ORDER = ['1407', '7000_plots_line-00056-s6bcec02a_1024x1024', 'dither16', 'bilevel', 'sparse16', 'rgb16-pq', 'rgba8', 'gray16'];
+    const samples = ORDER.map(n => A.sources.find(s => s.name === n)).filter(Boolean)
+      .concat(A.sources.filter(s => !ORDER.includes(s.name) && SAMPLE_INFO[s.name]).slice(0, Math.max(0, 8 - ORDER.length)));
+    const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const pngSize = b => ({ width: new DataView(b.buffer, b.byteOffset).getUint32(16), height: new DataView(b.buffer, b.byteOffset).getUint32(20) });
+    let input = null; // { name, png: Uint8Array, width, height }
+    let inputFormat = ''; // channel layout and sample type the input decodes to, e.g. "GrayxU8"
+
+    async function drawThumb(canvas, png) {
+      try {
+        const bmp = await createImageBitmap(new Blob([png], { type: 'image/png' }));
+        canvas.width = Math.min(bmp.width, 160); canvas.height = Math.round(canvas.width * bmp.height / bmp.width);
+        canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        bmp.close();
+      } catch {
+        // 16-bit PNGs the browser cannot draw keep a blank thumbnail; the encoder still reads them.
+      }
+    }
+    samples.forEach((s, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'sample'; btn.dataset.sample = s.name;
+      const png = b64(s.png), { width, height } = pngSize(png);
+      btn.setAttribute('aria-pressed', 'false');
+      btn.setAttribute('aria-label', `${SAMPLE_INFO[s.name] || s.name}, ${width} by ${height}`);
+      const cv = document.createElement('canvas'); cv.setAttribute('data-thumb', '');
+      const label = document.createElement('span'); label.textContent = SAMPLE_INFO[s.name] || s.name;
+      btn.append(cv, label);
+      drawThumb(cv, png);
+      btn.onclick = () => chooseInput({ name: s.name, label: SAMPLE_INFO[s.name] || s.name, png, width, height }, btn);
+      $('samples').append(btn);
+    });
+    $('upload').onchange = async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const png = new Uint8Array(await f.arrayBuffer());
+      if (png.length < 24 || png[1] !== 0x50 || png[2] !== 0x4e || png[3] !== 0x47) { showError('That file is not a PNG.'); return; }
+      chooseInput({ name: f.name.replace(/\.png$/i, ''), label: f.name, png, ...pngSize(png) }, null);
+    };
+
+    // ---- Settings model ----
+    const DEFAULTS = {
+      mode: 'lossy', quality: 80, speed: '', color: 'xyb', entropy: 'runlevel', maxerr: 2, effort: 7.5, palette: 'on',
+      quickbits: 'off', channels: '', sample: '', expand: 'scale', zerobias: 'off', partitions: 'off', chroma: 'full',
+      aq: 0, round: 0.4, groups: '', ordinals: 'off', crop: '512x512',
+    };
+    const KEYS = Object.keys(DEFAULTS).filter(k => k !== 'mode');
+    const RANGES = { quality: v => String(v), maxerr: v => `±${v}`, effort: v => Number(v).toFixed(1), aq: v => (Number(v) === 0 ? 'off' : Number(v).toFixed(2)), round: v => Number(v).toFixed(2) };
+    const LABELS = {
+      quality: 'quality', speed: 'decode speed', color: 'color', entropy: 'entropy', maxerr: 'max error', effort: 'effort', palette: 'palettes',
+      quickbits: 'byte planes', channels: 'channels', sample: 'sample', expand: 'widening', zerobias: 'zero-bias', partitions: 'block sizes',
+      chroma: 'color sampling', aq: 'AQ', round: 'rounding', groups: 'column groups', ordinals: 'ordinals', crop: 'area',
+    };
+    function readSettings() {
+      const s = { mode: document.querySelector('input[name=mode]:checked').value };
+      for (const k of KEYS) { const el = $(k); s[k] = el.type === 'range' ? Number(el.value) : el.value; }
+      return s;
+    }
+    function writeSettings(s, { animate = false, changed = [] } = {}) {
+      document.querySelector(`input[name=mode][value=${s.mode}]`).checked = true;
+      for (const k of KEYS) $(k).value = s[k];
+      refreshUi();
+      if (animate) for (const k of changed) {
+        const f = document.querySelector(`.field[data-key=${k}]`);
+        if (f) { f.classList.remove('animate'); void f.offsetWidth; f.classList.add('animate'); }
+      }
+    }
+    const LOSSY_SAMPLES = ['', 'u8', 'u16', 'u32', 'f16', 'f32'];
+    const INT_SAMPLES = ['', 'u8', 'u16', 'u32', 'i8', 'i16', 'i32', 'u64', 'i64'];
+
+    // Availability follows the engine's own validation: lossy accepts u8/u16/u32/f16/f32
+    // samples, near-lossless needs integer samples, a decode speed fixes the entropy coder
+    // (and Fastest the color transform), and color sampling needs color planes.
+    function refreshUi() {
+      const s = readSettings();
+      document.querySelectorAll('fieldset[data-modes]').forEach(fs => { fs.hidden = !fs.dataset.modes.split(' ').includes(s.mode); });
+      for (const [k, fmt] of Object.entries(RANGES)) $(`${k}-out`).textContent = fmt($(k).value);
+      const allowed = s.mode === 'lossy' ? LOSSY_SAMPLES : s.mode === 'near' ? INT_SAMPLES : null;
+      for (const o of $('sample').options) {
+        o.disabled = allowed ? !allowed.includes(o.value) : false;
+        o.title = o.disabled ? (s.mode === 'lossy' ? 'Lossy supports u8, u16, u32, f16 and f32 samples' : 'Near-lossless needs integer samples') : '';
+      }
+      if ($('sample').selectedOptions[0]?.disabled) { $('sample').value = ''; s.sample = ''; }
+      const speedSet = s.mode === 'lossy' && s.speed !== '';
+      setAvail('entropy', !speedSet, 'Set by the decode speed');
+      setAvail('color', !(speedSet && s.speed === 'fastest'), 'Fastest uses YCoCg');
+      const gray = s.channels === 'gray' || s.channels === 'ga' || (s.channels === '' && /^Gray/.test(inputFormat));
+      setAvail('chroma', !gray, 'Gray images have no color planes');
+      setAvail('expand', s.sample !== '' && s.sample !== 'u8', 'Only applies when widening samples');
+      const hints = {
+        lossy: 'Transform coding: small files, some error. Quality trades size for fidelity.',
+        lossless: 'Exact samples. Effort trades encoding time for size.',
+        near: 'Lossless coding of samples quantized to a guaranteed error bound.',
+        quick: 'Single-pass lossless coding with very low encoder cost; larger files.',
+      };
+      $('mode-hint').textContent = hints[s.mode];
+      const start = optStart?.settings;
+      document.querySelectorAll('.field[data-key]').forEach(f => f.classList.toggle('changed', !!start && optRunning && String(start[f.dataset.key]) !== String(s[f.dataset.key])));
+      updateObjectives();
+      $('cmd').textContent = commandLine(s);
+    }
+    function setAvail(key, ok, why) {
+      const f = document.querySelector(`.field[data-key=${key}]`), el = $(key);
+      el.disabled = !ok || busy || optRunning;
+      f.classList.toggle('unavailable', !ok);
+      f.title = ok ? '' : why;
+      let note = f.querySelector('.why');
+      if (!ok && !note) { note = document.createElement('span'); note.className = 'hint why'; f.append(note); }
+      if (note) note.textContent = ok ? '' : why;
+    }
+    function encodeArgs(s) {
+      const a = ['encode'];
+      if (s.crop) a.push('--crop', s.crop);
+      if (s.channels) a.push('--channels', s.channels);
+      if (s.sample) a.push('--sample', s.sample);
+      if (s.sample && s.sample !== 'u8' && s.expand !== 'scale') a.push('--expand', s.expand);
+      if (s.mode === 'quick') {
+        a.push('--quick');
+        if (s.quickbits !== 'off') a.push('--quick-bits', s.quickbits);
+      } else if (s.mode === 'lossy') {
+        a.push('--lossy', '--quality', String(s.quality), '--effort', String(s.effort));
+        if (s.speed) a.push('--decode-speed', s.speed);
+        if (!(s.speed === 'fastest')) a.push('--color', s.color);
+        if (!s.speed) a.push('--entropy', s.entropy);
+        if (s.zerobias === 'on') a.push('--zero-bias', 'on');
+        if (s.partitions === 'on') a.push('--adaptive-partitions', 'on');
+        if (s.chroma !== 'full') { const t = `dct8,${s.chroma}`; a.push('--layout-2', t, '--layout-3', t); }
+        if (Number(s.aq) > 0) a.push('--aq-gamma', String(s.aq));
+        if (Math.abs(Number(s.round) - 0.4) > 1e-9) a.push('--round', String(s.round));
+      } else {
+        a.push('--lossless', '--effort', String(s.effort));
+        if (s.palette === 'off') a.push('--palette', 'off');
+        if (s.mode === 'near') a.push('--max-error', String(s.maxerr));
+      }
+      if (s.groups) a.push('--column-groups', s.groups);
+      if (s.ordinals === 'on') a.push('--unit-ordinals', 'on');
+      return a;
+    }
+    const commandLine = s => `imij-wasm ${encodeArgs(s).join(' ')} < ${input ? input.label.replace(/\s/g, '_') + (input.label.endsWith('.png') ? '' : '.png') : 'input.png'} > out.imi`;
+    // The exact reference: the same conversion, stored losslessly.
+    function referenceArgs(s) {
+      const a = ['encode'];
+      if (s.crop) a.push('--crop', s.crop);
+      if (s.channels) a.push('--channels', s.channels);
+      if (s.sample) a.push('--sample', s.sample);
+      if (s.sample && s.sample !== 'u8' && s.expand !== 'scale') a.push('--expand', s.expand);
+      a.push('--quick');
+      return a;
+    }
+
+    // ---- Measurement ----
+    // Error is measured on the 8-bit RGBA preview both images decode to (16-bit and float
+    // samples are toned to 8 bits for display first). PSNR covers R, G, B and alpha;
+    // SSIM is the mean over non-overlapping 8x8 windows of BT.601 luma.
+    function compare(ref, dec, w, h) {
+      if (!ref || !dec || ref.length !== dec.length) return null;
+      let sq = 0, maxErr = 0;
+      const n = w * h, ry = new Float32Array(n), dy = new Float32Array(n);
+      for (let i = 0, o = 0; i < n; i++, o += 4) {
+        for (let c = 0; c < 4; c++) { const d = ref[o + c] - dec[o + c]; sq += d * d; const a = d < 0 ? -d : d; if (a > maxErr) maxErr = a; }
+        ry[i] = 0.299 * ref[o] + 0.587 * ref[o + 1] + 0.114 * ref[o + 2];
+        dy[i] = 0.299 * dec[o] + 0.587 * dec[o + 1] + 0.114 * dec[o + 2];
+      }
+      const psnr = sq === 0 ? Infinity : 10 * Math.log10((255 * 255) / (sq / (n * 4)));
+      const C1 = (0.01 * 255) ** 2, C2 = (0.03 * 255) ** 2;
+      let ssim = 0, windows = 0;
+      for (let by = 0; by + 8 <= h; by += 8) for (let bx = 0; bx + 8 <= w; bx += 8) {
+        let mx = 0, my = 0;
+        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { const k = (by + y) * w + bx + x; mx += ry[k]; my += dy[k]; }
+        mx /= 64; my /= 64;
+        let vx = 0, vy = 0, vxy = 0;
+        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { const k = (by + y) * w + bx + x; const a = ry[k] - mx, b = dy[k] - my; vx += a * a; vy += b * b; vxy += a * b; }
+        vx /= 63; vy /= 63; vxy /= 63;
+        ssim += ((2 * mx * my + C1) * (2 * vxy + C2)) / ((mx * mx + my * my + C1) * (vx + vy + C2));
+        windows++;
+      }
+      return { psnr, ssim: windows ? ssim / windows : (sq === 0 ? 1 : null), maxErr, exact: sq === 0 };
+    }
+
+    const refCache = new Map();
+    let inputGeneration = 0;
+    async function reference(s) {
+      const key = `${inputGeneration}|${referenceArgs(s).join(' ')}`;
+      if (!refCache.has(key)) {
+        refCache.set(key, (async () => {
+          const enc = await cli(referenceArgs(s), input.png);
+          const summary = JSON.parse(td.decode(enc.stderr).trim().split('\n').pop());
+          const dec = await cli(['decode-rgba'], enc.stdout);
+          return { rgba: new Uint8ClampedArray(dec.stdout.buffer, dec.stdout.byteOffset, dec.stdout.byteLength), w: summary.w, h: summary.h, format: summary.format, bitmapBytes: summary.bitmap_bytes };
+        })().catch(e => { refCache.delete(key); throw e; }));
+      }
+      return refCache.get(key);
+    }
+
+    async function measure(s, reps) {
+      const source = input;
+      const ref = await reference(s);
+      const t0 = performance.now();
+      const enc = await cli(encodeArgs(s), source.png);
+      const wallEncode = performance.now() - t0;
+      const summary = JSON.parse(td.decode(enc.stderr).trim().split('\n').pop());
+      const imi = enc.stdout;
+      const dec = await cli(['decode-rgba'], imi);
+      const rgba = new Uint8ClampedArray(dec.stdout.buffer, dec.stdout.byteOffset, dec.stdout.byteLength);
+      const prof = JSON.parse(td.decode((await cli(['profile-decode', '1', String(reps), '1'], imi)).stdout));
+      const q = compare(ref.rgba, rgba, ref.w, ref.h);
+      return {
+        settings: { ...s }, reference: ref, inputName: source.name, imi, rgba, w: ref.w, h: ref.h, format: summary.format, bytes: imi.length,
+        bpp: (imi.length * 8) / (ref.w * ref.h), bitmapBytes: summary.bitmap_bytes, encodeMs: summary.encode_ms, wallEncode,
+        decodeMs: prof.median_ms, decodeReps: reps, q,
+      };
+    }
+
+    // ---- Display ----
+    let shown = null;
+    function paint(canvas, rgba, w, h) {
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
+    }
+    function applyZoom() {
+      const z = $('zoom').value;
+      for (const id of ['cv-in', 'cv-out']) {
+        const c = $(id), vp = c.parentElement;
+        if (z === 'fit') {
+          const k = Math.min(vp.clientWidth / c.width, vp.clientHeight / c.height);
+          c.style.width = `${Math.max(1, Math.floor(c.width * k))}px`; c.style.height = `${Math.max(1, Math.floor(c.height * k))}px`;
+        } else { c.style.width = `${c.width * Number(z)}px`; c.style.height = `${c.height * Number(z)}px`; }
+      }
+    }
+    function showResult(r, label = 'Decoded IMI') {
+      shown = r;
+      const rf = r.reference;
+        paint($('cv-in'), rf.rgba, rf.w, rf.h);
+        $('in-dims').textContent = `${rf.w}×${rf.h} · ${rf.format}`;
+        if ($('view').value === 'diff') {
+          const d = new Uint8ClampedArray(r.rgba.length);
+          for (let i = 0; i < d.length; i += 4) { for (let c = 0; c < 3; c++) d[i + c] = Math.min(255, Math.abs(r.rgba[i + c] - rf.rgba[i + c]) * 8); d[i + 3] = 255; }
+          paint($('cv-out'), d, r.w, r.h);
+          $('out-label').textContent = 'Absolute difference ×8';
+        } else {
+          paint($('cv-out'), r.rgba, r.w, r.h);
+          $('out-label').textContent = label;
+        }
+        applyZoom();
+      $('out-dims').textContent = `${r.w}×${r.h} · ${r.format}`;
+      const q = r.q;
+      const fmt = (v, d) => (v === Infinity ? '∞' : v == null ? '—' : v.toFixed(d));
+      const cells = [
+        ['File size', `${r.bytes.toLocaleString('en-US')} B`, `${r.bpp.toFixed(3)} bits/pixel`],
+        ['Of raw bitmap', `${((100 * r.bytes) / r.bitmapBytes).toFixed(1)}%`, `${r.bitmapBytes.toLocaleString('en-US')} B uncompressed`],
+        ['PSNR', q?.exact ? 'exact' : `${fmt(q?.psnr, 2)} dB`, '8-bit RGBA preview'],
+        ['SSIM', q?.exact ? '1.0000' : fmt(q?.ssim, 4), '8×8 luma windows'],
+        ['Largest error', q ? `${q.maxErr}` : '—', 'code values, 8-bit preview'],
+        ['Encode', `${r.encodeMs.toFixed(1)} ms`, '1 thread, WebAssembly'],
+        ['Decode', `${r.decodeMs.toFixed(2)} ms`, `median of ${r.decodeReps}, 1 thread, WebAssembly`],
+      ];
+      $('metrics').innerHTML = cells.map(([k, v, s]) => `<div><dt>${k}</dt><dd>${v}<small>${s}</small></dd></div>`).join('');
+      const dl = $('download');
+      if (dl.href) URL.revokeObjectURL(dl.href);
+      dl.href = URL.createObjectURL(new Blob([r.imi], { type: 'application/octet-stream' }));
+      dl.download = `${r.inputName}-${r.settings.mode}.imi`;
+      dl.hidden = false;
+      $('cmd').textContent = commandLine(r.settings);
+    }
+    function showError(msg) { const e = $('error'); e.textContent = msg; e.hidden = !msg; }
+    $('view').onchange = () => shown && showResult(shown);
+    $('zoom').onchange = applyZoom;
+    addEventListener('resize', applyZoom);
+
+    // ---- Manual encode ----
+    let busy = false;
+    async function encodeNow() {
+      if (busy || optRunning || !input) return;
+      busy = true; setBusy(true); showError('');
+      const s = readSettings();
+      $('status').textContent = `Encoding ${input.label}…`;
+      try {
+        const r = await measure(s, 7);
+        showResult(r);
+        $('status').textContent = `Encoded with the settings shown (${r.bytes.toLocaleString('en-US')} B).`;
+      } catch (e) {
+        if (e.name !== 'AbortError') { showError(`The encoder rejected these settings: ${e.message}`); $('status').textContent = 'Encoding failed.'; }
+      } finally { busy = false; setBusy(false); }
+    }
+    function setBusy(on) {
+      const locked = on || busy || optRunning;
+      for (const id of ['encode', 'optimize', 'reset', 'upload', 'crop', 'objective', 'target']) $(id).disabled = locked;
+      $('cancel').disabled = !optRunning;
+      document.querySelectorAll('#controls input, #controls select, .sample').forEach(el => { el.disabled = locked; });
+      $('use-best').disabled = locked || !optBest;
+      $('restore').disabled = locked || !candidates.length;
+      if (!locked) refreshUi();
+    }
+    function chooseInput(inp, btn) {
+      if (busy || optRunning) return;
+      const generation = ++inputGeneration;
+      refCache.clear();
+      shown = null; optStart = null; optBest = null; candidates = []; selected = null;
+      $('metrics').innerHTML = ''; $('cands').innerHTML = ''; $('opt-panel').hidden = true;
+      if ($('download').href) URL.revokeObjectURL($('download').href);
+      $('download').removeAttribute('href'); $('download').hidden = true;
+      $('cv-out').getContext('2d').clearRect(0, 0, $('cv-out').width, $('cv-out').height);
+      $('out-dims').textContent = ''; showError('');
+      input = inp;
+      document.querySelectorAll('.sample').forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+      $('input-desc').textContent = `${inp.label} · ${inp.width}×${inp.height}`;
+      if (inp.width <= 512 && inp.height <= 512) $('crop').value = '';
+      else if ($('crop').value === '') $('crop').value = '512x512';
+      refreshUi();
+      // Show the input right away; encoding waits for the user.
+      inputFormat = '';
+      reference({ ...readSettings(), channels: '', sample: '' }).then(rf => { if (generation !== inputGeneration) return; inputFormat = rf.format; refreshUi(); }).catch(() => {});
+      reference(readSettings()).then(rf => {
+        if (generation !== inputGeneration) return;
+        paint($('cv-in'), rf.rgba, rf.w, rf.h);
+        $('in-dims').textContent = `${rf.w}×${rf.h} · ${rf.format}`;
+        applyZoom();
+        $('status').textContent = 'Ready. Choose settings and press Encode.';
+      }).catch(e => { if (generation === inputGeneration) showError(`Could not read this image: ${e.message}`); });
+    }
+
+    document.querySelectorAll('#controls input, #controls select').forEach(el => el.addEventListener('input', refreshUi));
+    $('crop').addEventListener('change', () => input && chooseInput(input, document.querySelector('.sample[aria-pressed=true]')));
+    $('encode').onclick = encodeNow;
+    $('reset').onclick = () => { writeSettings({ ...DEFAULTS, crop: $('crop').value }); };
+
+    // ---- Auto-optimize ----
+    // Objectives are declared before the search; candidates are ranked only by the
+    // measured target and file size.
+    const OBJECTIVES = {
+      psnr: { modes: ['lossy'], label: 'Smallest file with PSNR at least', unit: 'dB', def: 40, metric: r => r.q?.psnr, better: 'higher', short: 'PSNR' },
+      ssim: { modes: ['lossy'], label: 'Smallest file with SSIM at least', unit: '', def: 0.95, metric: r => r.q?.ssim, better: 'higher', short: 'SSIM' },
+      maxerr: { modes: ['lossy', 'near'], label: 'Smallest file with largest error at most', unit: 'code values', def: 8, metric: r => r.q?.maxErr, better: 'lower', short: 'max error' },
+      smallest: { modes: ['lossless', 'quick', 'near'], label: 'Smallest file (exactness kept by the mode)', unit: null, metric: r => r.bytes, better: 'none', short: 'bytes' },
+    };
+    function updateObjectives() {
+      const mode = document.querySelector('input[name=mode]:checked').value;
+      const sel = $('objective'), cur = sel.value;
+      const opts = Object.entries(OBJECTIVES).filter(([, o]) => o.modes.includes(mode));
+      if (sel.dataset.mode !== mode) {
+        sel.innerHTML = opts.map(([k, o]) => `<option value="${k}">${o.label}</option>`).join('');
+        sel.dataset.mode = mode;
+        sel.value = opts.some(([k]) => k === cur) ? cur : opts[0][0];
+        $('target').value = OBJECTIVES[sel.value].def ?? '';
+      }
+      const o = OBJECTIVES[sel.value];
+      $('target-field').hidden = o.unit === null;
+      $('objective-hint').textContent = o.unit === null
+        ? 'Searches effort and coding tools from your settings; every candidate decodes exactly (near-lossless: within your bound).'
+        : `Searches quality and coding tools from your settings. Threshold in ${o.unit || 'SSIM units'}, measured on the 8-bit preview.`;
+    }
+    $('objective').addEventListener('change', () => { $('target').value = OBJECTIVES[$('objective').value].def ?? ''; updateObjectives(); });
+
+    let optRunning = false, optCancelled = false, optStart = null, optBest = null, candidates = [], selected = null, objective = null, target = null;
+    const meets = r => objective.better === 'none' || (objective.better === 'higher' ? (objective.metric(r) ?? -Infinity) >= target : (objective.metric(r) ?? Infinity) <= target);
+
+    function renderCandidates() {
+      $('metric-col').textContent = objective.short;
+      const best = optBest;
+      $('cands').innerHTML = candidates.map((c, i) => {
+        const m = objective.metric(c.r);
+        const mtxt = objective.short === 'bytes' ? (c.r.q?.exact ? 'exact' : `±${c.r.q?.maxErr}`) : m === Infinity ? '∞' : m == null ? '—' : objective.short === 'SSIM' ? m.toFixed(4) : objective.short === 'PSNR' ? m.toFixed(2) : String(m);
+        return `<tr class="${c === best ? 'best' : ''} ${c === selected ? 'selected' : ''} ${c.ok ? '' : 'miss'}">
+          <td>${i + 1}</td><td>${c.label}${c === best ? '<span class="badge">best</span>' : ''}</td>
+          <td class="num">${c.r.bytes.toLocaleString('en-US')}</td><td class="num">${mtxt}</td><td class="num">${c.r.decodeMs.toFixed(2)} ms</td>
+          <td>${c.ok ? 'met' : 'missed'}</td><td><button type="button" data-cand="${i}">Load</button></td></tr>`;
+      }).join('');
+      $('use-best').disabled = !optBest || optRunning;
+      $('restore').disabled = !candidates.length || busy || optRunning;
+      plot();
+    }
+    function plot() {
+      const svg = $('plot'), W = svg.clientWidth || 320, H = svg.clientHeight || 220, P = 34;
+      if (!candidates.length) { svg.innerHTML = ''; return; }
+      const xs = candidates.map(c => c.r.bytes);
+      const useMetric = objective.better !== 'none';
+      const ys = candidates.map(c => useMetric ? Math.min(objective.metric(c.r) ?? 0, objective.short === 'PSNR' ? 99 : Infinity) : c.r.decodeMs);
+      if (useMetric) ys.push(target);
+      const [x0, x1] = [Math.min(...xs), Math.max(...xs)], [y0, y1] = [Math.min(...ys), Math.max(...ys)];
+      const sx = v => P + ((v - x0) / ((x1 - x0) || 1)) * (W - P - 8), sy = v => H - P + 8 - ((v - y0) / ((y1 - y0) || 1)) * (H - P - 8);
+      let g = `<line x1="${P}" y1="${H - P + 8}" x2="${W - 4}" y2="${H - P + 8}"/><line x1="${P}" y1="4" x2="${P}" y2="${H - P + 8}"/>`;
+      g += `<text x="${W - 6}" y="${H - 6}" text-anchor="end">bytes →</text><text x="4" y="12">${useMetric ? objective.short : 'decode ms'}</text>`;
+      g += `<text x="${P}" y="${H - 6}">${x0.toLocaleString('en-US')}</text>`;
+      if (useMetric) g += `<line class="target" x1="${P}" x2="${W - 4}" y1="${sy(target)}" y2="${sy(target)}"/>`;
+      candidates.forEach((c, i) => {
+        const cls = ['pt', c.ok ? 'ok' : '', c === optBest ? 'best' : '', i === candidates.length - 1 && optRunning ? 'current' : ''].join(' ');
+        g += `<circle class="${cls}" cx="${sx(xs[i])}" cy="${sy(ys[i])}" r="${c === optBest ? 6 : 4}"><title>#${i + 1} ${c.label}: ${xs[i]} B</title></circle>`;
+      });
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      svg.innerHTML = g;
+    }
+    $('cands').addEventListener('click', e => {
+      const i = e.target.closest('[data-cand]')?.dataset.cand;
+      if (i == null || busy || optRunning) return;
+      selected = candidates[Number(i)];
+      writeSettings(selected.r.settings);
+      showResult(selected.r, `Candidate #${Number(i) + 1}`);
+      renderCandidates();
+    });
+    $('use-best').onclick = () => { if (busy || optRunning || !optBest) return; selected = optBest; writeSettings(optBest.r.settings); showResult(optBest.r, `Best candidate #${candidates.indexOf(optBest) + 1}`); renderCandidates(); };
+    $('restore').onclick = () => { if (busy || optRunning || !optStart || !candidates.length) return; selected = candidates[0]; writeSettings(optStart.settings); showResult(candidates[0].r, 'Your settings'); renderCandidates(); };
+    $('cancel').onclick = () => { optCancelled = true; cancelEngine(); };
+
+    function describeChange(from, to) {
+      const parts = [];
+      for (const k of KEYS) if (String(from[k]) !== String(to[k])) parts.push(`${LABELS[k]} ${RANGES[k] ? RANGES[k](to[k]) : to[k] || 'default'}`);
+      return parts.join(', ') || 'your settings';
+    }
+
+    async function trial(s, label) {
+      if (optCancelled) throw new DOMException('Cancelled', 'AbortError');
+      const prev = readSettings();
+      const changed = KEYS.filter(k => String(prev[k]) !== String(s[k]));
+      writeSettings(s, { animate: true, changed });
+      $('opt-status').textContent = `Measuring candidate ${candidates.length + 1}: ${label}…`;
+      const r = await measure(s, 3);
+      const c = { r, label, ok: meets(r) };
+      candidates.push(c);
+      if (c.ok && (!optBest || r.bytes < optBest.r.bytes)) optBest = c;
+      showResult(r, `Candidate #${candidates.length}`);
+      $('opt-progress').value = Math.min(candidates.length / budget, 1);
+      renderCandidates();
+      return c;
+    }
+
+    let budget = 24;
+    // Smallest quality in [lo, hi] meeting the target, holding the other settings.
+    async function qualitySearch(base, lo, hi, tag) {
+      let best = null;
+      for (let step = 0; step < 7 && hi - lo > 1; step++) {
+        const q = Math.round((lo + hi) / 2);
+        const c = await trial({ ...base, quality: q }, `${tag}quality ${q}`);
+        if (c.ok) { hi = q; if (!best || c.r.bytes < best.r.bytes) best = c; } else lo = q;
+      }
+      if (!best) {
+        const c = await trial({ ...base, quality: hi }, `${tag}quality ${hi}`);
+        if (c.ok) best = c;
+      }
+      return best;
+    }
+
+    async function optimize() {
+      if (busy || optRunning || !input) return;
+      objective = OBJECTIVES[$('objective').value];
+      target = Number($('target').value);
+      if (objective.unit !== null && !Number.isFinite(target)) { showError('Enter a numeric threshold for the target.'); return; }
+      showError('');
+      optRunning = true; optCancelled = false; optBest = null; candidates = []; selected = null;
+      const start = readSettings();
+      optStart = { settings: { ...start } };
+      $('opt-panel').hidden = false;
+      setBusy(true);
+      try {
+        const first = await trial(start, 'your settings');
+        selected = first;
+        if (start.mode === 'lossy') {
+          budget = 30;
+          // 1. Quality: smallest quality meeting the target with the starting tools.
+          let lo = 0, hi = 100;
+          if (first.ok) hi = start.quality; else lo = start.quality;
+          let cur = (await qualitySearch(start, lo, hi, '')) || (first.ok ? first : null);
+          // 2. Coding tools, one at a time from the current best; each change re-searches
+          //    quality nearby, since tools move the quality needed for the target.
+          const toggles = [
+            s => s.speed ? null : { ...s, color: s.color === 'xyb' ? 'ycocg' : 'xyb' },
+            s => s.speed ? null : { ...s, entropy: s.entropy === 'runlevel' ? 'splithuf' : 'runlevel' },
+            s => ({ ...s, zerobias: s.zerobias === 'on' ? 'off' : 'on' }),
+            s => ({ ...s, partitions: s.partitions === 'on' ? 'off' : 'on' }),
+            s => s.effort < 10 ? { ...s, effort: 10 } : null,
+          ];
+          for (const t of toggles) {
+            const base = (cur || first).r.settings;
+            const next = t(base);
+            if (!next) continue;
+            const q = base.quality;
+            const found = await qualitySearch(next, Math.max(0, q - 12), Math.min(100, q + 12), `${describeChange(base, next)}, `);
+            if (found && (!cur || found.r.bytes < cur.r.bytes)) cur = found;
+          }
+        } else if (start.mode === 'quick') {
+          budget = 3;
+          for (const v of ['off', 'packed', 'packets']) if (v !== start.quickbits) await trial({ ...start, quickbits: v }, `byte planes ${v}`);
+        } else {
+          budget = 8;
+          for (const e of [0, 2.5, 5, 10]) if (e !== start.effort) await trial({ ...start, effort: e }, `effort ${e}`);
+          const base = optBest?.r.settings || start;
+          await trial({ ...base, palette: base.palette === 'on' ? 'off' : 'on' }, describeChange(start, { ...base, palette: base.palette === 'on' ? 'off' : 'on' }));
+        }
+        $('opt-progress').value = 1;
+        finishSummary(false);
+      } catch (e) {
+        if (e.name === 'AbortError' || optCancelled) finishSummary(true);
+        else { showError(`Auto-optimize stopped: ${e.message}`); finishSummary(true); }
+      } finally {
+        optRunning = false;
+        setBusy(false);
+        if (optBest) { selected = optBest; writeSettings(optBest.r.settings); showResult(optBest.r, `Best candidate #${candidates.indexOf(optBest) + 1}`); }
+        else { writeSettings(optStart.settings); if (candidates[0]) showResult(candidates[0].r, 'Your settings'); }
+        renderCandidates();
+      }
+    }
+    function finishSummary(cancelled) {
+      const met = candidates.filter(c => c.ok).length;
+      const head = cancelled ? `Cancelled after ${candidates.length} candidates.` : `Finished: ${candidates.length} candidates measured, ${met} met the target.`;
+      if (!optBest) { $('opt-status').textContent = `${head} None met the target; your settings are restored.`; return; }
+      const s0 = candidates[0].r.bytes, b = optBest.r;
+      const m = objective.metric(b);
+      const mt = objective.better === 'none' ? '' : ` at ${objective.short} ${objective.short === 'SSIM' ? m.toFixed(4) : objective.short === 'PSNR' ? (m === Infinity ? '∞' : m.toFixed(2)) : m}`;
+      $('opt-status').textContent = `${head} Smallest meeting the target: candidate #${candidates.indexOf(optBest) + 1}, ${b.bytes.toLocaleString('en-US')} B (${((100 * b.bytes) / s0).toFixed(1)}% of your settings' size)${mt}, decode ${b.decodeMs.toFixed(2)} ms.`;
+    }
+    $('optimize').onclick = optimize;
+
+    // ---- Start ----
+    writeSettings(DEFAULTS);
+    if (!A.sources.length) {
+      showError('The encoder assets did not load (Codestream Atlas data missing).');
+    } else {
+      $('status').textContent = 'Starting the encoder…';
+      const firstBtn = document.querySelector('.sample');
+      const s = samples[0], png = b64(s.png);
+      chooseInput({ name: s.name, label: SAMPLE_INFO[s.name] || s.name, png, ...pngSize(png) }, firstBtn);
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+imij-wasm — WASI command engine for IMI (imij) image coding.
+
+Commands (encode/decode/trace use stdin/stdout; validate uses positional files):
+
+imij-wasm encode [conversion] (--lossless [opts] | --lossy [opts]) < pixels > out.imi
+imij-wasm validate INPUT.imi NEW-SCRATCH-FILE [OPTIONS]
+imij-wasm convert-raw [conversion] < input.png > pixels
+imij-wasm profile-decode THREADS REPS [WARMUPS] < in.imi > profile.json
+imij-wasm trace < in.imi > trace.json
+imij-wasm decode-rgba < in.imi > out.rgba
+imij-wasm decode-raw < in.imi > pixels            (parity harness aid)
+imij-wasm emit-fixtures OUTDIR [--hdr-png PATH]
+imij-wasm bench-fixtures OUTDIR                       (browser timing streams)
+
+Input for encode is a PNG (8/16-bit, any color type) unless
+--raw W H CHANNELS SAMPLE selects a native-endian raw buffer:
+CHANNELS is gray|ga|rgb|rgba, SAMPLE is u8|u16|f16|u32|i32|f32|i8|i16|u64|i64|f64.
+
+Conversion options (before encoding, so one 8-bit image exercises every
+bitness):
+  --channels gray|ga|rgb|rgba   channel count (rgb->gray = 299/587/114 luma)
+  --sample u8|u16|f16|u32|i32|f32|i8|i16|u64|i64|f64
+  --expand shift|replicate|scale
+        bit widening rule for integer code values:
+        shift = left-justify (v << diff); replicate = repeat the bit
+        pattern (u8->u16 is v*0x101); scale = round(v * max_dst / max_src).
+        Narrowing: shift/replicate take the high bits, scale rounds.
+        Float targets take scale (normalize to [0,1]) regardless.
+  --sbits N[,N..]   significant bits: a single value applies to every
+        channel; a list names each channel of the converted format
+        (integer samples only, values must already fit the declaration)
+  --premultiplied   mark the alpha channel premultiplied (metadata only)
+  --crop WxH        center crop (clamped to the image) before conversion
+  --cicp P,T[,R]    color primaries + transfer (+ full_range 0|1); PNG
+        cICP overrides the sRGB default when present
+
+Quick (--quick): --stripe-rows N --column-groups N --quick-bits off|packed|packets
+Lossless (--lossless): --effort F --stripe-rows N --lanes N
+  --column-groups auto|none|N --palette on|off --decor-mask N
+  --predictor-mask N
+Lossy (--lossy): --quality F --effort F --color xyb|ycocg
+  --entropy runlevel|splithuf
+  --decode-speed compact|balanced|fast|fastest  (overrides --entropy)
+  --compact-streams on|off --stripe-block-rows N
+  --column-groups auto|none|N --aq-gamma F --aq-r0 F
+  --layout-1..3 TRANSFORM[,SAMPLING]  transform dct8|dct4|dct2|adaptive4,
+  sampling full|h|v|both; planes in Y/X/B-Y or Y/Co/Cg order
+  --round F --max-ac-tables N --channel-mul F,F,F --matrix N
+  (lab encoder flags lf-pred/rdoq are deliberately absent: their output
+  is not decodable, which would defeat encode->trace flows)
+
+encode prints a one-line JSON summary to stderr.
+
+Use imij-wasm validate --help for strict validation and its resource limits.
+Validation requires positional input files and fully decodes every known image.
+V3 rejects the retired native-JPEG experiment; upgrading it is not supported.
+Use --help or -h to print this text. Invalid commands exit with status 2.

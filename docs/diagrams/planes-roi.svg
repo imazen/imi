@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="650" viewBox="0 0 1120 650" role="img" aria-labelledby="title desc">
+<title id="title">ZQI named planes, direct-original levels and seekable ROI</title>
+<desc id="desc">Each resolution is made directly from original samples. Native tiled records precede a compressed directory and fixed footer. ROI decoding reads the footer, index and intersecting tiles.</desc>
+<style>text{font-family:system-ui,sans-serif;fill:#e5edf7} .head{font-size:26px;font-weight:650} .label{font-size:18px} .small{font-size:15px;fill:#b8c8dc} .box{fill:#193047;stroke:#5a819f;stroke-width:1.5} .tile{fill:#16494b;stroke:#54beb5} .arrow{fill:none;stroke:#90b8d4;stroke-width:2;marker-end:url(#arrow)}</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#90b8d4"/></marker></defs>
+<rect width="1120" height="650" fill="#0d1926"/>
+<text x="34" y="44" class="head">One source. Independent levels. Bounded region reads.</text>
+<rect x="35" y="88" width="220" height="94" rx="9" class="box"/><text x="52" y="121" class="label">Original samples</text><text x="52" y="149" class="small">RGB / HDR / depth / RAW</text>
+<rect x="335" y="77" width="290" height="77" rx="9" class="box"/><text x="353" y="106" class="label">Direct resize to level A</text><text x="353" y="132" class="small">Lossless = exact reference bits</text>
+<rect x="335" y="177" width="290" height="77" rx="9" class="box"/><text x="353" y="206" class="label">Direct resize to level B</text><text x="353" y="232" class="small">Lossy = measured quality choice</text>
+<path d="M255 117L325 117M255 152L290 152L290 213L325 213" class="arrow"/>
+<rect x="717" y="88" width="360" height="154" rx="9" class="tile"/><text x="738" y="118" class="label">Independent native tiles</text><text x="738" y="147" class="small">Compatible color components share storage</text><text x="738" y="174" class="small">Other named planes keep their own types</text><text x="738" y="201" class="small">No dependence on another resolution</text><path d="M625 115L706 115M625 215L706 215" class="arrow"/>
+<text x="35" y="298" class="label">File layout</text>
+<rect x="35" y="319" width="193" height="90" class="box"/><text x="52" y="350" class="label">Native primary</text><text x="52" y="379" class="small">Ordinary decode fallback</text>
+<rect x="228" y="319" width="439" height="90" class="tile"/><text x="250" y="350" class="label">pDAT records</text><text x="250" y="379" class="small">Tiles + opaque ICC / calibration / video / audio</text>
+<rect x="667" y="319" width="233" height="90" class="box"/><text x="685" y="350" class="label">pIDX directory</text><text x="685" y="379" class="small">Bounded seeded compression</text>
+<rect x="900" y="319" width="177" height="90" class="box"/><text x="918" y="350" class="label">sLOC footer</text><text x="918" y="379" class="small">37 bytes, fixed location</text>
+<text x="35" y="464" class="label">ROI access</text>
+<rect x="35" y="484" width="272" height="83" rx="9" class="box"/><text x="54" y="513" class="label">1 · Read footer + index</text><text x="54" y="542" class="small">ReadAt: slice, seek or range source</text>
+<rect x="361" y="484" width="321" height="83" rx="9" class="box"/><text x="380" y="513" class="label">2 · Validate requested work</text><text x="380" y="542" class="small">Offsets, ownership, geometry, byte caps</text>
+<rect x="736" y="484" width="341" height="83" rx="9" class="tile"/><text x="755" y="513" class="label">3 · Fetch intersecting tiles</text><text x="755" y="542" class="small">Decode into caller-owned strided output</text>
+<path d="M307 525L351 525M682 525L726 525" class="arrow"/>
+<text x="35" y="612" class="small">Experimental wire v1 · Lossy tiles can have seams · Open validates the index, not every unrequested payload</text>
+</svg>

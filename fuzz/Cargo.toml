@@ -1,0 +1,69 @@
+[package]
+name = "imij-fuzz"
+version = "0.0.0"
+publish = false
+license = "MIT OR Apache-2.0"
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.imij]
+path = "../imij"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "header"
+path = "fuzz_targets/header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "region"
+path = "fuzz_targets/region.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "checksum"
+path = "fuzz_targets/checksum.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "roundtrip_lossless"
+path = "fuzz_targets/roundtrip_lossless.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "roundtrip_lossy"
+path = "fuzz_targets/roundtrip_lossy.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "differential"
+path = "fuzz_targets/differential.rs"
+test = false
+doc = false

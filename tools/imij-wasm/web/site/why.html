@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Why IMI? · Trade-offs, Multi-Threaded Decode Speed &amp; Scientific Workflows</title>
+  <link rel="canonical" href="__PAGE_ORIGIN__/imi/why">
+  <script src="../imi/site-origin.js"></script>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./index.html"><span class="mark">i</span> IMI <span>FORMAT</span> <small>Why IMI?</small></a>
+    <nav class="nav" aria-label="IMI site navigation">
+      <a href="./index.html">IMI Home</a>
+      <a href="./why.html" aria-current="page">Why IMI?</a>
+      <a href="./encode.html">Encoder Lab</a>
+      <a href="./benchmarks.html">Benchmarks</a>
+      <a href="../gigapixel/">Gigapixel Explorer</a>
+      <a href="../codestream-atlas/">3D Codestream Atlas</a>
+      <a href="./spec.html">Format Spec</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <p class="eyebrow">Architectural Trade-offs · Measured Performance</p>
+      <h1>Why IMI exists: trading 15% compression density for multi-gigabyte/s parallel decode and O(1) region access.</h1>
+      <p class="lede">
+        IMI is not a replacement for JPEG XL, AVIF, or JPEG in bandwidth-constrained web publishing. JPEG XL achieves better compression density on photographs and supports <code>f32</code>, HDR, and parallel decoding; <code>zenjpeg</code> with restart markers and parallel PNG extensions also scale across cores. IMI is designed for the regime where <strong>peak multi-threaded decode throughput</strong>, <strong>scientific/intermediate data fidelity</strong> (all 11 sample types from <code>u8</code> through <code>f64</code>, 7 channel layouts including CMYK and Oklab), <strong>bounded 41 MB RSS gigapixel encoding</strong>, and <strong>2-RTT HTTP byte-range random access</strong> are the primary constraints.
+      </p>
+    </section>
+
+    <h2>1. Peak Multi-Threaded Decode Throughput (Ryzen 9 7900X, Zen 4)</h2>
+    <p>
+      Every IMI coding mode—from <code>Quick</code> packet/bit-smart units to <code>SplitHuf</code>/<code>RunLevel</code> lossy DCT and 16-lane interleaved rANS lossless stripes—decomposes the image into independent row stripes and optional column groups. Within each lossless or lossy unit, 16 independent rANS state lanes decode in lockstep SIMD without cross-lane data dependencies:
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Workload &amp; Sample Type</th>
+          <th>IMI Mode</th>
+          <th>Full-File Size</th>
+          <th>1-Thread Decode</th>
+          <th>8-Thread Decode</th>
+          <th>8-Thread Encode</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Photographs (RGB8, 24 bpp)</td>
+          <td>Lossless e7.5 (16-lane rANS)</td>
+          <td><strong>5.34 bpp</strong> (4.49:1)</td>
+          <td>258.5 MP/s (0.78 GB/s)</td>
+          <td><strong>1,105.5 MP/s (3.32 GB/s)</strong></td>
+          <td>35.3 MP/s</td>
+        </tr>
+        <tr>
+          <td>Photographs (RGB8, 24 bpp)</td>
+          <td>Lossless e0 (16-lane rANS)</td>
+          <td>6.07 bpp (3.95:1)</td>
+          <td>269.7 MP/s (0.81 GB/s)</td>
+          <td><strong>1,120.6 MP/s (3.36 GB/s)</strong></td>
+          <td>42.4 MP/s</td>
+        </tr>
+        <tr>
+          <td>Photographs (RGB8, 24 bpp)</td>
+          <td>Quick Packets (lossless)</td>
+          <td>10.72 bpp (2.24:1)</td>
+          <td>163.5 MP/s (0.49 GB/s)</td>
+          <td><strong>771.4 MP/s (2.31 GB/s)</strong></td>
+          <td><strong>559.0 MP/s (1.68 GB/s)</strong></td>
+        </tr>
+        <tr>
+          <td>UI Screenshots (RGB8, 24 bpp)</td>
+          <td>Quick Packets (lossless)</td>
+          <td><strong>1.69 bpp</strong> (14.2:1)</td>
+          <td>725.2 MP/s (2.18 GB/s)</td>
+          <td><strong>1,457.9 MP/s (4.37 GB/s)</strong></td>
+          <td><strong>1,489.1 MP/s (4.47 GB/s)</strong></td>
+        </tr>
+        <tr>
+          <td>Pixel Art (RGBA8, 32 bpp)</td>
+          <td>Quick Packets (lossless)</td>
+          <td><strong>0.29 bpp</strong> (108.6:1)</td>
+          <td>1,713.2 MP/s (6.85 GB/s)</td>
+          <td><strong>1,822.4 MP/s (7.29 GB/s)</strong></td>
+          <td><strong>2,966.8 MP/s (11.87 GB/s)</strong></td>
+        </tr>
+        <tr>
+          <td>Text / Document (Gray8, 8 bpp)</td>
+          <td>Quick Packets (lossless)</td>
+          <td><strong>0.83 bpp</strong> (9.6:1)</td>
+          <td>1,428.4 MP/s (1.43 GB/s)</td>
+          <td><strong>2,358.2 MP/s (2.36 GB/s)</strong></td>
+          <td><strong>2,156.1 MP/s (2.16 GB/s)</strong></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>2. Scientific &amp; Intermediate Data Workflows (32 Public Arrays, 7 Classes)</h2>
+    <p>
+      In scientific and intermediate workflows (astronomy CCD frames, digital elevation models, synchrotron photon-count detectors, microscopy, remote sensing), data is rarely 8-bit sRGB. IMI natively codes all 11 sample types—baseline <code>u8</code>, <code>u16</code>, <code>f16</code>, <code>f32</code>; signed <code>i8</code>, <code>i16</code> via <code>signed_samples</code>; extended <code>u32</code>, <code>i32</code>; wide <code>u64</code>, <code>i64</code>, <code>f64</code> via <code>wide_samples</code>—and 7 channel layouts (Gray, GrayAlpha, RGB, RGBA, CMYK, Oklab, OklabAlpha via <code>pixel_models</code>), using sparse 16-bit value-table maps (<code>SPEC 2.1</code> map 9) when detector codes are sparse:
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Dataset Class (32 Arrays)</th>
+          <th>Sample Type</th>
+          <th>IMIJ Lossless e7.5</th>
+          <th>Best Comparator (Lossless)</th>
+          <th>IMIJ 1T Decode</th>
+          <th>IMIJ 8T Decode</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>ESRF EIGER Photon Counts</td>
+          <td><code>u32</code></td>
+          <td><strong>0.636 bits/sample</strong></td>
+          <td>HDF5 bitshuffle+Zstd (0.897 bps, +41% larger)</td>
+          <td>479 MS/s (1.92 GB/s)</td>
+          <td><strong>2,538 MS/s (10.15 GB/s)</strong></td>
+        </tr>
+        <tr>
+          <td>SDSS DR7 Astro CCD</td>
+          <td><code>u16</code></td>
+          <td><strong>4.975 bits/sample</strong></td>
+          <td>JPEG-LS (5.021 bps, +0.9% larger)</td>
+          <td>557 MS/s (1.11 GB/s)</td>
+          <td><strong>2,675 MS/s (5.35 GB/s)</strong></td>
+        </tr>
+        <tr>
+          <td>Copernicus &amp; USGS DEM</td>
+          <td><code>f32</code></td>
+          <td><strong>12.411 bits/sample</strong></td>
+          <td>HTJ2K (12.999 bps, +4.7% larger)</td>
+          <td>427 MS/s (1.71 GB/s)</td>
+          <td><strong>2,503 MS/s (10.01 GB/s)</strong></td>
+        </tr>
+        <tr>
+          <td>Sentinel-2 Remote Sensing</td>
+          <td><code>u16</code></td>
+          <td>8.419 bits/sample</td>
+          <td>JPEG XL e7 (7.442 bps, 11.6% smaller)</td>
+          <td>531 MS/s (1.06 GB/s)</td>
+          <td><strong>2,799 MS/s (5.60 GB/s)</strong></td>
+        </tr>
+        <tr>
+          <td>3D Fluorescence Microscopy</td>
+          <td><code>u16</code></td>
+          <td>9.359 bits/sample</td>
+          <td>JPEG XL e7 (8.189 bps, 12.5% smaller)</td>
+          <td>613 MS/s (1.23 GB/s)</td>
+          <td><strong>3,266 MS/s (6.53 GB/s)</strong></td>
+        </tr>
+        <tr>
+          <td>ERA5 Climate CF Fields</td>
+          <td><code>f32</code></td>
+          <td>10.907 bits/sample</td>
+          <td>TIFF Deflate pred-3 (8.790 bps, 19.4% smaller)</td>
+          <td>476 MS/s (1.90 GB/s)</td>
+          <td><strong>1,676 MS/s (6.70 GB/s)</strong></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>3. Self-identifying V4 groups and retained V3 unit ordinals</h2>
+    <p>V4 group IDs are baseline syntax. Its front/tail directory names spatial tiles and immutable model dependencies; one tile range can supply several decode workers. The feature-26 unit-ordinal layout and request-count observations below describe retained V3 files.</p>
+    <p>
+      When serving a single large <code>.imi</code> file over HTTP byte ranges using an untrusted trailing unit table (<code>uTAB</code>), Feature 26 (<code>unit_ordinals</code>, Head Record 37) prefixes each main unit record with its 0-based LEB128 varint ordinal. Region readers verify fetched spans locally in <strong>2 HTTP requests (405 ms at 12.5 MB/s)</strong> instead of scanning all 352 record headers across the file (7,446 ms), at a cost of just <strong>+595 bytes (+0.020%)</strong> on a 3.01 MB file.
+    </p>
+
+    <h2>4. Candid Format Self-Critique: What Excels vs. Which Compression Methods Are "So-So"</h2>
+    <p>
+      Every format feature in IMI is evaluated against measured speed and compression studies across photographic, graphic, and scientific corpora. Here is an honest assessment of which techniques pay for themselves and which are currently "so-so":
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Mechanism / Subsystem</th>
+          <th>Verdict</th>
+          <th>Measured Evidence &amp; Architectural Critique</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>16-Lane Interleaved rANS + Independent Stripes/Groups</strong> (<code>SPEC §2.5</code>)</td>
+          <td><strong style="color:var(--accent)">★ Core Strength</strong></td>
+          <td>Delivers 1.1–3.3 GB/s 8-thread native decode and 339–390 MP/s in 16-worker browser WASM without serial bitstream bottlenecks.</td>
+        </tr>
+        <tr>
+          <td><strong>16-Bit Sparse Value-Table Maps</strong> (<code>SPEC §2.1 Map 9</code>)</td>
+          <td><strong style="color:var(--accent)">★ Strong on u16/u32/f32; Mixed on x86 f16</strong></td>
+          <td>Smallest lossless coding on EIGER <code>u32</code> photon counts (0.636 bps, 41% smaller than HDF5 bitshuffle+Zstd), SDSS <code>u16</code> astro CCDs (4.975 bps), and SI-HDR <code>f16</code> (−29% size, 0.94× EXR PIZ). Decode speed is 1.04–1.22× faster on <code>f32</code> and 1.06–1.19× on Apple M4 Pro, but 0.79–0.92× slower on x86 <code>f16</code> gather/lookup paths (<code>value_tables = false</code> keeps regular maps).</td>
+        </tr>
+        <tr>
+          <td><strong>Template Palettes &amp; Bilevel Contexts</strong> (<code>SPEC §2.6</code>)</td>
+          <td><strong style="color:var(--accent)">★ Great on Dither/1-Bit; Needs Speed Gate on Screenshots</strong></td>
+          <td>Cuts dithered/indexed graphic size by <strong>2.90×</strong> (0.51–0.60× bytes) and speeds up 1-bit decode (1.27× Zen 4). However, because stripe selection currently compares bytes only without a decode-cost penalty, multi-color template stripes (<code>k = 3..5</code>) also win on 23/24 screenshots for ~1% byte savings at a ~7% 1-thread decode slowdown (0.925× aggregate).</td>
+        </tr>
+        <tr>
+          <td><strong>Retained V3 Unit Ordinals + Morton Pyramid Sets</strong> (<code>Feature 26</code>, <code>imij-set</code>)</td>
+          <td><strong style="color:var(--accent)">★ Core Strength</strong></td>
+          <td>Eliminates the 352-request cold ROI header verification storm (down to 2 requests, 18.4× faster) for +0.020% file size.</td>
+        </tr>
+        <tr>
+          <td><strong>Lossy DCT AC Coefficient Coding vs. JPEG XL VarDCT</strong></td>
+          <td><strong style="color:var(--warm)">So-So (~10–18% larger than JXL)</strong></td>
+          <td>Trellis quantization gains −3.8% to −4.6% size in both <code>RunLevel</code> and <code>SplitHuf</code>, and adaptive 8×8/4×4 blocks help sharp edges, but IMI's AC coefficient coder stays ~10–18% larger than JPEG XL at matched SSIMULACRA2 / CVVDP on 512px+ photos because it avoids JXL's heavier 2D cross-coefficient context modeling to keep SIMD decode fast.</td>
+        </tr>
+        <tr>
+          <td><strong>Lossy Adaptive Quantization (<code>HEAD_AQ</code>) Map</strong></td>
+          <td><strong style="color:var(--danger)">So-So (Currently Off by Default)</strong></td>
+          <td>The wire syntax supports per-block AQ maps (<code>HEAD_AQ</code>), but across our paired SSIMULACRA2 + CVVDP studies with and without trellis quantization, no tested AQ heuristic improved both metrics simultaneously. Default <code>aq_gamma</code> is therefore <code>0</code> until a multi-metric masking model is tuned.</td>
+        </tr>
+        <tr>
+          <td><strong>Quick Packets on 8-Bit Natural Photographs</strong> (<code>SPEC §2.13</code>)</td>
+          <td><strong style="color:var(--warm)">Great on UI / 16b Shifts; So-So on 8b Photos</strong></td>
+          <td>Quick mode excels on UI screenshots (1.69 bpp, 1.46 GP/s), pixel art (0.29 bpp), and shifted/replicated 16-bit sensors (<code>--quick-bits</code> saves 2.0×). On noisy 8-bit natural photos, however, Quick gets 10.72 bpp (2.24:1) at 163 MP/s (1T), whereas <strong>IMI Lossless Effort 0 (16-lane rANS)</strong> achieves <strong>6.07 bpp (1.77× smaller)</strong> and decodes faster at <strong>270 MP/s (1T) / 1,121 MP/s (8T)</strong>.</td>
+        </tr>
+        <tr>
+          <td><strong>Smooth 32-Bit IEEE Float Grids (ERA5 CF Fields)</strong></td>
+          <td><strong style="color:var(--warm)">Good on DEMs; So-So on Smooth CF Floats</strong></td>
+          <td>IMI beats HTJ2K and JPEG-LS on <code>f32</code> terrain DEMs (12.41 bps, 10 GB/s 8T decode), but on smooth ERA5 climate <code>f32</code> fields (10.91 bps) it is ~19% larger than TIFF Deflate with horizontal byte-shuffle (8.79 bps), because byte-shuffling IEEE754 exponent bytes across a row compresses smooth float gradients tighter than whole-sample residual prediction.</td>
+        </tr>
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>

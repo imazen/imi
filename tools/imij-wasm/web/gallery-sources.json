@@ -1,0 +1,635 @@
+{
+ "note": "Claims from the user-supplied candidate list, re-checked against the source pages on the date shown. Dimensions and licenses are as published, not new measurements of image content.",
+ "sources": [
+  {
+   "id": "colca",
+   "title": "Colca Valley",
+   "claimed": {
+    "width": 30000,
+    "height": 11000,
+    "license": "CC BY-SA 3.0",
+    "credit": "Martin St-Amant"
+   },
+   "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/4/43/205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_10.jpg",
+   "sourceUrl": "https://commons.wikimedia.org/wiki/File:205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_10.jpg",
+   "verified": "2026-10-17",
+   "commons": {
+    "width": 30000,
+    "height": 11000,
+    "bytes": 103376192,
+    "sha1": "fa1fe5259cb3d34de34262d04e8bd232fd184684",
+    "mime": "image/jpeg",
+    "license": "CC BY-SA 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+    "artist": "Martin St-Amant (S23678)",
+    "credit": "Own work",
+    "attributionRequired": "true"
+   },
+   "downloadSha256": "bf513562f50b53fca4feff78007a9fecb19674774842162f4bdaed91f7936eb6",
+   "used": "six full-size parts, placed 3x2 without resampling (the same 30000x11000 panorama as the single file, less recompressed)",
+   "usedParts": [
+    {
+     "part": 1,
+     "title": "File:205 - Vallée de Colca - Panorama - Juin 2010 - 1 de 6.jpg",
+     "url": "https://upload.wikimedia.org/wikipedia/commons/1/1c/205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_1_de_6.jpg",
+     "sha1": "b9d3a25fac259a3400f0cb5f134b2c2c6d70006d",
+     "bytes": 37628086,
+     "width": 10000,
+     "height": 6000,
+     "license": "CC BY-SA 3.0",
+     "sha256": "2b2cb78def3ebd7bf4c28060b9f0799a4c64553c46d788295cabea6e419dbc3f"
+    },
+    {
+     "part": 2,
+     "title": "File:205 - Vallée de Colca - Panorama - Juin 2010 - 2 de 6.jpg",
+     "url": "https://upload.wikimedia.org/wikipedia/commons/8/84/205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_2_de_6.jpg",
+     "sha1": "3c950c1a9a83c6b65f13f4afc25b6a63d3d5e74b",
+     "bytes": 38789967,
+     "width": 10000,
+     "height": 6000,
+     "license": "CC BY-SA 3.0",
+     "sha256": "80688e2f5d4f67c289e6b7e842a6820769f7598e79823e621952459ab39b8d91"
+    },
+    {
+     "part": 3,
+     "title": "File:205 - Vallée de Colca - Panorama - Juin 2010 - 3 de 6.jpg",
+     "url": "https://upload.wikimedia.org/wikipedia/commons/b/b7/205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_3_de_6.jpg",
+     "sha1": "75a14d6452f56506bc821e21e5d15e85e5a1716e",
+     "bytes": 37814585,
+     "width": 10000,
+     "height": 6000,
+     "license": "CC BY-SA 3.0",
+     "sha256": "d09be0b183c5e6931d8f0ef0d3be29327251e1d9539b4036e5ac35098caeb388"
+    },
+    {
+     "part": 4,
+     "title": "File:205 - Vallée de Colca - Panorama - Juin 2010 - 4 de 6.jpg",
+     "url": "https://upload.wikimedia.org/wikipedia/commons/7/72/205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_4_de_6.jpg",
+     "sha1": "d269e39dda4aa3f78ea6a1f7f047dd3c53b302da",
+     "bytes": 47501345,
+     "width": 10000,
+     "height": 5000,
+     "license": "CC BY-SA 3.0",
+     "sha256": "a240a6feac6b3aeb6649d42bdbdfc548c5a4be12bcbb94640dd8b739f428d3ba"
+    },
+    {
+     "part": 5,
+     "title": "File:205 - Vallée de Colca - Panorama - Juin 2010 - 5 de 6.jpg",
+     "url": "https://upload.wikimedia.org/wikipedia/commons/9/91/205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_5_de_6.jpg",
+     "sha1": "11211a7f4b1a82614b42a39ff884030d9ed6cd92",
+     "bytes": 48230448,
+     "width": 10000,
+     "height": 5000,
+     "license": "CC BY-SA 3.0",
+     "sha256": "b3c0b046ff5a512fd20d4f2ce32cd58683e549ba38daf3411398993374497657"
+    },
+    {
+     "part": 6,
+     "title": "File:205 - Vallée de Colca - Panorama - Juin 2010 - 6 de 6.jpg",
+     "url": "https://upload.wikimedia.org/wikipedia/commons/c/c4/205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_6_de_6.jpg",
+     "sha1": "428fcf5b18b847251a18a4701f979c71db1fff2b",
+     "bytes": 52659444,
+     "width": 10000,
+     "height": 5000,
+     "license": "CC BY-SA 3.0",
+     "sha256": "53f0406a8712d7d55b17eb0e152af7ab023b275bb018f3194d66fef0b4ba37e1"
+    }
+   ],
+   "singleFileNotUsed": {
+    "url": "https://upload.wikimedia.org/wikipedia/commons/4/43/205_-_Vall%C3%A9e_de_Colca_-_Panorama_-_Juin_2010_-_10.jpg",
+    "sha256": "bf513562f50b53fca4feff78007a9fecb19674774842162f4bdaed91f7936eb6",
+    "note": "downloaded, imported and prepared, then superseded by the parts (kept under gallery_scenes colca-single-file-superseded)"
+   }
+  },
+  {
+   "id": "perito-moreno",
+   "title": "Perito Moreno Glacier, north panorama",
+   "claimed": {
+    "width": 30000,
+    "height": 3918,
+    "license": "CC BY-SA 3.0",
+    "credit": "Martin St-Amant"
+   },
+   "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/3/3f/155_-_Glacier_Perito_Moreno_-_Panorama_de_la_partie_nord_-_Janvier_2010.jpg",
+   "sourceUrl": "https://commons.wikimedia.org/wiki/File:155_-_Glacier_Perito_Moreno_-_Panorama_de_la_partie_nord_-_Janvier_2010.jpg",
+   "verified": "2026-10-17",
+   "commons": {
+    "width": 30000,
+    "height": 3918,
+    "bytes": 68074745,
+    "sha1": "d18a6d21e25349cff2135b21fb3940c19668c544",
+    "mime": "image/jpeg",
+    "license": "CC BY-SA 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+    "artist": "Martin St-Amant (S23678)",
+    "credit": "Own work (Martin St-Amant)",
+    "attributionRequired": "true"
+   },
+   "downloadSha256": "6ba0dd97053b45db6e2803eb90486925ff087a14b5a9cb64d8017935539fb033"
+  },
+  {
+   "id": "st-helens",
+   "title": "Mount St. Helens summit",
+   "claimed": {
+    "width": 25000,
+    "height": 7120,
+    "license": "CC BY 3.0",
+    "credit": "Gregg M. Erickson"
+   },
+   "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/0/07/Mount_St._Helens_Summit_Panorama.jpg",
+   "sourceUrl": "https://commons.wikimedia.org/wiki/File:Mount_St._Helens_Summit_Panorama.jpg",
+   "verified": "2026-10-17",
+   "commons": {
+    "width": 25000,
+    "height": 7120,
+    "bytes": 51621865,
+    "sha1": "df007c6137493b50c625332c2e4716d93ecdf005",
+    "mime": "image/jpeg",
+    "license": "CC BY 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+    "artist": "Farwestern Photo by Gregg M. Erickson",
+    "credit": "Own work",
+    "attributionRequired": "true"
+   },
+   "downloadSha256": "b24ff5df32537f9839b38a18f437bba46e99a1529ac638e1b09ff5f995967522"
+  },
+  {
+   "id": "zabriskie",
+   "title": "Zabriskie Point",
+   "claimed": {
+    "width": 35076,
+    "height": 7015,
+    "license": "CC BY-SA 4.0",
+    "credit": "Christian David"
+   },
+   "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/a/a2/Badlands_from_Zabriskie_Point%2C_panorama%2C_Death_Valley_National_Park%2C_California.jpg",
+   "sourceUrl": "https://commons.wikimedia.org/wiki/File:Badlands_from_Zabriskie_Point,_panorama,_Death_Valley_National_Park,_California.jpg",
+   "verified": "2026-10-17",
+   "commons": {
+    "width": 35076,
+    "height": 7015,
+    "bytes": 139377218,
+    "sha1": "d919d4e99657dedebc2a84e526d6c7c670c4b4b2",
+    "mime": "image/jpeg",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+    "artist": "Christian David",
+    "credit": "Own work",
+    "attributionRequired": "true"
+   },
+   "downloadSha256": "8bf6c69ca6d0f5fb3d26fa46ff5ae405d8a62a7bcbb4c4d18c3c997caf25d4b5"
+  },
+  {
+   "id": "alabama-hills",
+   "title": "Alabama Hills",
+   "claimed": {
+    "width": 36662,
+    "height": 5906,
+    "license": "CC BY 2.0",
+    "credit": "John Fowler"
+   },
+   "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/9/90/Panorama_of_Alabama_Hills.jpg",
+   "sourceUrl": "https://commons.wikimedia.org/wiki/File:Panorama_of_Alabama_Hills.jpg",
+   "verified": "2026-10-17",
+   "commons": {
+    "width": 36662,
+    "height": 5906,
+    "bytes": 186549904,
+    "sha1": "4ef0a06ce65767ae4df0b743ba7a01e1d2289f75",
+    "mime": "image/jpeg",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+    "artist": "John Fowler",
+    "credit": "Panorama of Alabama Hills",
+    "attributionRequired": "true"
+   },
+   "downloadSha256": "830803717f8643b77ed1d2d84a7bab1adc321734d871db3daf8a3abd13c8e325"
+  },
+  {
+   "id": "skywater-wafer",
+   "title": "Google/SkyWater wafer",
+   "claimed": {
+    "width": 43032,
+    "height": 42654,
+    "license": "CC BY 4.0",
+    "credit": "John McMaster"
+   },
+   "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/f/f9/Gsky_mpw1-wafer_mcmaster_mz_mit1x.jpg",
+   "sourceUrl": "https://commons.wikimedia.org/wiki/File:Gsky_mpw1-wafer_mcmaster_mz_mit1x.jpg",
+   "verified": "2026-10-17",
+   "commons": {
+    "width": 43032,
+    "height": 42654,
+    "bytes": 443155042,
+    "sha1": "0d8b7d4ac72f62a2f346a99c33771c29eacf428d",
+    "mime": "image/jpeg",
+    "license": "CC BY 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+    "artist": "John McMaster",
+    "credit": "https://siliconpr0n.org/archive/doku.php?id=mcmaster:start https://siliconpr0n.org/archive/doku.php?id=mcmaster:gsky:mpw1-00010001 https://siliconpr0n.org/archive/doku.php?id=mcmaster:gsky:mpw1-0001001f https://siliconpr0n.org/map/gsky/mpw1-00010001/mcmaster_mz_mit10x/ https://siliconpr0n.org/archiv",
+    "attributionRequired": "true"
+   },
+   "downloadSha256": "c715d47460d792ded43dd3c4f86e8b27c5b87b492cc74abe5ad2d43350eebd58"
+  },
+  {
+   "id": "virgo",
+   "title": "Virgo Cluster full source",
+   "claimed": {
+    "width": 97943,
+    "height": 51536,
+    "license": "CC BY 4.0",
+    "credit": "NSF–DOE Vera C. Rubin Observatory/NOIRLab/SLAC/AURA"
+   },
+   "downloadUrl": "https://storage.noirlab.edu/media/archives/images/original/noirlab2521a.tif",
+   "sourceUrl": "https://noirlab.edu/public/images/noirlab2521a/",
+   "verified": "2026-10-17",
+   "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+   "licenseEvidence": "https://noirlab.edu/public/copyright/",
+   "verifiedLicense": "CC BY 4.0",
+   "downloadHeaders": {
+    "bytes": 15142805372,
+    "etag": "\"41335f7d577e909babb0c78092e06366-1806\"",
+    "last-modified": "Sat, 21 Jun 2025 10:36:11 GMT"
+   },
+   "pageSize": "97943 x 51536 px (NOIRLab image page); TIFF header agrees"
+  },
+  {
+   "id": "eso1719",
+   "title": "Eagle, Omega and Sharpless 2-54 nebulae",
+   "claimed": {
+    "width": 93031,
+    "height": 35412,
+    "license": "CC BY 4.0",
+    "credit": "ESO"
+   },
+   "downloadUrl": "https://cdn2.eso.org/images/original/eso1719a.psb",
+   "sourceUrl": "https://www.eso.org/public/images/eso1719a/",
+   "verified": "2026-10-17",
+   "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+   "licenseEvidence": "https://www.eso.org/public/outreach/copyright/",
+   "verifiedLicense": "CC BY 4.0",
+   "downloadHeaders": {
+    "bytes": 9883274714,
+    "etag": "\"e83962449119047d1b3621f426dbeee8-20\"",
+    "last-modified": "Tue, 26 Mar 2024 14:30:34 GMT"
+   },
+   "pageSize": "93031 x 35412 px (ESO image page); PSB header agrees"
+  },
+  {
+   "id": "nwa2224",
+   "title": "NWA 2224 meteorite thin section",
+   "claimed": {
+    "width": 64980,
+    "height": 45180,
+    "license": "CC0",
+    "credit": "Solaranamnesis"
+   },
+   "downloadUrl": "https://cdn.solaranamnesis.com/ThinSections/NWA2224-2/Meteorite-Thin-Section-NWA2224-2-final.zip",
+   "sourceUrl": "https://commons.wikimedia.org/wiki/File:Northwest_Africa_(NWA)_2224_Meteorite_Thin_Section.jpg",
+   "verified": "2026-10-17",
+   "commons": {
+    "width": 32490,
+    "height": 22590,
+    "bytes": 100059133,
+    "sha1": "b9843609b9fbab1500250452b647c8f5b97cc085",
+    "mime": "image/jpeg",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "artist": "Solaranamnesis",
+    "credit": "Own work",
+    "attributionRequired": "false"
+   },
+   "status": "not imported: verified blocker",
+   "blocker": {
+    "zipParts": "ten .z01-.z10 parts of 1,048,576,000 bytes plus a 799,830,715-byte .zip: 11,285,590,715 bytes total",
+    "entry": "nwa2224-2/Meteorite-Thin-Section-NWA2224-2-final.tiff, deflate, Zip64",
+    "tiff": "64980 x 45180, 16-bit per the Commons description (17.6 GB uncompressed as RGB16); the explorer decode/display path is RGB8, so a scene needs a 16-bit path or a labeled 8-bit rendering",
+    "commonsJpeg": "Commons serves a 32490 x 22590 JPEG (half size); not substituted for the labeled size"
+   }
+  },
+  {
+   "id": "taizong",
+   "title": "Emperor Taizong Receiving the Tibetan Envoy",
+   "claimed": {
+    "width": 143397,
+    "height": 9399,
+    "license": "Public domain scan",
+    "credit": "Yan Liben / collection credit must be verified"
+   },
+   "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/3/33/%E9%98%8E%E7%AB%8B%E6%9C%AC%E6%AD%A5%E8%BE%87%E5%9B%BE%E5%8D%B7.png",
+   "sourceUrl": "https://commons.wikimedia.org/wiki/File:阎立本步辇图卷.png",
+   "verified": "2026-10-17",
+   "commons": {
+    "width": 143397,
+    "height": 9399,
+    "bytes": 1793771299,
+    "sha1": "800355ffc83cc5dd83a52f3cc17d415768655eff",
+    "mime": "image/png",
+    "license": "Public domain",
+    "licenseUrl": null,
+    "artist": "Yan Liben",
+    "credit": "https://minghuaji.dpm.org.cn/paint/detail?id=4b24c04a7a544661a1d523b98f74fdd3",
+    "attributionRequired": "false"
+   }
+  },
+  {
+   "id": "bluemarble-globe",
+   "title": "Complete Blue Marble July globe (topography)",
+   "claimed": {
+    "width": 86400,
+    "height": 43200,
+    "license": "not stated by the supplied list",
+    "credit": "NASA Earth Observatory / Reto Stöckli"
+   },
+   "downloadUrl": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.A1_geo.tif",
+   "sourceUrl": "https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-topography/",
+   "verified": "2026-10-17",
+   "tiles": [
+    {
+     "tile": "A1",
+     "file": "world.topo.200407.3x21600x21600.A1_geo.tif",
+     "sha256": "ffeedc49623efb763d5efbbd7d148b1bfa8cec76919ec5f2c45f26c0926ffe10",
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.A1_geo.tif"
+    },
+    {
+     "tile": "B1",
+     "file": "world.topo.200407.3x21600x21600.B1_geo.tif",
+     "sha256": "484b8c7a65509a952f019233f708664c8a1852ebfc5e1866957d84b8708bff5c",
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.B1_geo.tif"
+    },
+    {
+     "tile": "C1",
+     "file": "world.topo.200407.3x21600x21600.C1_geo.tif",
+     "sha256": "1b763915bb9c3aa5b7f6d012a2f15b2a69be439919c58f0ca6b49dbf4fe6d32d",
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.C1_geo.tif"
+    },
+    {
+     "tile": "D1",
+     "file": "world.topo.200407.3x21600x21600.D1_geo.tif",
+     "sha256": "343f8d5fdde619747c8d95665316832e751f3beab07bc23fc82b35deb4e33929",
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.D1_geo.tif"
+    },
+    {
+     "tile": "A2",
+     "file": "world.topo.200407.3x21600x21600.A2_geo.tif",
+     "sha256": "507d774dfda2eccec9be22154ff47865360303d45a5f9441e3f719995be2d895",
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.A2_geo.tif"
+    },
+    {
+     "tile": "B2",
+     "file": "world.topo.200407.3x21600x21600.B2_geo.tif",
+     "sha256": "3b729bc56296d70a0cb33a2ef935add341b11a2cd84c6414acfa48f518c8f30c",
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.B2_geo.tif"
+    },
+    {
+     "tile": "C2",
+     "file": "world.topo.200407.3x21600x21600.C2_geo.tif",
+     "sha256": "f88b613abce16e35c32f91536400699b8dcaa98c1f58a0d5fdd7615e531436c1",
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.C2_geo.tif"
+    },
+    {
+     "tile": "D2",
+     "file": "world.topo.200407.3x21600x21600.D2_geo.tif",
+     "sha256": "ef310f9937145cec54a400dc34997e0eb0382079cfd5ace31677248a201a5599",
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.D2_geo.tif"
+    }
+   ],
+   "usedParts": [
+    {
+     "part": 1,
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.A1_geo.tif",
+     "sha256": "ffeedc49623efb763d5efbbd7d148b1bfa8cec76919ec5f2c45f26c0926ffe10",
+     "width": 21600,
+     "height": 21600,
+     "tile": "A1"
+    },
+    {
+     "part": 2,
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.B1_geo.tif",
+     "sha256": "484b8c7a65509a952f019233f708664c8a1852ebfc5e1866957d84b8708bff5c",
+     "width": 21600,
+     "height": 21600,
+     "tile": "B1"
+    },
+    {
+     "part": 3,
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.C1_geo.tif",
+     "sha256": "1b763915bb9c3aa5b7f6d012a2f15b2a69be439919c58f0ca6b49dbf4fe6d32d",
+     "width": 21600,
+     "height": 21600,
+     "tile": "C1"
+    },
+    {
+     "part": 4,
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.D1_geo.tif",
+     "sha256": "343f8d5fdde619747c8d95665316832e751f3beab07bc23fc82b35deb4e33929",
+     "width": 21600,
+     "height": 21600,
+     "tile": "D1"
+    },
+    {
+     "part": 5,
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.A2_geo.tif",
+     "sha256": "507d774dfda2eccec9be22154ff47865360303d45a5f9441e3f719995be2d895",
+     "width": 21600,
+     "height": 21600,
+     "tile": "A2"
+    },
+    {
+     "part": 6,
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.B2_geo.tif",
+     "sha256": "3b729bc56296d70a0cb33a2ef935add341b11a2cd84c6414acfa48f518c8f30c",
+     "width": 21600,
+     "height": 21600,
+     "tile": "B2"
+    },
+    {
+     "part": 7,
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.C2_geo.tif",
+     "sha256": "f88b613abce16e35c32f91536400699b8dcaa98c1f58a0d5fdd7615e531436c1",
+     "width": 21600,
+     "height": 21600,
+     "tile": "C2"
+    },
+    {
+     "part": 8,
+     "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.D2_geo.tif",
+     "sha256": "ef310f9937145cec54a400dc34997e0eb0382079cfd5ace31677248a201a5599",
+     "width": 21600,
+     "height": 21600,
+     "tile": "D2"
+    }
+   ],
+   "licenseNote": "NASA Earth Observatory imagery; the source page was fetched and carries no explicit license statement in its text, so no license name is asserted. NASA media usage guidelines apply and the credit line is kept.",
+   "notes": "Eight 21600x21600 GeoTIFF tiles (4 columns A-D by 2 rows 1-2, 500 m, WGS84, deflate RGB8) placed without resampling. Separate product from the existing western-hemisphere scene, which uses the topography+bathymetry variant; provenance is not mixed.",
+   "licenseName": "NASA imagery (usage guidelines)",
+   "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/"
+  },
+  {
+   "id": "bigpine",
+   "title": "Underwater orthomosaic of Big Pine Ledge, Florida (2022)",
+   "claimed": {
+    "width": null,
+    "height": null,
+    "license": "public domain (claim to verify)",
+    "credit": "USGS"
+   },
+   "downloadUrl": "https://cmgds.marine.usgs.gov/data-releases/media/2023/10.5066-P9H0Q773/3a3e95151c094b4ea42f7dbca2748b83/SQUID5_BPL_2022_orthomosaic_cog.tif",
+   "sourceUrl": "https://cmgds.marine.usgs.gov/data-releases/datarelease/10.5066-P9H0Q773/",
+   "verified": "2026-10-17",
+   "downloadHeaders": {
+    "bytes": 13857241981,
+    "md5": "0fa5a94375d9cfdfd44e58d340f6d480 (from the data release page; matched)",
+    "last-modified": "Thu, 21 Dec 2023 17:22:39 GMT"
+   },
+   "licenseName": "Public domain (USGS)",
+   "licenseUrl": "https://doi.org/10.5066/P9H0Q773",
+   "licenseEvidence": "Orthomosaic metadata Use_Constraints (SQUID5_BPL_2022_Orthomosaic_metadata.txt): \"USGS-authored or produced data and information are in the public domain from the U.S. Government and are freely redistributable with proper metadata and source attribution. Please recognize and acknowledge the U.S. Geological Survey as the originator of the dataset and in products derived from these data.\"",
+   "citation": "Kranenburg, C.J., Hatcher, G.A., and Warrick, J.A., 2024, Orthomosaic of Big Pine Ledge, Florida, 2022: U.S. Geological Survey data release, https://doi.org/10.5066/P9H0Q773 (part of Underwater Photogrammetry Products of Big Pine Ledge, Florida From Images Acquired Using the SQUID-5 System in July 2022).",
+   "notes": "Tiled BigTIFF (cloud-optimized) 175400 x 56600, 8-bit RGBA with unassociated alpha, Deflate with horizontal predictor, 256 x 256 tiles; 5 mm resolution. Alpha 0 marks outside the survey; the import composites over black and records the alpha counts. Not for navigation."
+  },
+  {
+   "id": "ic348",
+   "title": "IC 348 (Webb NIRCam)",
+   "claimed": {
+    "width": 30866,
+    "height": 38204,
+    "license": "NASA imagery (usage guidelines)",
+    "credit": "NASA, ESA, CSA, Kevin Luhman (PSU), Catarina Alves de Oliveira (ESA), Mahdi Zamani (ESA/Webb)"
+   },
+   "downloadUrl": "https://assets.science.nasa.gov/content/dam/science/missions/webb/science/2026/09/STScI-01M0JFFAD7SDCCNHWT7T7P3QX9.png",
+   "sourceUrl": "https://science.nasa.gov/asset/webb/ic-348-nircam-image-2/",
+   "verified": "2026-10-22",
+   "licenseName": "NASA imagery (usage guidelines)",
+   "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+   "notes": "Webb NIRCam image of IC 348, 30866x38204 px, PNG 1.78 GB. Composite of F162M+F182M (blue), F360M (green), F444W (red). Released 2026-09-15."
+  },
+  {
+   "id": "ngc7129",
+   "title": "NGC 7129 (Webb NIRCam)",
+   "claimed": {
+    "width": 11958,
+    "height": 11156,
+    "license": "NASA imagery (usage guidelines)",
+    "credit": "NASA, ESA, CSA, STScI; Image Processing: Alyssa Pagan (STScI)"
+   },
+   "downloadUrl": "https://assets.science.nasa.gov/content/dam/science/missions/webb/science/2026/10/STScI-01M2RAWEPQ0YFBJH9VZHV49SQT.png",
+   "sourceUrl": "https://science.nasa.gov/asset/webb/ngc-7129-nircam-image/",
+   "verified": "2026-10-22",
+   "licenseName": "NASA imagery (usage guidelines)",
+   "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+   "notes": "Webb NIRCam image of NGC 7129, 11958x11156 px, PNG 199 MB. Composite of F115W+F187N (blue), F200W (cyan), F335M (yellow), F444W+F470N (red). Released 2026-10-06."
+  },
+  {
+   "id": "andromeda-phat",
+   "title": "Andromeda Galaxy PHAT mosaic (Hubble)",
+   "claimed": {
+    "width": 69536,
+    "height": 22230,
+    "license": "CC BY 4.0",
+    "credit": "NASA, ESA, J. Dalcanton, B.F. Williams, L.C. Johnson (U. Washington), the PHAT team, and R. Gendler"
+   },
+   "downloadUrl": "https://esahubble.org/media/archives/images/original/heic1502a.psb",
+   "sourceUrl": "https://esahubble.org/images/heic1502a/",
+   "verified": "2026-10-22",
+   "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+   "licenseEvidence": "https://esahubble.org/copyright/ — CC BY 4.0",
+   "verifiedLicense": "CC BY 4.0",
+   "notes": "Largest and sharpest Hubble image of the Andromeda Galaxy (M31), 69536x22230 px, PSB 4.3 GB. Cropped mosaic showing over 100 million stars across ~40,000 light-years. Released 2015-01-05."
+  },
+  {
+   "id": "triangulum",
+   "title": "Triangulum Galaxy M33 (Hubble)",
+   "claimed": {
+    "width": 34372,
+    "height": 19345,
+    "license": "CC BY 4.0",
+    "credit": "NASA, ESA, and M. Durbin, J. Dalcanton, and B.F. Williams (U. Washington)"
+   },
+   "downloadUrl": "https://esahubble.org/media/archives/images/original/heic1901a.tif",
+   "sourceUrl": "https://esahubble.org/images/heic1901a/",
+   "verified": "2026-10-22",
+   "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+   "licenseEvidence": "https://esahubble.org/copyright/ — CC BY 4.0",
+   "verifiedLicense": "CC BY 4.0",
+   "notes": "Second-largest Hubble mosaic (after Andromeda), 34372x19345 px, TIFF 1.6 GB. About 54 ACS pointings covering the central region and inner spiral arms of M33. Released 2019-01-07."
+  },
+  {
+   "id": "carina",
+   "title": "Carina Nebula (Hubble)",
+   "claimed": {
+    "width": 29566,
+    "height": 14321,
+    "license": "CC BY 4.0",
+    "credit": "NASA, ESA, N. Smith (UC Berkeley), and The Hubble Heritage Team (STScI/AURA)"
+   },
+   "downloadUrl": "https://esahubble.org/media/archives/images/original/heic0707a.tif",
+   "sourceUrl": "https://esahubble.org/images/heic0707a/",
+   "verified": "2026-10-22",
+   "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+   "licenseEvidence": "https://esahubble.org/copyright/ — CC BY 4.0",
+   "verifiedLicense": "CC BY 4.0",
+   "notes": "48-frame ACS mosaic of the Carina Nebula (NGC 3372), 29566x14321 px, TIFF 501 MB. Ionized hydrogen composite with Cerro Tololo colour data. Released 2007-04-24."
+  },
+  {
+   "id": "ngc2014",
+   "title": "NGC 2014 and NGC 2020 starbirth (Hubble)",
+   "claimed": {
+    "width": 17043,
+    "height": 11710,
+    "license": "CC BY 4.0",
+    "credit": "NASA, ESA, and STScI"
+   },
+   "downloadUrl": "https://esahubble.org/media/archives/images/original/heic2007a.tif",
+   "sourceUrl": "https://esahubble.org/images/heic2007a/",
+   "verified": "2026-10-22",
+   "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+   "licenseEvidence": "https://esahubble.org/copyright/ — CC BY 4.0",
+   "verifiedLicense": "CC BY 4.0",
+   "notes": "Hubble 30th-anniversary image of NGC 2014 and NGC 2020 in the Large Magellanic Cloud, 17043x11710 px, TIFF 520 MB. Released 2020-04-24."
+  }
+ ],
+ "siteLicenses": {
+  "noirlab": {
+   "url": "https://noirlab.edu/public/copyright/",
+   "text": "images distributed on the public NOIRLab website are licensed under CC BY 4.0"
+  },
+  "eso": {
+   "url": "https://www.eso.org/public/outreach/copyright/",
+   "text": "images distributed on the public ESO website are licensed under CC BY 4.0; full credit line required"
+  }
+ },
+ "largerEarthOptions": [
+  {
+   "title": "Complete Blue Marble July 500m globe",
+   "width": 86400,
+   "height": 43200,
+   "url": "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-topography/july/world.topo.200407.3x21600x21600.A1_geo.tif",
+   "sourceUrl": "https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-topography/",
+   "notes": "8 tiles A1 B1 C1 D1 A2 B2 C2 D2; existing viewer western hemisphere uses topo+bathymetry variant, do not mix provenance",
+   "status": "imported as scene \"bluemarble-globe\" from the eight published tiles (the supplied URL is tile A1)"
+  },
+  {
+   "title": "EOX Sentinel-2 cloudless",
+   "url": "s3://eox-s2maps/tiles/{zoom}/{column}/{row}.tif",
+   "sourceUrl": "https://new.eox.at/2017/03/sentinel-2-cloudless-original-tiles-available/",
+   "licenseSource": "https://www.eox.at/2025/03/sentinel-2-cloudless-2024/",
+   "notes": "Requester pays; user says2016CCBY4,2018-24NC-SA. Do not incur charges or choose NC variant silently.",
+   "status": "not imported: requester-pays S3 bucket (no charges incurred without approval) and the supplied note says the 2018-24 layers are non-commercial share-alike; no variant chosen silently"
+  },
+  {
+   "title": "Sentinel Hub120m mosaic",
+   "sourceUrl": "https://registry.opendata.aws/sentinel-s2-l2a-mosaic-120/",
+   "layoutUrl": "https://sentinel-s2-l2a-mosaic-120.s3.amazonaws.com/readme.html",
+   "notes": "CCBY4 claim, B04/B03/B02 reflectance requires deliberate color rendering, not finished image",
+   "status": "not imported: surface-reflectance bands need a deliberate color rendering (stretch/gamma), which would be our own product rather than a published image"
+  },
+  {
+   "title": "USGS Big Pine Ledge coral reef",
+   "sourceUrl": "https://cmgds.marine.usgs.gov/data-releases/datarelease/10.5066-P9H0Q773/",
+   "metadataUrl": "https://www.usgs.gov/data/underwater-photogrammetry-products-big-pine-ledge-florida-images-acquired-using-squid-5-0",
+   "notes": "SQUID5_BPL_2022_orthomosaic_cog.tif12.9GB RGBalpha, original direct URL unresolved; public-domain claim verify",
+   "status": "imported as scene \"bigpine\" (direct URL resolved from the data release page)"
+  }
+ ]
+}

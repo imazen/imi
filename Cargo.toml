@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["imij", "imij-set", "tools/imij-oracle"]
+# imij-bench is a separate workspace (path deps on sibling zen checkouts).
+# fuzz is its own cargo-fuzz workspace (nightly, libfuzzer).
+exclude = ["imij-bench", "imij-cmp", "fuzz"]
+
+[profile.release]
+debug = 1
+codegen-units = 1
+lto = "thin"
+
+[profile.bench]
+debug = 1
+
+[patch.crates-io]
+# Exact common animation timing; coordinated with zenpng's native-color APIs.
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "119f31336e3d9a32aa7d78290cfc17035b78f050" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "3286169c7ef5b1e66ac841c3d8204eb54e390f8c" }
+# zencodec takes how-far 0.1.0 from crates.io; IMIJ pins the same release by
+# git. One source keeps a single SharedPulse/Stop type across the boundary.
+how-far = { git = "https://github.com/imazen/how-far", rev = "571bf1a2fc92e5b99c3777f8ff81bafab7666a75" }

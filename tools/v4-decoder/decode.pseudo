@@ -1,0 +1,134 @@
+# V4 scalar pixel-decoder pseudocode. Not an executable pixel implementation.
+# V4 wire control is executable in decoder.py. V3.* calls below are explicit
+# dependencies on existing normative kernels, NOT functions implemented here.
+# All f32 operations follow the V3 program/rounding order, not Python float math.
+
+decode_image(file, output):
+    image, metadata = read_and_admit_outer_header(file, required_version = 4)
+    source = open_DATA(file)
+    setup = read_V4_setup(source, image)
+    quantizer = V3.prepare_quantizer(image, setup.quantizer, setup.extensions)
+    models = immutable_dictionary_by_plane_and_id()
+    dc_cache = dictionary_by_column_group()
+    exact_cache = packed_exact_stripe_cache()  # F1: geometry is unresolved in draft.
+    schedule = expected_units_from_geometry_and_DC_coverage(setup)
+
+    # Reading definitions expands no entropy state. Expansions are admitted
+    # separately; every numeric/AC decode starts with fresh coder state.
+    read_unit(role, expected_id):
+        while next_record_is_model_definition(source):
+            definition = read_definition(source)
+            check_id_high_water_and_no_redefinition(definition)
+            check_declared_role_bank_root_and_lifetime(definition, schedule)
+            admit_retained_definition_bytes(definition)
+            models.insert(definition)
+        # F3: exact allowed side-record placement needs an explicit V4 rule.
+        record = read_next_main_record(source)
+        require(record.role == role and record.unit_id == expected_id)
+        require_all_active_roots_before_the_first_main_record()
+        prefix, entropy = parse_role_specific_prefix(record)
+        model = models.lookup(role, prefix.model_id)
+        require(model.definition_precedes(record))
+        check_pending_transient_is_used_by_this_main_record(model, record)
+        expanded = admit_and_expand_model(model, setup.numeric_descriptor(role))
+        return record, prefix, entropy, expanded
+
+    for stripe in AC_stripes(setup):
+        for group in column_groups(setup):
+            unit_id = stripe * group_count + group
+            dc_span = setup.coverage[group].containing(stripe)
+
+            if dc_span.starts_at(stripe):
+                rec, prefix, bytes, model = read_unit(DC, unit_id)
+                rectangle = DC_rectangle_from_coverage(dc_span, group, setup)
+                coded_samples = V3.decode_numeric(model, rectangle, bytes)
+                require_numeric_entropy_consumed_exactly(bytes)
+                # Includes model-specific maps, biased U16 versus I32 DC,
+                # and the raw fourth control channel. No coefficient float
+                # conversion or clamping may silently change stored bits.
+                dc_cache[group] = V3.map_numeric_samples(model, coded_samples)
+                finish_main_unit_and_expire_transient(rec)
+
+            dc, block_controls = rows_for_AC_unit(dc_cache[group], stripe)
+
+            if image.has_alpha:
+                rec, prefix, bytes, model = read_unit(ALPHA, unit_id)
+                alpha = V3.decode_and_map_numeric(model, alpha_rectangle(unit_id), bytes)
+                require_numeric_entropy_consumed_exactly(bytes)
+                finish_main_unit_and_expire_transient(rec)
+
+            rec, prefix, bytes, model = read_unit(AC, unit_id)
+            tiles = resolve_image_group_tile_settings(prefix.settings, setup)
+
+            # This step MUST follow DC decoding. Setup alone cannot decide
+            # exact/keep, effective AQ, or merge legality for actual parents.
+            for parent in present_parents(unit_id):
+                operation[parent] = interpret_control(setup.block_control,
+                                                       block_controls[parent])
+                if operation[parent] == TRANSFORM:
+                    code = tile_for(parent).AC_code(parent)
+                    aq[parent] = (clamped_numeric_AQ_or_64(parent)
+                                  if code == 0 else code)
+                else:
+                    aq[parent] = NOT_APPLICABLE  # Not a numeric scale zero.
+            V3.check_merge_exact_keep_AQ_legality(tiles, operation, aq)
+
+            if setup.ac_coder == ANS:
+                coefficients = V3.decode_run_level_ANS(model, prefix.restart, bytes)
+            else:
+                coefficients = V3.decode_split_Huffman(model, bytes)
+            require_AC_entropy_consumed_exactly(bytes)
+            # Bypassed parents may still carry normative EOB symbols. Skipping
+            # reconstruction is not permission to skip their encoded symbols.
+            finish_main_unit_and_expire_transient(rec)
+
+            for selected_transform in tiles.transforms_in_normative_order():
+                if selected_transform.is_kept:
+                    copy_reference_samples_exactly(selected_transform, output)
+                elif selected_transform.is_exact:
+                    defer_to_exact_overlay(selected_transform)
+                else:
+                    qcoeff = gather_parent_slots(coefficients, dc, selected_transform)
+                    values = V3.dequantize_exact_operation_order(qcoeff, quantizer,
+                                                                aq, selected_transform)
+                    spatial = V3.inverse_selected_transform(values, selected_transform)
+                    native = V3.inverse_color_pack_clamp(spatial, image, alpha)
+                    write_strided_rows(output, selected_transform, native)
+
+            if setup.has_exact:
+                rec, prefix, bytes, model = read_unit(EXACT, unit_id)
+                # The old packing can place a stripe containing this unit's
+                # pixels in an EARLIER exact record. The owning record's model
+                # and cached decoded stripe must be used, not this record's model.
+                owned = locate_owned_packed_exact_stripes(unit_id)  # F1 unresolved.
+                for packed_stripe in owned:
+                    exact_cache[packed_stripe] = V3.decode_and_map_numeric(
+                        model, packed_stripe_rectangle(packed_stripe),
+                        bytes_for_owned_stripe(bytes, packed_stripe))
+                needed = locate_packed_exact_stripes(unit_id)
+                exact = gather_exact_blocks(exact_cache, needed, unit_id)
+                overwrite_selected_blocks_with_exact_sample_bits(output, exact)
+                release_stripes_after_their_last_consuming_unit(exact_cache)
+                finish_main_unit_and_expire_transient(rec)
+
+            if dc_span.end == stripe + 1:
+                release(dc_cache[group])
+        yield_provisional_completed_rows(output, stripe)
+
+    require_no_missing_or_extra_main_units_or_definitions(source)
+    validate_index_against_observed_framing_and_model_bindings()
+    validate_requested_encoded_and_bitmap_checksums(file, output)
+    return VALIDATED_COMPLETE
+
+
+# Safe, deliberately slow ROI reference policy:
+# 1. Walk/validate ALL record headers, identities and definition lifetimes.
+#    Lengths skip unrelated entropy; it need not be decoded.
+# 2. Bind index entries to the observed record boundaries/definition identities.
+# 3. Decode only requested groups, their DC spans, required definitions, alpha
+#    and packed-exact dependencies; crop into a strided destination.
+# A source with positional reads could implement step 1 with metadata reads,
+# but that I/O path is not implemented/measured by the in-memory Python tool.
+#
+# A faster ROI implementation cannot replace 1/2 with "the selected bytes look
+# like definition 17". See the executable embedded-definition counterexample.

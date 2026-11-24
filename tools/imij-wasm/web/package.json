@@ -1,0 +1,20 @@
+{
+  "name": "imij-web",
+  "version": "0.0.1",
+  "private": true,
+  "description": "imij (IMI image codec) in the browser: threads/simd wasm packages, a worker pool, and parity tests",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build:wasm": "scripts/build-wasm.sh",
+    "serve": "node scripts/serve.mjs",
+    "test": "playwright test",
+    "test:parity": "playwright test tests/parity.spec.ts",
+    "bench": "playwright test tests/benchmark.spec.ts"
+  },
+  "devDependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.4.2",
+    "@playwright/test": "1.63.0",
+    "binaryen": "132.0.0"
+  }
+}

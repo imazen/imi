@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>IMIJ quick-pixel Pareto measurements</title>
+<style>body{font:17px system-ui;max-width:1100px;margin:3rem auto;padding:0 1rem;color:#182331;background:#fafafa}select{font:inherit;padding:.4rem;margin:0 1rem 1rem 0}svg{width:100%;background:white;border:1px solid #ddd;margin:.5rem 0}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{text-align:right;padding:.6rem}td:first-child,th:first-child{text-align:left}tr:nth-child(even){background:#eee}circle{cursor:pointer}p{max-width:80ch;line-height:1.5}</style>
+<h1>Quick pixels: size, encode and decode</h1><p>Real images, complete encoded files, slowest of three fresh-process blocks. Compare at the same thread count. Filled points are on the measured three-objective frontier; hollow points are dominated. These are measured tradeoffs, not statistical significance claims. Hover points for details.</p>
+<label>Image type <select id="category"></select></label><label>Threads <select id="threads"><option>1</option><option>2</option><option>4</option><option>8</option></select></label><div id="plots"></div><table id="table"></table>
+<script>
+const data=/*DATA*/;
+function label(arm){if(arm.startsWith('zenbitmaps-0-'))return 'zenbitmaps QOI, whole image';if(arm.startsWith('zenbitmaps-64-'))return 'zenbitmaps QOI, 64-row band bundle';if(arm.startsWith('imij-quick-packed-'))return 'IMIJ quick + packed bits';if(arm.startsWith('imij-quick-bits-'))return 'IMIJ quick + bit-plane packets';if(arm.startsWith('imij-quick-'))return 'IMIJ quick';return 'IMIJ effort '+arm.split('-')[1];}
+const colors=['#176b9b','#a33122','#538c35','#7b43aa','#bc7510','#497572'];
+for(const c of [...new Set(data.map(r=>r.category))])category.add(new Option(c,c));
+function draw(){const rows=data.filter(r=>r.category===category.value&&r.threads===+threads.value);plots.innerHTML='';
+for(const metric of ['encode','decode']){const key=metric+'_mpx_s',xm=Math.max(...rows.map(r=>r.bpp))*1.1,ym=Math.max(...rows.map(r=>r[key]))*1.1;
+let s='<svg viewBox="0 0 1050 340" role="img" aria-label="'+metric+' throughput against bits per pixel"><text x="65" y="25">'+metric+' MPx/s ↑</text><path d="M65 40V290H1000" fill="none" stroke="#333"/>';
+for(let i=0;i<=5;i++){const y=290-i*48;s+='<text x="58" y="'+(y+5)+'" text-anchor="end">'+(ym*i/5).toFixed(0)+'</text><path d="M65 '+y+'H1000" stroke="#eee"/>';const x=65+i*187;s+='<text x="'+x+'" y="313" text-anchor="middle">'+(xm*i/5).toFixed(2)+'</text>';}
+s+='<text x="930" y="334">bpp →</text>';rows.forEach((r,i)=>{s+='<circle cx="'+(65+935*r.bpp/xm)+'" cy="'+(290-240*r[key]/ym)+'" r="7" fill="'+(r.frontier?colors[i%colors.length]:'white')+'" stroke="'+colors[i%colors.length]+'" stroke-width="3"><title>'+label(r.arm)+': '+r.bpp.toFixed(4)+' bpp, '+r[key].toFixed(2)+' MPx/s</title></circle>';});plots.innerHTML+=s+'</svg>';}
+table.innerHTML='<tr><th>Mode</th><th>bpp</th><th>Encode MPx/s</th><th>Decode MPx/s</th><th>Frontier</th></tr>'+rows.map((r,i)=>'<tr><td style="color:'+colors[i%colors.length]+'">'+label(r.arm)+'</td><td>'+r.bpp.toFixed(4)+'</td><td>'+r.encode_mpx_s.toFixed(2)+'</td><td>'+r.decode_mpx_s.toFixed(2)+'</td><td>'+(r.frontier?'yes':'')+'</td></tr>').join('');}
+category.onchange=threads.onchange=draw;draw();
+</script>

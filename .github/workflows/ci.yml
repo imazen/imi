@@ -1,0 +1,112 @@
+name: CI
+
+# Manual dispatch: gh workflow run ci.yml -R imazen/imi --ref <branch or tag>
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CI: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - windows-latest
+          - windows-11-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (default)
+        run: cargo test --release -p imij
+      - name: Test (native reader access model)
+        run: cargo test --release -p imij-set --test access_model
+      - name: Test (scalar reference decoder)
+        run: cargo test --release -p imij --test v1_roundtrip --test ext32
+        env:
+          IMIJ_SCALAR: "1"
+      - name: Test (baseline sample admission)
+        run: cargo test --release -p imij --no-default-features --features std,encode --test baseline_types --test ext32 --test profiles --test v4_encode_only
+      - name: Test (without native default SIMD and parallel features)
+        run: cargo test --release -p imij --no-default-features --features std,encode,extended
+
+  i686:
+    name: Test (i686)
+    runs-on: ubuntu-latest
+    env:
+      CROSS_CONTAINER_OPTS: --security-opt seccomp=unconfined
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cross
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cross-i686
+      - name: Test (i686)
+        run: cross test --release -p imij --target i686-unknown-linux-gnu
+      - name: Test (i686 native reader access model)
+        run: cross test --release -p imij-set --test access_model --target i686-unknown-linux-gnu
+
+  avx512-sde:
+    name: Test (AVX-512 kernels under Intel SDE)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch Intel SDE
+        run: |
+          curl -sSfL -o sde.tar.xz https://downloadmirror.intel.com/843185/sde-external-9.48.0-2024-11-25-lin.tar.xz
+          mkdir sde && tar xf sde.tar.xz -C sde --strip-components=1
+      - name: Build tests
+        run: cargo test --release -p imij --no-run
+      - name: Run tests on an emulated Sapphire Rapids CPU
+        run: |
+          for t in v1_roundtrip ext32; do
+            bin=$(ls -t target/release/deps/$t-* | grep -v '\.d$' | head -1)
+            ./sde/sde64 -spr -- "$bin" report_tier --nocapture
+            ./sde/sde64 -spr -- "$bin"
+          done
+
+  no-std:
+    name: no_std / wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Check (no_std, extended)
+        run: cargo check -p imij --no-default-features --features extended --target wasm32-unknown-unknown
+      - name: Check (no_std, baseline only)
+        run: cargo check -p imij --no-default-features --target wasm32-unknown-unknown
+
+  clippy:
+    name: Clippy + fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p imij --all-targets -- -D warnings
+      - name: Fmt
+        run: cargo fmt -p imij -- --check

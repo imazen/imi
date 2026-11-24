@@ -1,0 +1,13 @@
+# Cargo output from root and standalone nested workspaces.
+**/target/
+.jj/
+.workongoing
+__pycache__/
+*.pyc
+.wrangler/
+benchmarks/split_revisit_2026-10-10/*.tsv
+
+/local-scratch/imij-host.lock
+
+# Browser dependencies may be a local symlink as well as a directory.
+**/node_modules
