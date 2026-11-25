@@ -193,6 +193,80 @@ pub(crate) mod avx2 {
         _mm256_blendv_epi8(up, down, _mm256_cmpgt_epi16(zero, q))
     }
 
+    #[rite(import_intrinsics)]
+    #[inline(always)]
+    fn unzz_signed(_t: X64V3Token, u: __m256i) -> __m256i {
+        let neg = _mm256_sub_epi16(
+            _mm256_setzero_si256(),
+            _mm256_and_si256(u, _mm256_set1_epi16(1)),
+        );
+        _mm256_xor_si256(_mm256_srli_epi16::<1>(u), neg)
+    }
+
+    /// Fast specialized 8-bit exact reconstruction (`NEAR == false`, all slots 8-bit).
+    /// Zero inner-loop bounds checks, compile-time `P_AVG_WNE` guard, const-generic
+    /// `DECOR` & `FIRST_ROW`, and signed unzigzag without redundant intermediate `& 0xFF`.
+    #[rite(import_intrinsics)]
+    #[inline(always)]
+    fn recon_row_8bit<const NS: usize, const P: u8, const DECOR: u8, const FIRST_ROW: bool>(
+        t: X64V3Token,
+        res: &[&[u16]; NS],
+        prev: &[&[u16]; NS],
+        cur: &mut [&mut [u16]; NS],
+        widv: __m256i,
+        lw: usize,
+    ) {
+        let zero = _mm256_setzero_si256();
+        let mask = _mm256_set1_epi16(0x00FF);
+        let r_ch: [&[[u16; NL]]; NS] = core::array::from_fn(|s| &res[s].as_chunks::<NL>().0[..lw]);
+        let p_ch: [&[[u16; NL]]; NS] = core::array::from_fn(|s| &prev[s].as_chunks::<NL>().0[..lw]);
+        let c_ch: [&mut [[u16; NL]]; NS] = {
+            let mut it = cur.iter_mut();
+            core::array::from_fn(|_| &mut it.next().unwrap().as_chunks_mut::<NL>().0[..lw])
+        };
+        let mut wv = [zero; NS];
+        let mut nwv = [zero; NS];
+        for x in 0..lw {
+            let mut d: [__m256i; NS] =
+                core::array::from_fn(|s| unzz_signed(t, _mm256_loadu_si256(&r_ch[s][x])));
+            if DECOR != 0 && NS >= 3 {
+                let g = d[0];
+                d[1] = _mm256_add_epi16(d[1], g);
+                d[2] = match DECOR {
+                    1 => _mm256_add_epi16(d[2], g),
+                    2 => _mm256_add_epi16(d[2], d[1]),
+                    _ => {
+                        // Exact floor((sext8(r) + g) / 2): g is already signed i16 in [-128..127].
+                        let rs = _mm256_srai_epi16::<8>(_mm256_slli_epi16::<8>(d[1]));
+                        let avg = _mm256_srai_epi16::<1>(_mm256_add_epi16(rs, g));
+                        _mm256_add_epi16(d[2], avg)
+                    }
+                };
+            }
+            for s in 0..NS {
+                let v = if FIRST_ROW {
+                    let w = if x > 0 { wv[s] } else { zero };
+                    _mm256_and_si256(_mm256_add_epi16(w, d[s]), mask)
+                } else {
+                    let n = _mm256_loadu_si256(&p_ch[s][x]);
+                    let (w, nw) = if x > 0 { (wv[s], nwv[s]) } else { (n, n) };
+                    let ne = if P == predict::P_AVG_WNE && x + 1 < lw {
+                        let ner = _mm256_loadu_si256(&p_ch[s][x + 1]);
+                        let has = _mm256_cmpgt_epi16(widv, _mm256_set1_epi16((x + 1) as i16));
+                        _mm256_blendv_epi8(n, ner, has)
+                    } else {
+                        n
+                    };
+                    nwv[s] = n;
+                    let p = predict::<P>(t, w, n, nw, ne, mask);
+                    _mm256_and_si256(_mm256_add_epi16(p, d[s]), mask)
+                };
+                wv[s] = v;
+                _mm256_storeu_si256(&mut c_ch[s][x], v);
+            }
+        }
+    }
+
     /// Reconstructs one row; `res`, `prev`, `cur` are per-slot step-major rows,
     /// `bits` and `near` each slot's coded width and near-lossless bound.
     /// `NEAR`: some bound is nonzero (slots with bound 0 stay modular).
@@ -211,6 +285,31 @@ pub(crate) mod avx2 {
         row: usize,
         decor: u8,
     ) {
+        let wid: [u16; 16] = core::array::from_fn(|l| widths[l].min(u16::MAX as u32) as u16);
+        let widv = _mm256_loadu_si256(&wid);
+        if !NEAR && bits[..NS].iter().all(|&b| b == 8) {
+            let eff_decor = if color_slots == 3 && NS >= 3 {
+                decor
+            } else {
+                0
+            };
+            if row == 0 {
+                match eff_decor {
+                    0 => recon_row_8bit::<NS, P, 0, true>(t, res, prev, cur, widv, lw),
+                    1 => recon_row_8bit::<NS, P, 1, true>(t, res, prev, cur, widv, lw),
+                    2 => recon_row_8bit::<NS, P, 2, true>(t, res, prev, cur, widv, lw),
+                    _ => recon_row_8bit::<NS, P, 3, true>(t, res, prev, cur, widv, lw),
+                }
+            } else {
+                match eff_decor {
+                    0 => recon_row_8bit::<NS, P, 0, false>(t, res, prev, cur, widv, lw),
+                    1 => recon_row_8bit::<NS, P, 1, false>(t, res, prev, cur, widv, lw),
+                    2 => recon_row_8bit::<NS, P, 2, false>(t, res, prev, cur, widv, lw),
+                    _ => recon_row_8bit::<NS, P, 3, false>(t, res, prev, cur, widv, lw),
+                }
+            }
+            return;
+        }
         let zero = _mm256_setzero_si256();
         let masks: [__m256i; NS] =
             core::array::from_fn(|s| _mm256_set1_epi16(((1u32 << bits[s]) - 1) as u16 as i16));
@@ -221,15 +320,17 @@ pub(crate) mod avx2 {
         let cbits = bits[0];
         let sh = _mm_cvtsi32_si128(16 - cbits.max(1) as i32);
         let do_decor = color_slots == 3 && decor != 0 && NS >= 3;
-        // Lanes whose NE neighbor exists at step x: x + 1 < width.
-        let wid: [u16; 16] = core::array::from_fn(|l| widths[l].min(u16::MAX as u32) as u16);
-        let widv = _mm256_loadu_si256(&wid);
+        let r_ch: [&[[u16; NL]]; NS] = core::array::from_fn(|s| &res[s].as_chunks::<NL>().0[..lw]);
+        let p_ch: [&[[u16; NL]]; NS] = core::array::from_fn(|s| &prev[s].as_chunks::<NL>().0[..lw]);
+        let c_ch: [&mut [[u16; NL]]; NS] = {
+            let mut it = cur.iter_mut();
+            core::array::from_fn(|_| &mut it.next().unwrap().as_chunks_mut::<NL>().0[..lw])
+        };
         let mut wv = [zero; NS];
         let mut nwv = [zero; NS];
         for x in 0..lw {
-            let bi = x * NL;
             let mut d: [__m256i; NS] =
-                core::array::from_fn(|s| unzz(t, ld(t, &res[s][bi..]), masks[s]));
+                core::array::from_fn(|s| unzz(t, _mm256_loadu_si256(&r_ch[s][x]), masks[s]));
             if do_decor {
                 let m = masks[0];
                 let g = d[0];
@@ -238,7 +339,6 @@ pub(crate) mod avx2 {
                     1 => _mm256_and_si256(_mm256_add_epi16(d[2], g), m),
                     2 => _mm256_and_si256(_mm256_add_epi16(d[2], d[1]), m),
                     _ => {
-                        // floor((a + b) / 2) without i16 overflow.
                         let a = sext(t, d[1], sh);
                         let b = sext(t, g, sh);
                         let avg = _mm256_add_epi16(
@@ -251,7 +351,6 @@ pub(crate) mod avx2 {
             }
             for s in 0..NS {
                 let v = if row == 0 {
-                    // Predictor W; first column predicts 0.
                     let w = if x > 0 { wv[s] } else { zero };
                     if near_on[s] {
                         near_add(t, w, d[s], shs[s], steps[s], masks[s])
@@ -259,10 +358,10 @@ pub(crate) mod avx2 {
                         _mm256_and_si256(_mm256_add_epi16(w, d[s]), masks[s])
                     }
                 } else {
-                    let n = ld(t, &prev[s][bi..]);
+                    let n = _mm256_loadu_si256(&p_ch[s][x]);
                     let (w, nw) = if x > 0 { (wv[s], nwv[s]) } else { (n, n) };
-                    let ne = if x + 1 < lw {
-                        let ner = ld(t, &prev[s][bi + NL..]);
+                    let ne = if P == predict::P_AVG_WNE && x + 1 < lw {
+                        let ner = _mm256_loadu_si256(&p_ch[s][x + 1]);
                         let has = _mm256_cmpgt_epi16(widv, _mm256_set1_epi16((x + 1) as i16));
                         _mm256_blendv_epi8(n, ner, has)
                     } else {
@@ -277,7 +376,7 @@ pub(crate) mod avx2 {
                     }
                 };
                 wv[s] = v;
-                st(t, &mut cur[s][bi..], v);
+                _mm256_storeu_si256(&mut c_ch[s][x], v);
             }
         }
     }
@@ -805,7 +904,7 @@ pub(crate) mod out_avx2 {
     /// Writes 16 pixels of 8-bit samples for `nch` channels into `dst`
     /// (`16 * nch` bytes).
     #[rite(import_intrinsics)]
-    fn write8(t: X64V3Token, ch: &[__m256i; 4], nch: usize, dst: &mut [u8]) {
+    pub(crate) fn write8(t: X64V3Token, ch: &[__m256i; 4], nch: usize, dst: &mut [u8]) {
         match nch {
             1 => {
                 let d: &mut [u8; 16] = (&mut dst[..16]).try_into().unwrap();
@@ -1107,6 +1206,35 @@ pub(crate) mod out_v4x {
         let mut pad = [0u16; 16 * NL];
         let mut mapped = [0u16; 16 * NL];
         let mut tmp = [0u8; 64];
+        let tr_lo = [
+            _mm512_loadu_si512(&TR_LO[0]),
+            _mm512_loadu_si512(&TR_LO[1]),
+            _mm512_loadu_si512(&TR_LO[2]),
+            _mm512_loadu_si512(&TR_LO[3]),
+        ];
+        let tr_hi = [
+            _mm512_loadu_si512(&TR_HI[0]),
+            _mm512_loadu_si512(&TR_HI[1]),
+            _mm512_loadu_si512(&TR_HI[2]),
+            _mm512_loadu_si512(&TR_HI[3]),
+        ];
+        let rgb1_v = [
+            _mm512_loadu_si512(&RGB1[0]),
+            _mm512_loadu_si512(&RGB1[1]),
+            _mm512_loadu_si512(&RGB1[2]),
+            _mm512_loadu_si512(&RGB1[3]),
+        ];
+        let rgb2_v = [
+            _mm512_loadu_si512(&RGB2[0]),
+            _mm512_loadu_si512(&RGB2[1]),
+            _mm512_loadu_si512(&RGB2[2]),
+            _mm512_loadu_si512(&RGB2[3]),
+        ];
+        let plain_ident = tab8.is_none()
+            && !sign
+            && luts[..nch].iter().all(|l| l.is_empty())
+            && kinds[..nch].iter().all(|k| matches!(k, OutKind::Ident))
+            && slot_of[..nch].iter().all(Option::is_some);
         for bk in 0..blocks {
             let x0 = bk * 16;
             let n = 16.min(lw - x0);
@@ -1124,12 +1252,17 @@ pub(crate) mod out_v4x {
                 };
                 let lut8 = luts[c].len();
                 // A[k]: steps 4k..4k+3 as bytes (step * 16 + lane).
-                let a: [__m512i; 4] = if let (Some(tab8), true) =
+                let a: [__m512i; 4] = if plain_ident {
+                    core::array::from_fn(|k| {
+                        let w0: &[u16; 32] = src[(4 * k) * NL..][..32].try_into().unwrap();
+                        let w1: &[u16; 32] = src[(4 * k + 2) * NL..][..32].try_into().unwrap();
+                        let b0 = _mm512_cvtepi16_epi8(_mm512_loadu_si512(w0));
+                        let b1 = _mm512_cvtepi16_epi8(_mm512_loadu_si512(w1));
+                        _mm512_inserti64x4::<1>(_mm512_castsi256_si512(b0), b1)
+                    })
+                } else if let (Some(tab8), true) =
                     (&tab8, !src.is_empty() && (1..=256).contains(&lut8))
                 {
-                    // Value table in registers: indices narrowed to bytes,
-                    // then one permutex2var per 128 entries (index bit 7
-                    // selects the high pair when len > 128).
                     let tb = &tab8[c];
                     let t0 = _mm512_loadu_si512(<&[u8; 64]>::try_from(&tb[..64]).unwrap());
                     let t1 = _mm512_loadu_si512(<&[u8; 64]>::try_from(&tb[64..128]).unwrap());
@@ -1162,7 +1295,6 @@ pub(crate) mod out_v4x {
                         }
                     })
                 } else {
-                    // Every step of the block is loaded (the padded ones too).
                     let src = super::block_src(src, &luts[c], &mut mapped);
                     core::array::from_fn(|k| {
                         let half = |j: usize| -> __m256i {
@@ -1174,7 +1306,6 @@ pub(crate) mod out_v4x {
                                 _mm512_loadu_si512(w)
                             };
                             let v = apply(t, v, kinds[c]);
-                            // i8: flip bit 7 (the order map inverse).
                             let v = if sign {
                                 _mm512_xor_si512(v, _mm512_set1_epi16(0x80))
                             } else {
@@ -1186,8 +1317,8 @@ pub(crate) mod out_v4x {
                     })
                 };
                 for m in 0..4 {
-                    let lo = _mm512_permutex2var_epi8(a[0], _mm512_loadu_si512(&TR_LO[m]), a[1]);
-                    let hi = _mm512_permutex2var_epi8(a[2], _mm512_loadu_si512(&TR_HI[m]), a[3]);
+                    let lo = _mm512_permutex2var_epi8(a[0], tr_lo[m], a[1]);
+                    let hi = _mm512_permutex2var_epi8(a[2], tr_hi[m], a[3]);
                     lt[c][m] = _mm512_mask_blend_epi8(HI_MASK, lo, hi);
                 }
             }
@@ -1199,9 +1330,8 @@ pub(crate) mod out_v4x {
                 let cnt = 16.min(wl - x0);
                 let (m, li) = (l / 4, l % 4);
                 let v = if nch == 3 {
-                    let u =
-                        _mm512_permutex2var_epi8(lt[0][m], _mm512_loadu_si512(&RGB1[li]), lt[1][m]);
-                    _mm512_permutex2var_epi8(u, _mm512_loadu_si512(&RGB2[li]), lt[2][m])
+                    let u = _mm512_permutex2var_epi8(lt[0][m], rgb1_v[li], lt[1][m]);
+                    _mm512_permutex2var_epi8(u, rgb2_v[li], lt[2][m])
                 } else {
                     let idx = _mm512_loadu_si512(&RGBA[li]);
                     let rg = _mm512_permutex2var_epi8(lt[0][m], idx, lt[1][m]);
@@ -1614,8 +1744,10 @@ pub(crate) mod out_wasm128 {
     use super::{Ord16, OutKind, RGB8_SHUF, RGB16_SHUF};
     use crate::rans::NL;
     use archmage::prelude::*;
-    use core::arch::wasm32::{i8x16_swizzle, i16x8_shuffle, i32x4_shuffle, i64x2_shuffle, v128};
-    use magetypes::simd::{i16x16, u8x16, u16x16, u32x8};
+    use core::arch::wasm32::{
+        i8x16_swizzle, i16x8_shuffle, i32x4_shuffle, i64x2_shuffle, u8x16_narrow_i16x8, v128,
+    };
+    use magetypes::simd::{u8x16, u16x16, u32x8};
 
     /// Byte swizzle through an index vector (indices >= 16 read zero).
     #[rite]
@@ -1648,6 +1780,7 @@ pub(crate) mod out_wasm128 {
 
     /// 8x8 transpose of u16 lanes (one `v128` per row): `out[j][i] = r[i][j]`.
     #[rite]
+    #[inline(never)]
     fn t8x8(_t: Wasm128Token, r: [v128; 8]) -> [v128; 8] {
         let p16 = |a: v128, b: v128, hi: bool| {
             if hi {
@@ -1691,9 +1824,52 @@ pub(crate) mod out_wasm128 {
         ]
     }
 
+    /// 16x16 byte transpose (`out[l][x] = r[x][l]`): half the stack, registers,
+    /// and shuffles of `transpose16` when values already fit in `u8`.
+    #[rite]
+    #[inline(never)]
+    pub(crate) fn transpose16_u8(t: Wasm128Token, r: &[u8x16; 16]) -> [u8x16; 16] {
+        let z = u8x16::zero_t(t).raw();
+        let mut s1 = [z; 16];
+        for i in 0..8 {
+            let a = r[2 * i].raw();
+            let b = r[2 * i + 1].raw();
+            s1[i] = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(a, b);
+            s1[8 + i] =
+                i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(a, b);
+        }
+        let mut s2 = [z; 16];
+        for h in [0usize, 8] {
+            for i in 0..4 {
+                let a = s1[h + 2 * i];
+                let b = s1[h + 2 * i + 1];
+                s2[h + i] = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(a, b);
+                s2[h + 4 + i] = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(a, b);
+            }
+        }
+        let mut s3 = [z; 16];
+        for q in [0usize, 4, 8, 12] {
+            for i in 0..2 {
+                let a = s2[q + 2 * i];
+                let b = s2[q + 2 * i + 1];
+                s3[q + i] = i32x4_shuffle::<0, 4, 1, 5>(a, b);
+                s3[q + 2 + i] = i32x4_shuffle::<2, 6, 3, 7>(a, b);
+            }
+        }
+        let mut out = [u8x16::zero_t(t); 16];
+        for p in (0..16).step_by(2) {
+            let a = s3[p];
+            let b = s3[p + 1];
+            out[p] = u8x16::from_raw_t(t, i64x2_shuffle::<0, 2>(a, b));
+            out[p + 1] = u8x16::from_raw_t(t, i64x2_shuffle::<1, 3>(a, b));
+        }
+        out
+    }
+
     /// Transposes 16 step vectors (16 lanes each) into 16 lane vectors.
     #[rite]
-    fn transpose16(t: Wasm128Token, r: &[u16x16; 16]) -> [u16x16; 16] {
+    #[inline(never)]
+    pub(crate) fn transpose16(t: Wasm128Token, r: &[u16x16; 16]) -> [u16x16; 16] {
         let z = u8x16::zero_t(t).raw();
         let mut lo = [z; 16];
         let mut hi = [z; 16];
@@ -1717,6 +1893,7 @@ pub(crate) mod out_wasm128 {
 
     /// Applies an output transform to 16 lanes.
     #[rite]
+    #[inline(never)]
     fn apply(t: Wasm128Token, v: u16x16, k: OutKind) -> u16x16 {
         match k {
             OutKind::Ident | OutKind::Lut => v,
@@ -1752,17 +1929,18 @@ pub(crate) mod out_wasm128 {
         }
     }
 
-    /// Packs 16 u16 (values < 256) to 16 bytes in order.
+    /// Packs 16 u16 (values < 256) to 16 bytes in order (one WASM instruction).
     #[rite]
-    fn pack8(t: Wasm128Token, v: u16x16) -> u8x16 {
-        let p = v.bitcast_i16x16().narrow_saturating_u8(i16x16::zero_t(t));
-        let h: [v128; 2] = p.into_repr();
-        u8x16::from_raw_t(t, h[0])
+    #[inline(always)]
+    pub(crate) fn pack8(t: Wasm128Token, v: u16x16) -> u8x16 {
+        let h: [v128; 2] = v.into_repr();
+        u8x16::from_raw_t(t, u8x16_narrow_i16x8(h[0], h[1]))
     }
 
     /// Stores 16-byte chunks covering `dst`, zero-filling a partial tail.
     #[rite]
-    fn emit(t: Wasm128Token, chunks: &[v128], dst: &mut [u8]) {
+    #[inline(never)]
+    pub(crate) fn emit(t: Wasm128Token, chunks: &[v128], dst: &mut [u8]) {
         let mut off = 0;
         for &c in chunks {
             if off >= dst.len() {
@@ -1781,8 +1959,63 @@ pub(crate) mod out_wasm128 {
         }
     }
 
+    /// Interleaves and stores up to 16 RGB8 pixels from 3 byte vectors.
+    #[rite]
+    #[inline(always)]
+    pub(crate) fn emit_rgb8(
+        t: Wasm128Token,
+        r: u8x16,
+        g: u8x16,
+        b: u8x16,
+        t8: &[[v128; 3]; 3],
+        dst: &mut [u8],
+    ) {
+        let part = |p: usize| (swz(t, r, t8[p][0]) | swz(t, g, t8[p][1])) | swz(t, b, t8[p][2]);
+        emit(t, &[part(0).raw(), part(1).raw(), part(2).raw()], dst);
+    }
+
+    /// Interleaves and stores up to 16 RGBA8 pixels from 4 byte vectors.
+    #[rite]
+    #[inline(always)]
+    pub(crate) fn emit_rgba8(
+        t: Wasm128Token,
+        r: u8x16,
+        g: u8x16,
+        b: u8x16,
+        a: u8x16,
+        dst: &mut [u8],
+    ) {
+        let rg_lo = ilv8_lo(t, r, g);
+        let rg_hi = ilv8_hi(t, r, g);
+        let ba_lo = ilv8_lo(t, b, a);
+        let ba_hi = ilv8_hi(t, b, a);
+        let p16 = |a: u8x16, b: u8x16, hi: bool| -> v128 {
+            if hi {
+                i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(a.raw(), b.raw())
+            } else {
+                i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(a.raw(), b.raw())
+            }
+        };
+        emit(
+            t,
+            &[
+                p16(rg_lo, ba_lo, false),
+                p16(rg_lo, ba_lo, true),
+                p16(rg_hi, ba_hi, false),
+                p16(rg_hi, ba_hi, true),
+            ],
+            dst,
+        );
+    }
+
+    #[rite]
+    pub(crate) fn rgb8_tables(t: Wasm128Token) -> [[v128; 3]; 3] {
+        core::array::from_fn(|p| core::array::from_fn(|c| v8(t, RGB8_SHUF[p][c])))
+    }
+
     /// Writes one row of 8-bit output; same bytes as `out_avx2::write_row8`.
     #[arcane]
+    #[inline(never)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_row8(
         t: Wasm128Token,
@@ -1797,9 +2030,52 @@ pub(crate) mod out_wasm128 {
     ) {
         let nch = kinds.len();
         let zero = u16x16::zero_t(t);
-        let t8: [[v128; 3]; 3] =
-            core::array::from_fn(|p| core::array::from_fn(|c| v8(t, RGB8_SHUF[p][c])));
+        let t8 = rgb8_tables(t);
+        let plain_ident = !sign
+            && luts[..nch].iter().all(|l| l.is_empty())
+            && kinds[..nch].iter().all(|k| matches!(k, OutKind::Ident))
+            && slot_of[..nch].iter().all(Option::is_some);
         let blocks = lw.div_ceil(16);
+        if plain_ident {
+            let z8 = u8x16::zero_t(t);
+            for bk in 0..blocks {
+                let x0 = bk * 16;
+                let n = 16.min(lw - x0);
+                let mut lanes = [[z8; 16]; 4];
+                for c in 0..nch {
+                    let s = slot_of[c].unwrap();
+                    let mut rows = [z8; 16];
+                    let ch = &cur[s].as_chunks::<NL>().0[x0..x0 + n];
+                    for (r, src) in rows.iter_mut().zip(ch) {
+                        *r = pack8(t, u16x16::load_t(t, src));
+                    }
+                    lanes[c] = transpose16_u8(t, &rows);
+                }
+                for l in 0..NL {
+                    let wl = widths[l] as usize;
+                    if wl <= x0 {
+                        continue;
+                    }
+                    let cnt = 16.min(wl - x0);
+                    let px = l * lw + x0;
+                    let dst = &mut out_row[px * nch..px * nch + cnt * nch];
+                    match nch {
+                        1 => emit(t, &[lanes[0][l].raw()], dst),
+                        2 => emit(
+                            t,
+                            &[
+                                ilv8_lo(t, lanes[0][l], lanes[1][l]).raw(),
+                                ilv8_hi(t, lanes[0][l], lanes[1][l]).raw(),
+                            ],
+                            dst,
+                        ),
+                        3 => emit_rgb8(t, lanes[0][l], lanes[1][l], lanes[2][l], &t8, dst),
+                        _ => emit_rgba8(t, lanes[0][l], lanes[1][l], lanes[2][l], lanes[3][l], dst),
+                    }
+                }
+            }
+            return;
+        }
         let mut mapped = [0u16; 16 * NL];
         for bk in 0..blocks {
             let x0 = bk * 16;
@@ -1809,8 +2085,9 @@ pub(crate) mod out_wasm128 {
                 let Some(s) = slot_of[c] else { continue };
                 let mut rows = [zero; 16];
                 if luts[c].is_empty() {
-                    for (i, r) in rows.iter_mut().enumerate().take(n) {
-                        *r = u16x16::from_slice_t(t, &cur[s][(x0 + i) * NL..(x0 + i) * NL + NL]);
+                    let ch = &cur[s].as_chunks::<NL>().0[x0..x0 + n];
+                    for (r, src) in rows.iter_mut().zip(ch) {
+                        *r = u16x16::load_t(t, src);
                     }
                 } else {
                     let src =
@@ -1827,26 +2104,18 @@ pub(crate) mod out_wasm128 {
                     continue;
                 }
                 let cnt = 16.min(wl - x0);
-                let ch: [u16x16; 4] = core::array::from_fn(|c| {
+                let b: [u8x16; 4] = core::array::from_fn(|c| {
                     if c >= nch {
-                        return zero;
+                        return u8x16::zero_t(t);
                     }
-                    // A const channel has no lane data; the kind still
-                    // applies (to zero).
                     let src = lanes[c].map(|v| v[l]).unwrap_or(zero);
                     let v = apply(t, src, kinds[c]);
-                    if sign {
+                    let v = if sign {
                         v ^ u16x16::splat_t(t, 0x80)
                     } else {
                         v
-                    }
-                });
-                let b: [u8x16; 4] = core::array::from_fn(|c| {
-                    if c < nch {
-                        pack8(t, ch[c])
-                    } else {
-                        u8x16::zero_t(t)
-                    }
+                    };
+                    pack8(t, v)
                 });
                 let px = l * lw + x0;
                 let dst = &mut out_row[px * nch..px * nch + cnt * nch];
@@ -1857,36 +2126,8 @@ pub(crate) mod out_wasm128 {
                         &[ilv8_lo(t, b[0], b[1]).raw(), ilv8_hi(t, b[0], b[1]).raw()],
                         dst,
                     ),
-                    3 => {
-                        let part = |p: usize| {
-                            (swz(t, b[0], t8[p][0]) | swz(t, b[1], t8[p][1]))
-                                | swz(t, b[2], t8[p][2])
-                        };
-                        emit(t, &[part(0).raw(), part(1).raw(), part(2).raw()], dst);
-                    }
-                    _ => {
-                        let rg_lo = ilv8_lo(t, b[0], b[1]);
-                        let rg_hi = ilv8_hi(t, b[0], b[1]);
-                        let ba_lo = ilv8_lo(t, b[2], b[3]);
-                        let ba_hi = ilv8_hi(t, b[2], b[3]);
-                        let p16 = |a: u8x16, b: u8x16, hi: bool| -> v128 {
-                            if hi {
-                                i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(a.raw(), b.raw())
-                            } else {
-                                i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(a.raw(), b.raw())
-                            }
-                        };
-                        emit(
-                            t,
-                            &[
-                                p16(rg_lo, ba_lo, false),
-                                p16(rg_lo, ba_lo, true),
-                                p16(rg_hi, ba_hi, false),
-                                p16(rg_hi, ba_hi, true),
-                            ],
-                            dst,
-                        );
-                    }
+                    3 => emit_rgb8(t, b[0], b[1], b[2], &t8, dst),
+                    _ => emit_rgba8(t, b[0], b[1], b[2], b[3], dst),
                 }
             }
         }
@@ -1900,6 +2141,7 @@ pub(crate) mod out_wasm128 {
     /// Writes one row of 16-bit (u16, f16 or i16) output; same bytes as
     /// `out_avx2::write_row16`.
     #[arcane]
+    #[inline(never)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_row16(
         t: Wasm128Token,
@@ -2033,7 +2275,8 @@ pub(crate) mod out_neon {
     use archmage::prelude::*;
     use core::arch::aarch64::{
         uint8x16_t, uint16x8_t, vcombine_u8, vdupq_n_u16, vqmovun_s16, vqtbl1q_u8,
-        vreinterpretq_u8_u16, vreinterpretq_u16_u8, vreinterpretq_u16_u32, vreinterpretq_u32_u16,
+        vreinterpretq_u8_u16, vreinterpretq_u8_u32, vreinterpretq_u8_u64, vreinterpretq_u16_u8,
+        vreinterpretq_u16_u32, vreinterpretq_u32_u8, vreinterpretq_u32_u16, vreinterpretq_u64_u8,
         vreinterpretq_u64_u16, vzip1q_u8, vzip1q_u16, vzip1q_u32, vzip1q_u64, vzip2q_u8,
         vzip2q_u16, vzip2q_u32, vzip2q_u64,
     };
@@ -2110,9 +2353,48 @@ pub(crate) mod out_neon {
         ]
     }
 
+    /// 16x16 byte transpose (`out[l][x] = r[x][l]`): 64 single-cycle NEON ZIP1/ZIP2 ops.
+    #[rite]
+    pub(crate) fn transpose16_u8(t: NeonToken, r: &[u8x16; 16]) -> [u8x16; 16] {
+        let z = u8x16::zero_t(t).raw();
+        let mut s1 = [z; 16];
+        for i in 0..8 {
+            let a = r[2 * i].raw();
+            let b = r[2 * i + 1].raw();
+            s1[i] = vzip1q_u8(a, b);
+            s1[8 + i] = vzip2q_u8(a, b);
+        }
+        let mut s2 = [z; 16];
+        for h in [0usize, 8] {
+            for i in 0..4 {
+                let a = vreinterpretq_u16_u8(s1[h + 2 * i]);
+                let b = vreinterpretq_u16_u8(s1[h + 2 * i + 1]);
+                s2[h + i] = vreinterpretq_u8_u16(vzip1q_u16(a, b));
+                s2[h + 4 + i] = vreinterpretq_u8_u16(vzip2q_u16(a, b));
+            }
+        }
+        let mut s3 = [z; 16];
+        for q in [0usize, 4, 8, 12] {
+            for i in 0..2 {
+                let a = vreinterpretq_u32_u8(s2[q + 2 * i]);
+                let b = vreinterpretq_u32_u8(s2[q + 2 * i + 1]);
+                s3[q + i] = vreinterpretq_u8_u32(vzip1q_u32(a, b));
+                s3[q + 2 + i] = vreinterpretq_u8_u32(vzip2q_u32(a, b));
+            }
+        }
+        let mut out = [u8x16::zero_t(t); 16];
+        for p in (0..16).step_by(2) {
+            let a = vreinterpretq_u64_u8(s3[p]);
+            let b = vreinterpretq_u64_u8(s3[p + 1]);
+            out[p] = u8x16::from_raw_t(t, vreinterpretq_u8_u64(vzip1q_u64(a, b)));
+            out[p + 1] = u8x16::from_raw_t(t, vreinterpretq_u8_u64(vzip2q_u64(a, b)));
+        }
+        out
+    }
+
     /// Transposes 16 step vectors (16 lanes each) into 16 lane vectors.
     #[rite]
-    fn transpose16(t: NeonToken, r: &[u16x16; 16]) -> [u16x16; 16] {
+    pub(crate) fn transpose16(t: NeonToken, r: &[u16x16; 16]) -> [u16x16; 16] {
         let z = vdupq_n_u16(0);
         let mut lo = [z; 16];
         let mut hi = [z; 16];
@@ -2173,14 +2455,14 @@ pub(crate) mod out_neon {
 
     /// Packs 16 signed values (values < 256) to 16 bytes in order.
     #[rite]
-    fn pack8(t: NeonToken, v: u16x16) -> u8x16 {
+    pub(crate) fn pack8(t: NeonToken, v: u16x16) -> u8x16 {
         let h: [core::arch::aarch64::int16x8_t; 2] = v.bitcast_i16x16().into_repr();
         u8x16::from_raw_t(t, vcombine_u8(vqmovun_s16(h[0]), vqmovun_s16(h[1])))
     }
 
     /// Stores 16-byte chunks covering `dst`, zero-filling a partial tail.
     #[rite]
-    fn emit(t: NeonToken, chunks: &[uint8x16_t], dst: &mut [u8]) {
+    pub(crate) fn emit(t: NeonToken, chunks: &[uint8x16_t], dst: &mut [u8]) {
         let mut off = 0;
         for &c in chunks {
             if off >= dst.len() {
@@ -2199,6 +2481,53 @@ pub(crate) mod out_neon {
         }
     }
 
+    #[rite]
+    pub(crate) fn rgb8_tables(t: NeonToken) -> [[uint8x16_t; 3]; 3] {
+        core::array::from_fn(|p| core::array::from_fn(|c| v8(t, RGB8_SHUF[p][c])))
+    }
+
+    #[rite]
+    #[inline(always)]
+    pub(crate) fn emit_rgb8(
+        t: NeonToken,
+        r: u8x16,
+        g: u8x16,
+        b: u8x16,
+        t8: &[[uint8x16_t; 3]; 3],
+        dst: &mut [u8],
+    ) {
+        let part = |p: usize| (swz(t, r, t8[p][0]) | swz(t, g, t8[p][1])) | swz(t, b, t8[p][2]);
+        emit(t, &[part(0).raw(), part(1).raw(), part(2).raw()], dst);
+    }
+
+    #[rite]
+    #[inline(always)]
+    pub(crate) fn emit_rgba8(t: NeonToken, r: u8x16, g: u8x16, b: u8x16, a: u8x16, dst: &mut [u8]) {
+        let rg_lo = ilv8_lo(t, r, g);
+        let rg_hi = ilv8_hi(t, r, g);
+        let ba_lo = ilv8_lo(t, b, a);
+        let ba_hi = ilv8_hi(t, b, a);
+        let p16 = |a: u8x16, b: u8x16, hi: bool| -> uint8x16_t {
+            let (a, b) = (vreinterpretq_u16_u8(a.raw()), vreinterpretq_u16_u8(b.raw()));
+            let r = if hi {
+                vzip2q_u16(a, b)
+            } else {
+                vzip1q_u16(a, b)
+            };
+            vreinterpretq_u8_u16(r)
+        };
+        emit(
+            t,
+            &[
+                p16(rg_lo, ba_lo, false),
+                p16(rg_lo, ba_lo, true),
+                p16(rg_hi, ba_hi, false),
+                p16(rg_hi, ba_hi, true),
+            ],
+            dst,
+        );
+    }
+
     /// Writes one row of 8-bit output; same bytes as `out_avx2::write_row8`.
     #[arcane]
     #[allow(clippy::too_many_arguments)]
@@ -2215,9 +2544,52 @@ pub(crate) mod out_neon {
     ) {
         let nch = kinds.len();
         let zero = u16x16::zero_t(t);
-        let t8: [[uint8x16_t; 3]; 3] =
-            core::array::from_fn(|p| core::array::from_fn(|c| v8(t, RGB8_SHUF[p][c])));
+        let t8 = rgb8_tables(t);
+        let plain_ident = !sign
+            && luts[..nch].iter().all(|l| l.is_empty())
+            && kinds[..nch].iter().all(|k| matches!(k, OutKind::Ident))
+            && slot_of[..nch].iter().all(Option::is_some);
         let blocks = lw.div_ceil(16);
+        if plain_ident {
+            let z8 = u8x16::zero_t(t);
+            for bk in 0..blocks {
+                let x0 = bk * 16;
+                let n = 16.min(lw - x0);
+                let mut lanes = [[z8; 16]; 4];
+                for c in 0..nch {
+                    let s = slot_of[c].unwrap();
+                    let mut rows = [z8; 16];
+                    let ch = &cur[s].as_chunks::<NL>().0[x0..x0 + n];
+                    for (r, src) in rows.iter_mut().zip(ch) {
+                        *r = pack8(t, u16x16::load_t(t, src));
+                    }
+                    lanes[c] = transpose16_u8(t, &rows);
+                }
+                for l in 0..NL {
+                    let wl = widths[l] as usize;
+                    if wl <= x0 {
+                        continue;
+                    }
+                    let cnt = 16.min(wl - x0);
+                    let px = l * lw + x0;
+                    let dst = &mut out_row[px * nch..px * nch + cnt * nch];
+                    match nch {
+                        1 => emit(t, &[lanes[0][l].raw()], dst),
+                        2 => emit(
+                            t,
+                            &[
+                                ilv8_lo(t, lanes[0][l], lanes[1][l]).raw(),
+                                ilv8_hi(t, lanes[0][l], lanes[1][l]).raw(),
+                            ],
+                            dst,
+                        ),
+                        3 => emit_rgb8(t, lanes[0][l], lanes[1][l], lanes[2][l], &t8, dst),
+                        _ => emit_rgba8(t, lanes[0][l], lanes[1][l], lanes[2][l], lanes[3][l], dst),
+                    }
+                }
+            }
+            return;
+        }
         let mut mapped = [0u16; 16 * NL];
         for bk in 0..blocks {
             let x0 = bk * 16;
@@ -2227,8 +2599,9 @@ pub(crate) mod out_neon {
                 let Some(s) = slot_of[c] else { continue };
                 let mut rows = [zero; 16];
                 if luts[c].is_empty() {
-                    for (i, r) in rows.iter_mut().enumerate().take(n) {
-                        *r = u16x16::from_slice_t(t, &cur[s][(x0 + i) * NL..(x0 + i) * NL + NL]);
+                    let ch = &cur[s].as_chunks::<NL>().0[x0..x0 + n];
+                    for (r, src) in rows.iter_mut().zip(ch) {
+                        *r = u16x16::load_t(t, src);
                     }
                 } else {
                     let src =
@@ -2245,26 +2618,18 @@ pub(crate) mod out_neon {
                     continue;
                 }
                 let cnt = 16.min(wl - x0);
-                let ch: [u16x16; 4] = core::array::from_fn(|c| {
+                let b: [u8x16; 4] = core::array::from_fn(|c| {
                     if c >= nch {
-                        return zero;
+                        return u8x16::zero_t(t);
                     }
-                    // A const channel has no lane data; the kind still
-                    // applies (to zero).
                     let src = lanes[c].map(|v| v[l]).unwrap_or(zero);
                     let v = apply(t, src, kinds[c]);
-                    if sign {
+                    let v = if sign {
                         v ^ u16x16::splat_t(t, 0x80)
                     } else {
                         v
-                    }
-                });
-                let b: [u8x16; 4] = core::array::from_fn(|c| {
-                    if c < nch {
-                        pack8(t, ch[c])
-                    } else {
-                        u8x16::zero_t(t)
-                    }
+                    };
+                    pack8(t, v)
                 });
                 let px = l * lw + x0;
                 let dst = &mut out_row[px * nch..px * nch + cnt * nch];
@@ -2275,39 +2640,8 @@ pub(crate) mod out_neon {
                         &[ilv8_lo(t, b[0], b[1]).raw(), ilv8_hi(t, b[0], b[1]).raw()],
                         dst,
                     ),
-                    3 => {
-                        let part = |p: usize| {
-                            (swz(t, b[0], t8[p][0]) | swz(t, b[1], t8[p][1]))
-                                | swz(t, b[2], t8[p][2])
-                        };
-                        emit(t, &[part(0).raw(), part(1).raw(), part(2).raw()], dst);
-                    }
-                    _ => {
-                        let rg_lo = ilv8_lo(t, b[0], b[1]);
-                        let rg_hi = ilv8_hi(t, b[0], b[1]);
-                        let ba_lo = ilv8_lo(t, b[2], b[3]);
-                        let ba_hi = ilv8_hi(t, b[2], b[3]);
-                        let p16 = |a: u8x16, b: u8x16, hi: bool| -> uint8x16_t {
-                            let (a, b) =
-                                (vreinterpretq_u16_u8(a.raw()), vreinterpretq_u16_u8(b.raw()));
-                            let r = if hi {
-                                vzip2q_u16(a, b)
-                            } else {
-                                vzip1q_u16(a, b)
-                            };
-                            vreinterpretq_u8_u16(r)
-                        };
-                        emit(
-                            t,
-                            &[
-                                p16(rg_lo, ba_lo, false),
-                                p16(rg_lo, ba_lo, true),
-                                p16(rg_hi, ba_hi, false),
-                                p16(rg_hi, ba_hi, true),
-                            ],
-                            dst,
-                        );
-                    }
+                    3 => emit_rgb8(t, b[0], b[1], b[2], &t8, dst),
+                    _ => emit_rgba8(t, b[0], b[1], b[2], b[3], dst),
                 }
             }
         }

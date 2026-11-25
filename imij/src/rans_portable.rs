@@ -450,12 +450,404 @@ fn decode_row_impl<const U32: bool>(
     st.wp = wp;
 }
 
+/// Cold extra-bits pull + emit for `decode_row_u16_wasm128` when at least one
+/// active lane has `nb > 0` (`u16` storage guarantees `nb <= 15`).
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn wasm128_extra_phase(
+    token: archmage::Wasm128Token,
+    tok: &[(u32, u32, bool)],
+    words: &Words<'_>,
+    wp: &mut usize,
+    amask: u32,
+    x0: &mut magetypes::simd::generic::u32x8<archmage::Wasm128Token>,
+    x1: &mut magetypes::simd::generic::u32x8<archmage::Wasm128Token>,
+    r0: &mut magetypes::simd::generic::u32x8<archmage::Wasm128Token>,
+    r1: &mut magetypes::simd::generic::u32x8<archmage::Wasm128Token>,
+    e0: magetypes::simd::generic::u32x8<archmage::Wasm128Token>,
+    e1: magetypes::simd::generic::u32x8<archmage::Wasm128Token>,
+) -> (
+    magetypes::simd::generic::u32x8<archmage::Wasm128Token>,
+    magetypes::simd::generic::u32x8<archmage::Wasm128Token>,
+) {
+    use magetypes::simd::generic::u32x8;
+    let mut xa = [0u32; NL];
+    x0.store((&mut xa[..8]).try_into().unwrap());
+    x1.store((&mut xa[8..]).try_into().unwrap());
+    let mut ra = [0u32; NL];
+    r0.store((&mut ra[..8]).try_into().unwrap());
+    r1.store((&mut ra[8..]).try_into().unwrap());
+    let mut ea = [0u32; NL];
+    e0.store((&mut ea[..8]).try_into().unwrap());
+    e1.store((&mut ea[8..]).try_into().unwrap());
+    let mut wa = [0u32; NL];
+    let mut m = amask;
+    let mut p = *wp;
+    while m != 0 {
+        let l = m.trailing_zeros() as usize;
+        m &= m - 1;
+        let e = ea[l];
+        let nb = e >> 28;
+        let sym = ((e >> 20) & 255) as usize;
+        let mut extra = 0u32;
+        if nb > 0 {
+            extra = xa[l] & ((1u32 << nb) - 1);
+            xa[l] >>= nb;
+            if xa[l] < RANS_L {
+                xa[l] = (xa[l] << 16) | words.word(p) as u32;
+                p += 1;
+            }
+        }
+        let (base, _, is_run) = tok[sym];
+        let u = base.wrapping_add(extra);
+        if is_run {
+            ra[l] = u;
+        } else {
+            wa[l] = u;
+        }
+    }
+    *wp = p;
+    *x0 = u32x8::from_slice_t(token, &xa[..8]);
+    *x1 = u32x8::from_slice_t(token, &xa[8..]);
+    *r0 = u32x8::from_slice_t(token, &ra[..8]);
+    *r1 = u32x8::from_slice_t(token, &ra[8..]);
+    (
+        u32x8::from_slice_t(token, &wa[..8]),
+        u32x8::from_slice_t(token, &wa[8..]),
+    )
+}
+
+/// Register-resident wasm128 16-bit row decoder (strict + relaxed):
+/// - keeps `x`, `run`, and `west` in SIMD locals across the entire row;
+/// - fast `px < min_w && run == 0` loop with zero per-pixel masks or `md.tok` loads;
+/// - multi-column skip when all active lanes are inside zero runs;
+/// - single `i8x16_swizzle` context-map lookup for all 16 lanes;
+/// - single-instruction `u16x8_narrow_i32x4` stores.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn decode_row_u16_wasm128(
+    token: archmage::Wasm128Token,
+    md: &DecModel,
+    words: &Words<'_>,
+    st: &mut LaneState,
+    widths: &[u32; NL],
+    lw: usize,
+    row: usize,
+    prev16: &[u16],
+    cross16: Option<&[u16]>,
+    out16: &mut [u16],
+) {
+    use crate::rans::TABLE;
+    use core::arch::wasm32::*;
+    use magetypes::simd::generic::{i32x8, u8x16, u16x16, u32x8};
+
+    if lw == 0 {
+        return;
+    }
+    let prev_c = if row > 0 {
+        &prev16.as_chunks::<NL>().0[..lw]
+    } else {
+        &[]
+    };
+    let cross_c = cross16.map(|c| &c.as_chunks::<NL>().0[..lw]);
+    let out_c = &mut out16.as_chunks_mut::<NL>().0[..lw];
+
+    let lim = u32x8::splat_t(token, RANS_L);
+    let zero = u32x8::zero_t(token);
+    let one = u32x8::splat_t(token, 1);
+    let m10 = u32x8::splat_t(token, M - 1);
+    let nb_mask = u32x8::splat_t(token, 0xF000_0000);
+    let vt = u32x8::splat_t(token, md.vt);
+    let vtm1 = u32x8::splat_t(token, md.vt - 1);
+    let c126 = i32x8::splat_t(token, 126);
+    let czero = i32x8::zero_t(token);
+    let c15 = i32x8::splat_t(token, 15);
+    let cmapv: v128 = u8x16::load_t(token, &md.ctx_map).into_repr();
+    let wv0 = u32x8::from_slice_t(token, &widths[..8]);
+    let wv1 = u32x8::from_slice_t(token, &widths[8..]);
+    let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
+    let dec = &md.dec;
+    let tok = &md.tok;
+
+    let mut x0 = u32x8::from_slice_t(token, &st.x[..8]);
+    let mut x1 = u32x8::from_slice_t(token, &st.x[8..]);
+    let mut r0 = u32x8::from_slice_t(token, &st.run[..8]);
+    let mut r1 = u32x8::from_slice_t(token, &st.run[8..]);
+    let mut w0 = zero;
+    let mut w1 = zero;
+    let mut wp = st.wp;
+
+    #[inline(always)]
+    fn any_nz2(a: u32x8<archmage::Wasm128Token>, b: u32x8<archmage::Wasm128Token>) -> bool {
+        let ar = a.into_repr();
+        let br = b.into_repr();
+        v128_any_true(v128_or(v128_or(ar[0], ar[1]), v128_or(br[0], br[1])))
+    }
+
+    #[inline(always)]
+    fn any_nz(a: u32x8<archmage::Wasm128Token>) -> bool {
+        let ar = a.into_repr();
+        v128_any_true(v128_or(ar[0], ar[1]))
+    }
+
+    #[inline(always)]
+    fn reduce_min_u32x8(a: u32x8<archmage::Wasm128Token>) -> u32 {
+        let ar = a.into_repr();
+        let m4 = u32x4_min(ar[0], ar[1]);
+        let m2 = u32x4_min(m4, i32x4_shuffle::<2, 3, 0, 1>(m4, m4));
+        let m1 = u32x4_min(m2, i32x4_shuffle::<1, 0, 3, 2>(m2, m2));
+        u32x4_extract_lane::<0>(m1)
+    }
+
+    #[inline(always)]
+    fn store16(
+        token: archmage::Wasm128Token,
+        dst: &mut [u16; NL],
+        lo: u32x8<archmage::Wasm128Token>,
+        hi: u32x8<archmage::Wasm128Token>,
+    ) {
+        let lr = lo.into_repr();
+        let hr = hi.into_repr();
+        u16x16::from_repr_t(
+            token,
+            [
+                u16x8_narrow_i32x4(lr[0], lr[1]),
+                u16x8_narrow_i32x4(hr[0], hr[1]),
+            ],
+        )
+        .store(dst);
+    }
+
+    let gather_step = |px: usize,
+                       w0: u32x8<archmage::Wasm128Token>,
+                       w1: u32x8<archmage::Wasm128Token>,
+                       x0: u32x8<archmage::Wasm128Token>,
+                       x1: u32x8<archmage::Wasm128Token>|
+     -> (u32x8<archmage::Wasm128Token>, u32x8<archmage::Wasm128Token>) {
+        let (mut s0, mut s1) = if row > 0 {
+            let n16 = u16x16::load_t(token, &prev_c[px]);
+            let (n0, n1) = (n16.widen_low(), n16.widen_high());
+            if px > 0 {
+                (w0 + n0, w1 + n1)
+            } else {
+                (n0 + n0, n1 + n1)
+            }
+        } else if px > 0 {
+            (w0 + w0, w1 + w1)
+        } else {
+            (zero, zero)
+        };
+        if let Some(cr) = cross_c {
+            let c16 = u16x16::load_t(token, &cr[px]);
+            s0 += c16.widen_low();
+            s1 += c16.widen_high();
+        }
+        let cls0 = (s0
+            .bitcast_i32x8()
+            .to_f32x8()
+            .bitcast_i32x8()
+            .shr_logical_const::<23>()
+            - c126)
+            .clamp(czero, c15)
+            .into_repr();
+        let cls1 = (s1
+            .bitcast_i32x8()
+            .to_f32x8()
+            .bitcast_i32x8()
+            .shr_logical_const::<23>()
+            - c126)
+            .clamp(czero, c15)
+            .into_repr();
+        let c_u8 = u8x16_narrow_i16x8(
+            i16x8_narrow_i32x4(cls0[0], cls0[1]),
+            i16x8_narrow_i32x4(cls1[0], cls1[1]),
+        );
+        let ctx_u8 = v128_and(i8x16_swizzle(cmapv, c_u8), u8x16_splat(3));
+        let x0m = (x0 & m10).into_repr();
+        let x1m = (x1 & m10).into_repr();
+        let idx0 = v128_or(
+            u16x8_shl(u16x8_extend_low_u8x16(ctx_u8), 10),
+            u16x8_narrow_i32x4(x0m[0], x0m[1]),
+        );
+        let idx1 = v128_or(
+            u16x8_shl(u16x8_extend_high_u8x16(ctx_u8), 10),
+            u16x8_narrow_i32x4(x1m[0], x1m[1]),
+        );
+        let g = |v: v128| {
+            u32x8::from_array_t(
+                token,
+                [
+                    dec[u16x8_extract_lane::<0>(v) as usize & (TABLE - 1)],
+                    dec[u16x8_extract_lane::<1>(v) as usize & (TABLE - 1)],
+                    dec[u16x8_extract_lane::<2>(v) as usize & (TABLE - 1)],
+                    dec[u16x8_extract_lane::<3>(v) as usize & (TABLE - 1)],
+                    dec[u16x8_extract_lane::<4>(v) as usize & (TABLE - 1)],
+                    dec[u16x8_extract_lane::<5>(v) as usize & (TABLE - 1)],
+                    dec[u16x8_extract_lane::<6>(v) as usize & (TABLE - 1)],
+                    dec[u16x8_extract_lane::<7>(v) as usize & (TABLE - 1)],
+                ],
+            )
+        };
+        (g(idx0), g(idx1))
+    };
+
+    let mut px = 0usize;
+    while px < min_w {
+        if !any_nz2(r0, r1) {
+            // Fast path: all 16 lanes in width and not in a run.
+            let (e0, e1) = gather_step(px, w0, w1, x0, x1);
+            let nx0 = ((e0 & m10) + one) * x0.shr_logical_const::<10>()
+                + (e0.shr_logical_const::<10>() & m10);
+            let nx1 = ((e1 & m10) + one) * x1.shr_logical_const::<10>()
+                + (e1.shr_logical_const::<10>() & m10);
+            x0 = refill_wasm128(token, nx0, nx0.simd_lt(lim), words, &mut wp);
+            x1 = refill_wasm128(token, nx1, nx1.simd_lt(lim), words, &mut wp);
+            if !any_nz((e0 | e1) & nb_mask) {
+                let sym0 = e0.shr_logical_const::<20>();
+                let sym1 = e1.shr_logical_const::<20>();
+                let ir0 = sym0.simd_gt(vtm1);
+                let ir1 = sym1.simd_gt(vtm1);
+                let u0 = sym0 - (ir0 & vt);
+                let u1 = sym1 - (ir1 & vt);
+                r0 = u0 & ir0;
+                r1 = u1 & ir1;
+                w0 = u0 & ir0.not();
+                w1 = u1 & ir1.not();
+            } else {
+                (w0, w1) = wasm128_extra_phase(
+                    token, tok, words, &mut wp, 0xFFFF, &mut x0, &mut x1, &mut r0, &mut r1, e0, e1,
+                );
+            }
+            store16(token, &mut out_c[px], w0, w1);
+            px += 1;
+        } else {
+            let ir0 = r0.simd_gt(zero);
+            let ir1 = r1.simd_gt(zero);
+            let am0 = ir0.not().bitmask();
+            let am1 = ir1.not().bitmask();
+            let amask = am0 | (am1 << 8);
+            if amask == 0 {
+                // Multi-column all-run skip inside min_w.
+                let min_run = reduce_min_u32x8(r0.min(r1)) as usize;
+                let kk = min_run.min(min_w - px);
+                let kv = u32x8::splat_t(token, kk as u32);
+                r0 -= kv;
+                r1 -= kv;
+                for row_out in &mut out_c[px..px + kk] {
+                    *row_out = [0u16; NL];
+                }
+                w0 = zero;
+                w1 = zero;
+                px += kk;
+                continue;
+            }
+            r0 += ir0;
+            r1 += ir1;
+            let act0 = ir0.not();
+            let act1 = ir1.not();
+            let (e0, e1) = gather_step(px, w0, w1, x0, x1);
+            let nx0 = ((e0 & m10) + one) * x0.shr_logical_const::<10>()
+                + (e0.shr_logical_const::<10>() & m10);
+            let nx1 = ((e1 & m10) + one) * x1.shr_logical_const::<10>()
+                + (e1.shr_logical_const::<10>() & m10);
+            let xx0 = crate::wasm_relaxed::sel_u32x8_wasm128(token, act0, nx0, x0);
+            let xx1 = crate::wasm_relaxed::sel_u32x8_wasm128(token, act1, nx1, x1);
+            x0 = refill_wasm128(token, xx0, act0 & xx0.simd_lt(lim), words, &mut wp);
+            x1 = refill_wasm128(token, xx1, act1 & xx1.simd_lt(lim), words, &mut wp);
+            if !any_nz(((e0 & act0) | (e1 & act1)) & nb_mask) {
+                let sym0 = e0.shr_logical_const::<20>() & u32x8::splat_t(token, 255);
+                let sym1 = e1.shr_logical_const::<20>() & u32x8::splat_t(token, 255);
+                let rn0 = act0 & sym0.simd_gt(vtm1);
+                let rn1 = act1 & sym1.simd_gt(vtm1);
+                let u0 = sym0 - (rn0 & vt);
+                let u1 = sym1 - (rn1 & vt);
+                r0 = crate::wasm_relaxed::sel_u32x8_wasm128(token, rn0, u0, r0);
+                r1 = crate::wasm_relaxed::sel_u32x8_wasm128(token, rn1, u1, r1);
+                w0 = u0 & act0 & rn0.not();
+                w1 = u1 & act1 & rn1.not();
+            } else {
+                (w0, w1) = wasm128_extra_phase(
+                    token, tok, words, &mut wp, amask, &mut x0, &mut x1, &mut r0, &mut r1, e0, e1,
+                );
+            }
+            store16(token, &mut out_c[px], w0, w1);
+            px += 1;
+        }
+    }
+
+    // Tail columns past at least one lane's width.
+    while px < lw {
+        let pxv = u32x8::splat_t(token, px as u32);
+        let inw0 = pxv.simd_lt(wv0);
+        let inw1 = pxv.simd_lt(wv1);
+        let ir0 = r0.simd_gt(zero);
+        let ir1 = r1.simd_gt(zero);
+        let act0 = inw0 & ir0.not();
+        let act1 = inw1 & ir1.not();
+        let amask = act0.bitmask() | (act1.bitmask() << 8);
+        if amask == 0 {
+            let big = u32x8::splat_t(token, u32::MAX);
+            let m0 = crate::wasm_relaxed::sel_u32x8_wasm128(token, inw0, r0.min(wv0 - pxv), big);
+            let m1 = crate::wasm_relaxed::sel_u32x8_wasm128(token, inw1, r1.min(wv1 - pxv), big);
+            let kk = (reduce_min_u32x8(m0.min(m1)) as usize).min(lw - px);
+            if kk > 0 {
+                let kv = u32x8::splat_t(token, kk as u32);
+                r0 -= kv & inw0;
+                r1 -= kv & inw1;
+                for row_out in &mut out_c[px..px + kk] {
+                    *row_out = [0u16; NL];
+                }
+                w0 = zero;
+                w1 = zero;
+                px += kk;
+                continue;
+            }
+        }
+        r0 += inw0 & ir0;
+        r1 += inw1 & ir1;
+        let (e0, e1) = gather_step(px, w0, w1, x0, x1);
+        let nx0 = ((e0 & m10) + one) * x0.shr_logical_const::<10>()
+            + (e0.shr_logical_const::<10>() & m10);
+        let nx1 = ((e1 & m10) + one) * x1.shr_logical_const::<10>()
+            + (e1.shr_logical_const::<10>() & m10);
+        let xx0 = crate::wasm_relaxed::sel_u32x8_wasm128(token, act0, nx0, x0);
+        let xx1 = crate::wasm_relaxed::sel_u32x8_wasm128(token, act1, nx1, x1);
+        x0 = refill_wasm128(token, xx0, act0 & xx0.simd_lt(lim), words, &mut wp);
+        x1 = refill_wasm128(token, xx1, act1 & xx1.simd_lt(lim), words, &mut wp);
+        if !any_nz(((e0 & act0) | (e1 & act1)) & nb_mask) {
+            let sym0 = e0.shr_logical_const::<20>() & u32x8::splat_t(token, 255);
+            let sym1 = e1.shr_logical_const::<20>() & u32x8::splat_t(token, 255);
+            let rn0 = act0 & sym0.simd_gt(vtm1);
+            let rn1 = act1 & sym1.simd_gt(vtm1);
+            let u0 = sym0 - (rn0 & vt);
+            let u1 = sym1 - (rn1 & vt);
+            r0 = crate::wasm_relaxed::sel_u32x8_wasm128(token, rn0, u0, r0);
+            r1 = crate::wasm_relaxed::sel_u32x8_wasm128(token, rn1, u1, r1);
+            w0 = u0 & act0 & rn0.not();
+            w1 = u1 & act1 & rn1.not();
+        } else {
+            (w0, w1) = wasm128_extra_phase(
+                token, tok, words, &mut wp, amask, &mut x0, &mut x1, &mut r0, &mut r1, e0, e1,
+            );
+        }
+        store16(token, &mut out_c[px], w0, w1);
+        px += 1;
+    }
+
+    x0.store((&mut st.x[..8]).try_into().unwrap());
+    x1.store((&mut st.x[8..]).try_into().unwrap());
+    r0.store((&mut st.run[..8]).try_into().unwrap());
+    r1.store((&mut st.run[8..]).try_into().unwrap());
+    st.wp = wp;
+}
+
 /// Decode one row through the best available portable tier.
 ///
 /// `Px` is implemented only for `u16` and `u32` storage; dispatch is on
 /// `size_of::<S>()`, constant per monomorphization, so each instantiation
-/// calls exactly one `incant!` arm (neon / wasm128 / scalar tiers inside
-/// `decode_row_impl`). In observed optimized code the inactive storage
+/// calls exactly one arm. In observed optimized code the inactive storage
 /// path is removed from each monomorph.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_row<S: Px>(
@@ -473,6 +865,21 @@ pub(crate) fn decode_row<S: Px>(
         let prev16 = S::slice16(prev).unwrap_or(&[]);
         let out16 = S::slice16_mut(out).unwrap_or(&mut []);
         let cross16 = cross.and_then(|c| S::slice16(c));
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        {
+            if md.vt > 0
+                && md.ctx_shift == 0
+                && let Some(token) = archmage::Wasm128Token::summon()
+            {
+                decode_row_u16_wasm128(
+                    token, md, words, st, widths, lw, row, prev16, cross16, out16,
+                );
+                return;
+            }
+            crate::rans::decode_row_scalar(md, words, st, widths, lw, row, prev16, cross16, out16);
+            return;
+        }
+        #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
         incant!(
             decode_row_impl::<false>(
                 md,
@@ -745,6 +1152,107 @@ mod row_state_tests {
                     for shift in [0, 15] {
                         compare::<u16>(&mut seed, width, row, cross, shift, false, true);
                         compare::<u32>(&mut seed, width, row, cross, shift, false, true);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn real_models_u16_match_scalar_across_widths_runs_and_extra_bits() {
+        use crate::rans::{Model, weights_to_freq};
+        use crate::tokens::TokenCfg;
+        let mut seed = 0x42a9_77c1_e310_5b9d;
+        for &(depth, k, m) in &[(8u32, 4u32, 2u32), (8, 2, 2), (12, 4, 1), (16, 4, 2)] {
+            let tc = TokenCfg::v1(k, m, depth);
+            let alpha = tc.alphabet() as usize;
+            let run_end = crate::rans::run_cap_end(&tc).min(alpha);
+            let mut weights = vec![vec![0u32; alpha]; NCTX];
+            let mut freq = vec![vec![0u32; alpha]; NCTX];
+            for c in 0..NCTX {
+                for s in 0..run_end {
+                    weights[c][s] = 1 + (next(&mut seed) % 32);
+                }
+                freq[c] = weights_to_freq(&weights[c]).unwrap();
+            }
+            let model = Model {
+                tc,
+                ctx_map: core::array::from_fn(|i| ((i * 3 + depth as usize) % NCTX) as u8),
+                freq,
+                weights,
+                prec: vec![4; NCTX],
+                cross: true,
+                ctx_shift: 0,
+                seeds: [None; NCTX],
+            };
+            let dm = model.dec_model();
+            let body: alloc::vec::Vec<_> = (0..1024).map(|_| next(&mut seed) as u8).collect();
+            let words = Words::from_body(&body).unwrap();
+            for width in [0usize, 1, 2, 15, 16, 17, 64] {
+                for row in [0usize, 2] {
+                    for cross in [false, true] {
+                        for mode in [0u8, 1, 2] {
+                            let widths = match mode {
+                                0 => [width as u32; NL],
+                                1 => core::array::from_fn(|l| (width.saturating_sub(l % 3)) as u32),
+                                _ => core::array::from_fn(|_| {
+                                    (next(&mut seed) as usize % (width + 1)) as u32
+                                }),
+                            };
+                            let init_x = core::array::from_fn(|_| next(&mut seed) | RANS_L);
+                            let init_run = core::array::from_fn(|_| match mode {
+                                0 => 0,
+                                1 => 4 + (next(&mut seed) % 6),
+                                _ => next(&mut seed) % 7,
+                            });
+                            let start = (next(&mut seed) % 200) as usize;
+                            let mut expected = LaneState {
+                                x: init_x,
+                                run: init_run,
+                                wp: start,
+                            };
+                            let mut actual = LaneState {
+                                x: init_x,
+                                run: init_run,
+                                wp: start,
+                            };
+                            let prev: alloc::vec::Vec<u16> =
+                                (0..width * NL).map(|_| next(&mut seed) as u16).collect();
+                            let cross_v: alloc::vec::Vec<u16> =
+                                (0..width * NL).map(|_| next(&mut seed) as u16).collect();
+                            let cross_opt = cross.then_some(cross_v.as_slice());
+                            let mut a = vec![77u16; width * NL];
+                            let mut b = a.clone();
+                            decode_row_scalar(
+                                &dm,
+                                &words,
+                                &mut expected,
+                                &widths,
+                                width,
+                                row,
+                                &prev,
+                                cross_opt,
+                                &mut a,
+                            );
+                            decode_row(
+                                &dm,
+                                &words,
+                                &mut actual,
+                                &widths,
+                                width,
+                                row,
+                                &prev,
+                                cross_opt,
+                                &mut b,
+                            );
+                            assert_eq!(
+                                a, b,
+                                "real model mismatch depth={depth} k={k} m={m} w={width} r={row} cross={cross} mode={mode}"
+                            );
+                            assert_eq!(actual.x, expected.x);
+                            assert_eq!(actual.run, expected.run);
+                            assert_eq!(actual.wp, expected.wp);
+                        }
                     }
                 }
             }

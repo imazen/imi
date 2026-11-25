@@ -755,7 +755,9 @@ pub struct LosslessTuning {
     pub max_ctx: usize,
     /// Cross-channel context modelling.
     pub ctx_cross: bool,
-    /// Allowed residual decorrelation modes, one bit each.
+    /// Allowed color decorrelation modes, one bit each: bits 0..=3 are the
+    /// fixed residual modes (none, R-G/B-G, R-G/B-R, R-G/B-avg(R,G)) and bit 4
+    /// (`0x10`) is per-lane adaptive pixel color transform (8-bit RGB/RGBA).
     pub decor_mask: u8,
     /// Allowed spatial predictors, one bit each.
     pub predictor_mask: u8,

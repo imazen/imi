@@ -80,11 +80,30 @@ impl Effort {
         self.candidates(allowed & 0x7f, &[0, 3, 1, 2, 4, 5, 6])
     }
 
+    /// Effort threshold from which lossless encoding considers per-lane adaptive
+    /// pixel color transform (`decor = 4`, bit 4 of `decor_mask`).
+    #[cfg(feature = "encode")]
+    pub(crate) const ADAPTIVE_COLOR_EFFORT: f32 = 7.0;
+
     /// Residual R-G/B-G decorrelation is a better cheap RGB default than none.
+    /// Bit 4 (`0x10`) enables per-lane adaptive pixel color transform from
+    /// [`Self::ADAPTIVE_COLOR_EFFORT`] onward (or whenever no fixed mode is allowed).
     /// The analyzer still handles ineligible layouts and explicit caller masks.
     #[cfg(feature = "encode")]
     pub(crate) fn decorrelations(self, allowed: u8) -> u8 {
-        self.candidates(allowed & 0x0f, &[1, 0, 2, 3])
+        let fixed_allowed = allowed & 0x0f;
+        let adapt_allowed = allowed & (1 << crate::adapt_color::DECOR_ADAPT_PIX);
+        let fixed = if fixed_allowed != 0 {
+            self.candidates(fixed_allowed, &[1, 0, 2, 3])
+        } else {
+            0
+        };
+        let adapt = if adapt_allowed != 0 && (self.0 >= Self::ADAPTIVE_COLOR_EFFORT || fixed == 0) {
+            adapt_allowed
+        } else {
+            0
+        };
+        fixed | adapt
     }
 
     #[cfg(feature = "encode")]

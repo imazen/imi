@@ -1275,7 +1275,7 @@ fn dc_masks(cfg: &LossyConfig) -> Result<(u8, u8), Error> {
     let effort = crate::effort::Effort::new(cfg.effort)?;
     let d = crate::EncodeConfig::default();
     Ok((
-        effort.decorrelations(d.decor_mask),
+        effort.decorrelations(d.decor_mask & 0x0f),
         effort.predictors(d.predictor_mask),
     ))
 }

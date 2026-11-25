@@ -135,6 +135,13 @@ impl Layout {
         cfg!(feature = "near-lossless") && self.near.iter().any(|&d| d != 0)
     }
 
+    /// True when per-lane adaptive pixel color transform (`decor = 4`, SPEC 2.4.1)
+    /// is valid for this layout: exact RGB/RGBA whose three color slots are 8-bit.
+    #[inline]
+    pub(crate) fn adapt_pix_ok(&self) -> bool {
+        self.decor_ok && self.slot_bits[0] == 8 && !self.is_near()
+    }
+
     /// Per-container-channel near-lossless bounds (0 for uncoded channels).
     #[cfg(feature = "encode")]
     pub(crate) fn channel_near(&self) -> Vec<u32> {

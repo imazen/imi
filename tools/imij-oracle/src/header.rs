@@ -91,12 +91,12 @@ pub struct Header {
     /// The header version byte: 3, or 2 for legacy files,
     /// whose unit, side and frame record ids translate (SPEC Appendix V3).
     pub(crate) version: u8,
-    /// The feature mask as written (ids 0-16).
-    pub(crate) features: u32,
+    /// The feature mask as written.
+    pub(crate) features: u64,
     /// The feature set (SPEC section 0.1): the mask plus what the fields
     /// imply, `lossy` (16) for lossy coding and `samples_32` (15) for 32-
     /// and 64-bit samples.
-    pub(crate) set: u32,
+    pub(crate) set: u64,
     pub(crate) sample: SampleType,
     pub(crate) sample_code: u8,
     pub(crate) channels: u8,
@@ -154,11 +154,11 @@ pub(crate) fn parse_header(data: &[u8]) -> Result<Header> {
         | (1u64 << crate::registry::FEATURE_SEED_BANK_IDS)
         | (1u64 << crate::registry::FEATURE_CODING_DEFAULTS)
         | (1u64 << crate::registry::FEATURE_MODEL_REFERENCES)
-        | (1u64 << crate::registry::FEATURE_DC_COVERAGE);
+        | (1u64 << crate::registry::FEATURE_DC_COVERAGE)
+        | (1u64 << crate::registry::FEATURE_ADAPTIVE_COLOR);
     if high || features & !known != 0 {
         return Err(Error::unsupported("unknown feature bit"));
     }
-    let features = features as u32;
 
     let field = |bit: u64, r: &mut Reader<'_>| -> Result<Option<u8>> {
         if present >> bit & 1 == 0 {

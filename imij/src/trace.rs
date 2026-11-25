@@ -777,6 +777,7 @@ pub(crate) mod describe {
             1 => "R - G and B - G",
             2 => "R - G and B - R",
             3 => "R - G and B - avg(R, G)",
+            4 => "per-lane adaptive pixel color transform (feature adaptive_color)",
             0x80 => "palette stripe",
             0x81 => "bilevel stripe",
             0x82 => "bilevel palette stripe",

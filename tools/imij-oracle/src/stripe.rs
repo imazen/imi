@@ -158,6 +158,7 @@ pub(crate) fn decode_unit(
     }
     let palette = decor == 0x80;
     let mut entries: Vec<Vec<u32>> = Vec::new();
+    let mut adapt_weights: Option<([i16; 16], [i16; 16], [i16; 16])> = None;
     if palette {
         if !head.palette_allowed {
             return Err(Error::corrupt("palette stripe without its head bit"));
@@ -183,6 +184,24 @@ pub(crate) fn decode_unit(
             }
             entries.push(entry);
         }
+    } else if decor == 4 {
+        if header.set >> crate::registry::FEATURE_ADAPTIVE_COLOR & 1 == 0 {
+            return Err(Error::corrupt(
+                "adaptive color stripe without feature adaptive_color",
+            ));
+        }
+        if head.bounds.is_some() {
+            return Err(Error::corrupt(
+                "adaptive color stripe with near-lossless bounds",
+            ));
+        }
+        if head.slots.len() < 3
+            || head.slots[..3] != [(1, 0), (0, 0), (2, 0)]
+            || head.slot_depths[..3] != [8, 8, 8]
+        {
+            return Err(Error::corrupt("adaptive color stripe on ineligible layout"));
+        }
+        adapt_weights = Some(read_adaptive_weights(&mut r, active)?);
     } else {
         if decor > 3 {
             return Err(Error::corrupt("bad decorrelation mode"));
@@ -221,6 +240,9 @@ pub(crate) fn decode_unit(
         if *predictor >= 7 {
             if !inter {
                 return Err(Error::corrupt("inter predictor outside an inter frame"));
+            }
+            if adapt_weights.is_some() {
+                return Err(Error::corrupt("inter predictor on adaptive color stripe"));
             }
             if header.sample.is_wide() {
                 return Err(Error::corrupt("inter predictor on a 64-bit image"));
@@ -333,7 +355,7 @@ pub(crate) fn decode_unit(
                             & mask(depth),
                     );
                 }
-                if decor != 0 {
+                if decor != 0 && decor != 4 {
                     undo_decorrelation(&mut deltas, head.slot_depths[0], decor);
                 }
                 let px = lane_x + x as u32;
@@ -382,13 +404,76 @@ pub(crate) fn decode_unit(
                     current[slot][x] = value;
                 }
                 // Write this position's samples.
-                let values: Vec<u32> = (0..head.slots.len()).map(|slot| current[slot][x]).collect();
+                let mut values: Vec<u32> =
+                    (0..head.slots.len()).map(|slot| current[slot][x]).collect();
+                if let Some((gr, gb, rb)) = &adapt_weights {
+                    let g = values[0];
+                    let gs = g as i32 - 128;
+                    let r = values[1].wrapping_add(((i32::from(gr[lane]) * gs) >> 5) as u32) & 0xFF;
+                    let rs = r as i32 - 128;
+                    let b = values[2].wrapping_add(
+                        ((i32::from(gb[lane]) * gs + i32::from(rb[lane]) * rs) >> 5) as u32,
+                    ) & 0xFF;
+                    values[1] = r;
+                    values[2] = b;
+                }
                 write_pixel(image, px, y, header, head, &values);
             }
             previous = current;
         }
     }
     Ok(())
+}
+
+/// SPEC 2.4.1: read `3 * active` signed adaptive color weights (LSB-first).
+fn read_adaptive_weights(
+    r: &mut Reader<'_>,
+    active: usize,
+) -> Result<([i16; 16], [i16; 16], [i16; 16])> {
+    if !(1..=16).contains(&active) {
+        return Err(Error::corrupt("bad adaptive color active lanes"));
+    }
+    let mut buf = 0u32;
+    let mut nbits = 0u32;
+    let mut get = |r: &mut Reader<'_>, n: u32| -> Result<u32> {
+        while nbits < n {
+            buf |= u32::from(r.u8("adaptive color weights")?) << nbits;
+            nbits += 8;
+        }
+        let v = buf & ((1u32 << n) - 1);
+        buf >>= n;
+        nbits -= n;
+        Ok(v)
+    };
+    let mut gr = [0i16; 16];
+    let mut gb = [0i16; 16];
+    let mut rb = [0i16; 16];
+    let channels: [(&mut [i16; 16], i16); 3] = [(&mut gr, 32), (&mut gb, 16), (&mut rb, 16)];
+    for (arr, pred0) in channels {
+        for lane in 0..active {
+            let pred = if lane == 0 { pred0 } else { arr[lane - 1] };
+            let flag = get(r, 1)?;
+            let w = if flag == 0 {
+                let delta = get(r, 4)? as i16 - 8;
+                let w = pred + delta;
+                if !(-127..=127).contains(&w) {
+                    return Err(Error::corrupt("adaptive color weight out of range"));
+                }
+                w
+            } else {
+                let raw = get(r, 8)? as u8 as i8 as i16;
+                if raw == -128 {
+                    return Err(Error::corrupt("adaptive color weight out of range"));
+                }
+                raw
+            };
+            arr[lane] = w;
+        }
+    }
+    if nbits > 0 && buf != 0 {
+        return Err(Error::corrupt("non-zero adaptive color padding bits"));
+    }
+    Ok((gr, gb, rb))
 }
 
 /// SPEC 2.2 and 4: only the first three color slots are transformed.

@@ -375,6 +375,60 @@ pub(super) fn append_object_parts(
     Ok(())
 }
 
+#[cfg(all(feature = "lab", feature = "std"))]
+fn trace_body(
+    checks: Option<&super::OwnedChecks>,
+    kind: u64,
+    len: usize,
+    start: crate::trace::Mark,
+) {
+    use super::CheckScope;
+    use crate::registry::{UNIT_AC, UNIT_STRIPE};
+    use crate::trace::{exit_addr, trace_enter_addr};
+
+    let (pixel_label, pixel_width, encoded_width) = checks.map_or(("", 0, 0), |checks| {
+        let descriptors = checks.get();
+        let (label, pixel) = match kind {
+            UNIT_STRIPE | UNIT_AC => (
+                "group pixel check results",
+                descriptors.list(CheckScope::GroupPixels).result_bytes(),
+            ),
+            super::tile::TILE_END => (
+                "tile pixel check results",
+                descriptors.list(CheckScope::TilePixels).result_bytes(),
+            ),
+            _ => ("", 0),
+        };
+        (
+            label,
+            pixel,
+            descriptors.list(CheckScope::EncodedObject).result_bytes(),
+        )
+    });
+    let (pixel_width, encoded_width) = if pixel_width + encoded_width <= len {
+        (pixel_width, encoded_width)
+    } else {
+        (0, 0) // Keep a coherent span when the ordinary parser diagnoses truncation.
+    };
+    let encoded_start = len - encoded_width;
+    let pixel_start = encoded_start - pixel_width;
+    trace_enter_addr("payload", "V4:6.1", "object body", start);
+    exit_addr(start.plus(pixel_start));
+    if pixel_width != 0 {
+        trace_enter_addr("digest", "V4:6.2", pixel_label, start.plus(pixel_start));
+        exit_addr(start.plus(encoded_start));
+    }
+    if encoded_width != 0 {
+        trace_enter_addr(
+            "digest",
+            "V4:6.2",
+            "encoded object check results",
+            start.plus(encoded_start),
+        );
+        exit_addr(start.plus(len));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,59 +636,5 @@ mod tests {
                 .is_err()
         );
         assert!(ObjectIntegrity::try_from(3).is_err());
-    }
-}
-
-#[cfg(all(feature = "lab", feature = "std"))]
-fn trace_body(
-    checks: Option<&super::OwnedChecks>,
-    kind: u64,
-    len: usize,
-    start: crate::trace::Mark,
-) {
-    use super::CheckScope;
-    use crate::registry::{UNIT_AC, UNIT_STRIPE};
-    use crate::trace::{exit_addr, trace_enter_addr};
-
-    let (pixel_label, pixel_width, encoded_width) = checks.map_or(("", 0, 0), |checks| {
-        let descriptors = checks.get();
-        let (label, pixel) = match kind {
-            UNIT_STRIPE | UNIT_AC => (
-                "group pixel check results",
-                descriptors.list(CheckScope::GroupPixels).result_bytes(),
-            ),
-            super::tile::TILE_END => (
-                "tile pixel check results",
-                descriptors.list(CheckScope::TilePixels).result_bytes(),
-            ),
-            _ => ("", 0),
-        };
-        (
-            label,
-            pixel,
-            descriptors.list(CheckScope::EncodedObject).result_bytes(),
-        )
-    });
-    let (pixel_width, encoded_width) = if pixel_width + encoded_width <= len {
-        (pixel_width, encoded_width)
-    } else {
-        (0, 0) // Keep a coherent span when the ordinary parser diagnoses truncation.
-    };
-    let encoded_start = len - encoded_width;
-    let pixel_start = encoded_start - pixel_width;
-    trace_enter_addr("payload", "V4:6.1", "object body", start);
-    exit_addr(start.plus(pixel_start));
-    if pixel_width != 0 {
-        trace_enter_addr("digest", "V4:6.2", pixel_label, start.plus(pixel_start));
-        exit_addr(start.plus(encoded_start));
-    }
-    if encoded_width != 0 {
-        trace_enter_addr(
-            "digest",
-            "V4:6.2",
-            "encoded object check results",
-            start.plus(encoded_start),
-        );
-        exit_addr(start.plus(len));
     }
 }

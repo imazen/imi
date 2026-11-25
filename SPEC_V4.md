@@ -62,10 +62,11 @@ This imposes no advance encoded-length requirement on a streaming writer: its
 transport can finalize part count and total length when output completes.
 
 V3 feature bits 26–31 describe replaced syntax and are reserved, required zero
-in V4. Other feature declarations still gate actual algorithms: merged/small
-transforms, alternate sample maps, explicit quantization tables, and so on.
-Core V4 syntax needs no second feature bit to turn it on. Profile versions
-remain human-facing feature bundles.
+in V4. Feature bit 32 (`adaptive_color`, [SPEC 2.4.1](SPEC.md#241-adaptive-color-stripes-feature-adaptive_color))
+and other feature declarations still gate actual algorithms: merged/small
+transforms, alternate sample maps, explicit quantization tables, adaptive
+pixel-color stripes, and so on. Core V4 syntax needs no second feature bit to
+turn it on. Profile versions remain human-facing feature bundles.
 
 `samples_32` (feature bit 15) declares 32-bit sample coding. U32, I32,
 F32 and 64-bit sample declarations imply it, including when the actual

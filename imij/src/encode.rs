@@ -278,6 +278,7 @@ pub(crate) fn analyze_with_progress(
             hs,
             sw,
             stripe_decor: Vec::new(),
+            stripe_adapt: Vec::new(),
             row_pred: Vec::new(),
         });
     }
@@ -287,6 +288,7 @@ pub(crate) fn analyze_with_progress(
         res.push(filled(plane_len, 0u32)?);
     }
     let mut stripe_decor = filled(nstripes, 0u8)?;
+    let mut stripe_adapt: Vec<Option<crate::adapt_color::AdaptWeights>> = filled(nstripes, None)?;
     let mut row_pred = filled(h, 0u8)?;
     {
         // Disjoint per-stripe views of every residual plane.
@@ -309,17 +311,20 @@ pub(crate) fn analyze_with_progress(
             let y0 = si * hs;
             let y1 = (y0 + hs).min(h);
             let result = if lay.is_near() {
-                crate::near::analyze_stripe_near(lay, sp, w, sw, y0, y1, cfg, &mut views)
+                let (d, pr) =
+                    crate::near::analyze_stripe_near(lay, sp, w, sw, y0, y1, cfg, &mut views);
+                (d, None, pr)
             } else {
-                analyze_stripe_fast(lay, sp, w, sw, y0, y1, cfg, &mut views, None)
+                analyze_stripe_with_adapt(lay, sp, w, sw, y0, y1, cfg, &mut views, None)?
             };
             pulse.check().map_err(|_| Error::Cancelled)?;
             Ok(result)
         });
         for (si, result) in out.into_iter().enumerate() {
-            let (decor, preds) = result?;
+            let (decor, adapt, preds) = result?;
             let y0 = si * hs;
             stripe_decor[si] = decor;
+            stripe_adapt[si] = adapt;
             row_pred[y0..y0 + preds.len()].copy_from_slice(&preds);
         }
     }
@@ -333,6 +338,7 @@ pub(crate) fn analyze_with_progress(
         hs,
         sw,
         stripe_decor,
+        stripe_adapt,
         row_pred,
     })
 }
@@ -367,6 +373,7 @@ pub struct Analysis {
     /// Lane (column segment) width.
     pub sw: usize,
     pub stripe_decor: Vec<u8>,
+    pub(crate) stripe_adapt: Vec<Option<crate::adapt_color::AdaptWeights>>,
     pub row_pred: Vec<u8>,
 }
 
@@ -688,6 +695,111 @@ pub(crate) fn analyze_stripe_fast(
     guide: Option<&[&[u32]]>,
 ) -> (u8, Vec<u8>) {
     analyze_stripe_impl::<true>(layout, planes, w, sw, y0, y1, cfg, res, guide)
+}
+
+/// Stripe analysis that also evaluates per-lane adaptive pixel color transform
+/// (`DECOR_ADAPT_PIX = 4`, bit 4 of `cfg.decor_mask`) on eligible exact 8-bit
+/// RGB/RGBA layouts when no inter/lab guide plane is present.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_stripe_with_adapt(
+    layout: &Layout,
+    planes: &[&[u32]],
+    w: usize,
+    sw: usize,
+    y0: usize,
+    y1: usize,
+    cfg: &AnalysisConfig,
+    res: &mut [&mut [u32]],
+    guide: Option<&[&[u32]]>,
+) -> Result<(u8, Option<crate::adapt_color::AdaptWeights>, Vec<u8>), Error> {
+    let adapt_bit = 1u8 << crate::adapt_color::DECOR_ADAPT_PIX;
+    #[cfg(feature = "lab")]
+    let has_lab_guide = cfg.guide.is_some();
+    #[cfg(not(feature = "lab"))]
+    let has_lab_guide = false;
+    let try_adapt = (cfg.decor_mask & adapt_bit) != 0
+        && layout.adapt_pix_ok()
+        && guide.is_none()
+        && !has_lab_guide;
+    if !try_adapt {
+        let (decor, preds) = analyze_stripe_fast(layout, planes, w, sw, y0, y1, cfg, res, guide);
+        return Ok((decor, None, preds));
+    }
+
+    let fixed_allowed = (cfg.decor_mask & 0x0f) != 0;
+    let ns = planes.len();
+    let rows = y1 - y0;
+    let stripe_px = rows.checked_mul(w).ok_or(Error::TooLarge)?;
+    let zz_cost = |slices: &[&[u32]]| -> u64 {
+        slices
+            .iter()
+            .map(|s| s.iter().map(|&z| bitlen_f(z) as u64).sum::<u64>())
+            .sum()
+    };
+
+    let (fixed_decor, fixed_preds, fixed_cost) = if fixed_allowed {
+        let (d, p) = analyze_stripe_fast(layout, planes, w, sw, y0, y1, cfg, res, None);
+        let refs: Vec<&[u32]> = res.iter().map(|v| &**v).collect();
+        let c = zz_cost(&refs);
+        (d, p, c)
+    } else {
+        (0, Vec::new(), u64::MAX)
+    };
+
+    let (aw, [r_tx, b_tx]) =
+        crate::adapt_color::fit_and_transform_stripe_pixel(planes, w, sw, y0, y1)?;
+    let row_span = y0 * w..y1 * w;
+    let mut tx_refs: Vec<&[u32]> = Vec::with_capacity(ns);
+    for (s, plane) in planes.iter().enumerate() {
+        tx_refs.push(match s {
+            1 => r_tx.as_slice(),
+            2 => b_tx.as_slice(),
+            _ => &plane[row_span.clone()],
+        });
+    }
+    let mut tx_cfg = cfg.clone();
+    tx_cfg.decor_mask = 1; // Mode 0 only: pixel color transform is already applied.
+    if !fixed_allowed {
+        // Write directly into caller's `res` without allocating a second candidate buffer.
+        let (_, tx_preds) =
+            analyze_stripe_fast(layout, &tx_refs, w, sw, 0, rows, &tx_cfg, res, None);
+        return Ok((crate::adapt_color::DECOR_ADAPT_PIX, Some(aw), tx_preds));
+    }
+
+    let mut tx_res: Vec<Vec<u32>> = Vec::with_capacity(ns);
+    for _ in 0..ns {
+        let mut v = Vec::new();
+        v.try_reserve_exact(stripe_px)
+            .map_err(|_| Error::TooLarge)?;
+        v.resize(stripe_px, 0);
+        tx_res.push(v);
+    }
+    let mut tx_views: Vec<&mut [u32]> = tx_res.iter_mut().map(Vec::as_mut_slice).collect();
+    let (_, tx_preds) = analyze_stripe_fast(
+        layout,
+        &tx_refs,
+        w,
+        sw,
+        0,
+        rows,
+        &tx_cfg,
+        &mut tx_views,
+        None,
+    );
+    let tx_res_refs: Vec<&[u32]> = tx_res.iter().map(Vec::as_slice).collect();
+    let widths = crate::v1::lane_widths(w, sw);
+    let active = crate::v1::active_lanes(&widths);
+    let hdr_bits = (aw.byte_len(active) as u64) * 8;
+    let adapt_cost = zz_cost(&tx_res_refs).saturating_add(hdr_bits);
+
+    if adapt_cost < fixed_cost {
+        for s in 0..ns {
+            res[s].copy_from_slice(&tx_res[s]);
+        }
+        Ok((crate::adapt_color::DECOR_ADAPT_PIX, Some(aw), tx_preds))
+    } else {
+        Ok((fixed_decor, None, fixed_preds))
+    }
 }
 
 fn analyze_stripe_impl<const FIXED_W: bool>(

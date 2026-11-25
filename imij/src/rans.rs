@@ -1094,11 +1094,12 @@ impl<'a> Words<'a> {
     /// 16 words (32 bytes, little-endian) starting at word `wp`.
     #[inline(always)]
     pub(crate) fn chunk(&self, wp: usize) -> &[u8; 32] {
-        if let Some(c) = self.body.get(2 * wp..2 * wp + 32) {
-            return c.try_into().unwrap();
+        let off = wp.saturating_mul(2);
+        if let Some(c) = self.body.get(off..).and_then(|s| s.first_chunk::<32>()) {
+            return c;
         }
         // Tail covers words [tail_start, tail_start + 64); clamp corrupt overruns.
-        let o = (wp.max(self.tail_start) - self.tail_start).min(48);
+        let o = wp.saturating_sub(self.tail_start).min(48);
         self.tail[2 * o..2 * o + 32].try_into().unwrap()
     }
 
@@ -1245,6 +1246,7 @@ pub(crate) mod avx2 {
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
     pub(crate) fn refill(
         _t: X64V3Token,
         x: __m256i,
@@ -1263,6 +1265,7 @@ pub(crate) mod avx2 {
 
     /// Context + table index for one half; also returns `act`.
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn token_idx(
         _t: X64V3Token,
         k: &K,
@@ -1288,8 +1291,26 @@ pub(crate) mod avx2 {
         (act, idx)
     }
 
+    /// Context + table index when all 8 lanes are active (no runs, xi < min_w).
+    #[rite(import_intrinsics)]
+    #[inline(always)]
+    fn token_idx_all(_t: X64V3Token, k: &K, x: __m256i, sum: __m256i) -> __m256i {
+        let zero = _mm256_setzero_si256();
+        let ex = _mm256_srli_epi32::<23>(_mm256_castps_si256(_mm256_cvtepi32_ps(sum)));
+        let cls = _mm256_min_epi32(
+            _mm256_max_epi32(_mm256_sub_epi32(ex, _mm256_set1_epi32(126)), zero),
+            _mm256_set1_epi32(15),
+        );
+        let ctx = _mm256_and_si256(_mm256_shuffle_epi8(k.cmapv, cls), _mm256_set1_epi32(3));
+        _mm256_or_si256(
+            _mm256_slli_epi32::<10>(ctx),
+            _mm256_and_si256(x, _mm256_set1_epi32(1023)),
+        )
+    }
+
     /// State update after the gather.
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn token_update(
         t: X64V3Token,
         e: __m256i,
@@ -1310,7 +1331,23 @@ pub(crate) mod avx2 {
         *x = refill(t, xx, need, w, wp);
     }
 
+    /// State update when all 8 lanes are active.
     #[rite(import_intrinsics)]
+    #[inline(always)]
+    fn token_update_all(t: X64V3Token, e: __m256i, w: &Words<'_>, wp: &mut usize, x: &mut __m256i) {
+        let zero = _mm256_setzero_si256();
+        let f = _mm256_add_epi32(
+            _mm256_and_si256(e, _mm256_set1_epi32(1023)),
+            _mm256_set1_epi32(1),
+        );
+        let bias = _mm256_and_si256(_mm256_srli_epi32::<10>(e), _mm256_set1_epi32(1023));
+        let nx = _mm256_add_epi32(_mm256_mullo_epi32(f, _mm256_srli_epi32::<10>(*x)), bias);
+        let need = _mm256_cmpeq_epi32(_mm256_srli_epi32::<16>(nx), zero);
+        *x = refill(t, nx, need, w, wp);
+    }
+
+    #[rite(import_intrinsics)]
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn extra_phase(
         t: X64V3Token,
@@ -1342,8 +1379,40 @@ pub(crate) mod avx2 {
         _mm256_andnot_si256(run_now, _mm256_and_si256(act, u))
     }
 
+    #[rite(import_intrinsics)]
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn extra_phase_all(
+        t: X64V3Token,
+        k: &K,
+        w: &Words<'_>,
+        wp: &mut usize,
+        x: &mut __m256i,
+        run: &mut __m256i,
+        e: __m256i,
+    ) -> __m256i {
+        let zero = _mm256_setzero_si256();
+        let one = _mm256_set1_epi32(1);
+        let nb = _mm256_srli_epi32::<28>(e);
+        let sym = _mm256_and_si256(_mm256_srli_epi32::<20>(e), _mm256_set1_epi32(255));
+        let ebits = _mm256_and_si256(*x, _mm256_sub_epi32(_mm256_sllv_epi32(one, nb), one));
+        let xx = _mm256_srlv_epi32(*x, nb);
+        let need = _mm256_cmpeq_epi32(_mm256_srli_epi32::<16>(xx), zero);
+        *x = refill(t, xx, need, w, wp);
+        let is_run = _mm256_cmpgt_epi32(sym, k.vtm1);
+        let tt = _mm256_sub_epi32(sym, _mm256_and_si256(is_run, k.vt));
+        let dlim = _mm256_blendv_epi8(k.dlim_v, k.dlim_r, is_run);
+        let direct = _mm256_cmpgt_epi32(dlim, tt);
+        let hb = _mm256_sllv_epi32(_mm256_or_si256(k.mpow, _mm256_and_si256(tt, k.mmask)), nb);
+        let base = _mm256_blendv_epi8(hb, tt, direct);
+        let u = _mm256_add_epi32(base, ebits);
+        *run = _mm256_and_si256(is_run, u);
+        _mm256_andnot_si256(is_run, u)
+    }
+
     /// Extra phase when no active lane has extra bits: tokens are direct.
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn no_extra(_t: X64V3Token, k: &K, run: &mut __m256i, act: __m256i, e: __m256i) -> __m256i {
         let sym = _mm256_and_si256(_mm256_srli_epi32::<20>(e), _mm256_set1_epi32(255));
         let is_run = _mm256_cmpgt_epi32(sym, k.vtm1);
@@ -1353,26 +1422,42 @@ pub(crate) mod avx2 {
         _mm256_andnot_si256(run_now, _mm256_and_si256(act, u))
     }
 
+    /// Extra phase when all 8 lanes are active and have nb == 0 (top 4 bits of e are 0).
     #[rite(import_intrinsics)]
-    fn load8(_t: X64V3Token, p: &[u16]) -> __m256i {
-        let a: &[u16; 8] = p[..8].try_into().unwrap();
-        _mm256_cvtepu16_epi32(_mm_loadu_si128(a))
+    #[inline(always)]
+    fn no_extra_all(_t: X64V3Token, k: &K, run: &mut __m256i, e: __m256i) -> __m256i {
+        let sym = _mm256_srli_epi32::<20>(e);
+        let is_run = _mm256_cmpgt_epi32(sym, k.vtm1);
+        let u = _mm256_sub_epi32(sym, _mm256_and_si256(is_run, k.vt));
+        *run = _mm256_and_si256(is_run, u);
+        _mm256_andnot_si256(is_run, u)
     }
 
     #[rite(import_intrinsics)]
-    fn store8(_t: X64V3Token, p: &mut [u16], v: __m256i) {
-        let packed = _mm256_permute4x64_epi64::<0b1000>(_mm256_packus_epi32(v, v));
-        let o: &mut [u16; 8] = (&mut p[..8]).try_into().unwrap();
-        _mm_storeu_si128(o, _mm256_castsi256_si128(packed));
+    #[inline(always)]
+    fn load16_pair(_t: X64V3Token, p: &[u16; NL]) -> (__m256i, __m256i) {
+        let v = _mm256_loadu_si256(p);
+        let lo = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(v));
+        let hi = _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(v));
+        (lo, hi)
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
+    fn store16_pair(_t: X64V3Token, dst: &mut [u16; NL], v0: __m256i, v1: __m256i) {
+        let p = _mm256_permute4x64_epi64::<0b11011000>(_mm256_packus_epi32(v0, v1));
+        _mm256_storeu_si256(dst, p);
+    }
+
+    #[rite(import_intrinsics)]
+    #[inline(always)]
     fn ld32(_t: X64V3Token, a: &[u32]) -> __m256i {
         let r: &[u32; 8] = a[..8].try_into().unwrap();
         _mm256_loadu_si256(r)
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn st32(_t: X64V3Token, a: &mut [u32], v: __m256i) {
         let r: &mut [u32; 8] = (&mut a[..8]).try_into().unwrap();
         _mm256_storeu_si256(r, v);
@@ -1383,8 +1468,8 @@ pub(crate) mod avx2 {
         k: K,
         dec: &'a [u32; TABLE],
         w: &'a Words<'w>,
-        prev: &'a [u16],
-        cross: Option<&'a [u16]>,
+        prev: &'a [[u16; NL]],
+        cross: Option<&'a [[u16; NL]]>,
         x0: __m256i,
         x1: __m256i,
         r0: __m256i,
@@ -1397,13 +1482,14 @@ pub(crate) mod avx2 {
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn inst<'a, 'w>(
         t: X64V3Token,
         md: &'a DecModel,
         w: &'a Words<'w>,
         st: &LaneState,
-        prev: &'a [u16],
-        cross: Option<&'a [u16]>,
+        prev: &'a [[u16; NL]],
+        cross: Option<&'a [[u16; NL]]>,
         row: usize,
     ) -> Inst<'a, 'w> {
         let mut cm = [0u8; 32];
@@ -1436,6 +1522,7 @@ pub(crate) mod avx2 {
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn finish(t: X64V3Token, i: &Inst<'_, '_>, st: &mut LaneState) {
         st32(t, &mut st.x[..8], i.x0);
         st32(t, &mut st.x[8..], i.x1);
@@ -1444,15 +1531,14 @@ pub(crate) mod avx2 {
         st.wp = i.wp;
     }
 
-    /// One step of `i` (or a skip over all-run columns).
     #[rite(import_intrinsics)]
-    fn step(
+    fn step_slow(
         t: X64V3Token,
         i: &mut Inst<'_, '_>,
         wid0: __m256i,
         wid1: __m256i,
         lw: usize,
-        out: &mut [u16],
+        out: &mut [[u16; NL]],
     ) {
         let zero = _mm256_setzero_si256();
         let (row, x) = (i.row, i.xi);
@@ -1462,17 +1548,13 @@ pub(crate) mod avx2 {
         let colv = _mm256_set1_epi32(x as i32);
         let inw0 = _mm256_cmpgt_epi32(wid0, colv);
         let inw1 = _mm256_cmpgt_epi32(wid1, colv);
-        // Fast path: every lane is either past its width or inside a run.
-        let busy0 = _mm256_or_si256(
-            _mm256_cmpgt_epi32(i.r0, zero),
-            _mm256_xor_si256(inw0, _mm256_set1_epi32(-1)),
-        );
-        let busy1 = _mm256_or_si256(
-            _mm256_cmpgt_epi32(i.r1, zero),
-            _mm256_xor_si256(inw1, _mm256_set1_epi32(-1)),
-        );
-        if _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_and_si256(busy0, busy1))) == 0xFF {
-            // Steps to skip: min run over active lanes, min width - x.
+        let ones = _mm256_set1_epi32(-1);
+        // Compute busy once and reuse for idle0/idle1.
+        let busy0 = _mm256_or_si256(_mm256_cmpgt_epi32(i.r0, zero), _mm256_xor_si256(inw0, ones));
+        let busy1 = _mm256_or_si256(_mm256_cmpgt_epi32(i.r1, zero), _mm256_xor_si256(inw1, ones));
+        let bm0 = _mm256_movemask_ps(_mm256_castsi256_ps(busy0));
+        let bm1 = _mm256_movemask_ps(_mm256_castsi256_ps(busy1));
+        if (bm0 & bm1) == 0xFF {
             let big = _mm256_set1_epi32(i32::MAX);
             let m0 = _mm256_blendv_epi8(
                 big,
@@ -1491,17 +1573,17 @@ pub(crate) mod avx2 {
                 let kv = _mm256_set1_epi32(kk as i32);
                 i.r0 = _mm256_sub_epi32(i.r0, _mm256_and_si256(kv, inw0));
                 i.r1 = _mm256_sub_epi32(i.r1, _mm256_and_si256(kv, inw1));
-                out[x * NL..(x + kk) * NL].fill(0);
+                for step_row in &mut out[x..x + kk] {
+                    *step_row = [0u16; NL];
+                }
                 i.w0 = zero;
                 i.w1 = zero;
                 i.xi += kk;
                 return;
             }
         }
-        let bi = x * NL;
         let (mut s0, mut s1) = if row > 0 {
-            let n0 = load8(t, &i.prev[bi..]);
-            let n1 = load8(t, &i.prev[bi + 8..]);
+            let (n0, n1) = load16_pair(t, &i.prev[x]);
             if x > 0 {
                 (_mm256_add_epi32(i.w0, n0), _mm256_add_epi32(i.w1, n1))
             } else {
@@ -1513,27 +1595,18 @@ pub(crate) mod avx2 {
             (zero, zero)
         };
         if let Some(cr) = i.cross {
-            s0 = _mm256_add_epi32(s0, load8(t, &cr[bi..]));
-            s1 = _mm256_add_epi32(s1, load8(t, &cr[bi + 8..]));
+            let (c0, c1) = load16_pair(t, &cr[x]);
+            s0 = _mm256_add_epi32(s0, c0);
+            s1 = _mm256_add_epi32(s1, c1);
         }
-        // A half whose lanes are all in runs (or past their width) only
-        // advances its run counters; it consumes no words.
-        let ones = _mm256_set1_epi32(-1);
-        let idle0 = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_or_si256(
-            _mm256_cmpgt_epi32(i.r0, zero),
-            _mm256_xor_si256(inw0, ones),
-        ))) == 0xFF;
-        let idle1 = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_or_si256(
-            _mm256_cmpgt_epi32(i.r1, zero),
-            _mm256_xor_si256(inw1, ones),
-        ))) == 0xFF;
+        let idle0 = bm0 == 0xFF;
+        let idle1 = bm1 == 0xFF;
         let (mut x0, mut x1, mut r0, mut r1) = (i.x0, i.x1, i.r0, i.r1);
         let mut wp = i.wp;
         let (w0, w1);
         if !idle0 && !idle1 {
             let (a0, i0) = token_idx(t, k, x0, &mut r0, s0, inw0);
             let (a1, i1) = token_idx(t, k, x1, &mut r1, s1, inw1);
-            // One 16-lane software gather.
             let mut ia = [0u32; 16];
             _mm256_storeu_si256(<&mut [u32; 8]>::try_from(&mut ia[..8]).unwrap(), i0);
             _mm256_storeu_si256(<&mut [u32; 8]>::try_from(&mut ia[8..]).unwrap(), i1);
@@ -1542,7 +1615,6 @@ pub(crate) mod avx2 {
             let e1 = _mm256_loadu_si256(<&[u32; 8]>::try_from(&ev[8..]).unwrap());
             token_update(t, e0, a0, w, &mut wp, &mut x0);
             token_update(t, e1, a1, w, &mut wp, &mut x1);
-            // nb lives in bits 28..32: any active lane with extra bits?
             let hi = _mm256_or_si256(_mm256_and_si256(e0, a0), _mm256_and_si256(e1, a1));
             if _mm256_testz_si256(hi, _mm256_set1_epi32(0xF000_0000u32 as i32)) != 0 {
                 w0 = no_extra(t, k, &mut r0, a0, e0);
@@ -1552,7 +1624,6 @@ pub(crate) mod avx2 {
                 w1 = extra_phase(t, k, w, &mut wp, &mut x1, &mut r1, a1, e1);
             }
         } else {
-            // Exactly one half is idle (both idle took the fast path).
             let (xa, ra, sa, ia_, idle_x) = if idle0 {
                 (&mut x1, &mut r1, s1, inw1, 0)
             } else {
@@ -1573,7 +1644,6 @@ pub(crate) mod avx2 {
             } else {
                 extra_phase(t, k, w, &mut wp, xa, ra, a, e)
             };
-            // Idle half: decrement in-run lanes, output zeros.
             if idle_x == 0 {
                 let in_run0 = _mm256_and_si256(_mm256_cmpgt_epi32(r0, zero), inw0);
                 r0 = _mm256_add_epi32(r0, in_run0);
@@ -1586,13 +1656,192 @@ pub(crate) mod avx2 {
                 w1 = zero;
             }
         }
-        store8(t, &mut out[bi..], w0);
-        store8(t, &mut out[bi + 8..], w1);
+        store16_pair(t, &mut out[x], w0, w1);
         (i.x0, i.x1, i.r0, i.r1, i.w0, i.w1, i.wp) = (x0, x1, r0, r1, w0, w1, wp);
         i.xi += 1;
     }
 
+    /// Fast 16-lane software gather packed via `[u64; 8]`: avoids slow `vpextrd`/`vpinsrd`
+    /// chains on AVX2 and stops LLVM from lowering to microcoded `vpgatherdd`.
+    #[rite(import_intrinsics)]
+    #[inline(always)]
+    fn gather16_avx2(
+        _t: X64V3Token,
+        dec: &[u32; TABLE],
+        i0: __m256i,
+        i1: __m256i,
+    ) -> (__m256i, __m256i) {
+        let mut ia = [0u64; 8];
+        _mm256_storeu_si256(<&mut [u64; 4]>::try_from(&mut ia[..4]).unwrap(), i0);
+        _mm256_storeu_si256(<&mut [u64; 4]>::try_from(&mut ia[4..]).unwrap(), i1);
+        let mut ev = [0u64; 8];
+        for j in 0..8 {
+            let p = ia[j];
+            let lo = dec[(p as usize) & (TABLE - 1)] as u64;
+            let hi = dec[((p >> 32) as usize) & (TABLE - 1)] as u64;
+            ev[j] = lo | (hi << 32);
+        }
+        (
+            _mm256_loadu_si256(<&[u64; 4]>::try_from(&ev[..4]).unwrap()),
+            _mm256_loadu_si256(<&[u64; 4]>::try_from(&ev[4..]).unwrap()),
+        )
+    }
+
+    /// Inline macro for one full-width (`xi < min_w`) AVX2 step:
+    /// - Fast path when all 16 lanes have `run == 0` (zero mask overhead).
+    /// - Inline partial-run path when `1..=15` lanes are in runs (no call/spill).
+    /// - Delegates to `step_slow` only when all 16 lanes are simultaneously in runs.
+    macro_rules! avx2_step_inw {
+        ($t:expr, $inst:expr, $wid0:expr, $wid1:expr, $lw:expr, $out_c:expr) => {{
+            let zero = _mm256_setzero_si256();
+            let ones = _mm256_set1_epi32(-1);
+            let hi_mask = _mm256_set1_epi32(0xF000_0000u32 as i32);
+            let or_r = _mm256_or_si256($inst.r0, $inst.r1);
+            if _mm256_testz_si256(or_r, or_r) != 0 {
+                let x = $inst.xi;
+                let r = $inst.row;
+                let (mut s0, mut s1) = if r > 0 {
+                    let (n0, n1) = load16_pair($t, &$inst.prev[x]);
+                    if x > 0 {
+                        (
+                            _mm256_add_epi32($inst.w0, n0),
+                            _mm256_add_epi32($inst.w1, n1),
+                        )
+                    } else {
+                        (_mm256_add_epi32(n0, n0), _mm256_add_epi32(n1, n1))
+                    }
+                } else if x > 0 {
+                    (
+                        _mm256_add_epi32($inst.w0, $inst.w0),
+                        _mm256_add_epi32($inst.w1, $inst.w1),
+                    )
+                } else {
+                    (zero, zero)
+                };
+                if let Some(cr) = $inst.cross {
+                    let (c0, c1) = load16_pair($t, &cr[x]);
+                    s0 = _mm256_add_epi32(s0, c0);
+                    s1 = _mm256_add_epi32(s1, c1);
+                }
+                let i0 = token_idx_all($t, &$inst.k, $inst.x0, s0);
+                let i1 = token_idx_all($t, &$inst.k, $inst.x1, s1);
+                let (e0, e1) = gather16_avx2($t, $inst.dec, i0, i1);
+                token_update_all($t, e0, $inst.w, &mut $inst.wp, &mut $inst.x0);
+                token_update_all($t, e1, $inst.w, &mut $inst.wp, &mut $inst.x1);
+                let hi = _mm256_or_si256(e0, e1);
+                let (w0, w1) = if _mm256_testz_si256(hi, hi_mask) != 0 {
+                    (
+                        no_extra_all($t, &$inst.k, &mut $inst.r0, e0),
+                        no_extra_all($t, &$inst.k, &mut $inst.r1, e1),
+                    )
+                } else {
+                    (
+                        extra_phase_all(
+                            $t,
+                            &$inst.k,
+                            $inst.w,
+                            &mut $inst.wp,
+                            &mut $inst.x0,
+                            &mut $inst.r0,
+                            e0,
+                        ),
+                        extra_phase_all(
+                            $t,
+                            &$inst.k,
+                            $inst.w,
+                            &mut $inst.wp,
+                            &mut $inst.x1,
+                            &mut $inst.r1,
+                            e1,
+                        ),
+                    )
+                };
+                store16_pair($t, &mut $out_c[x], w0, w1);
+                $inst.w0 = w0;
+                $inst.w1 = w1;
+                $inst.xi = x + 1;
+            } else {
+                let in_r0 = _mm256_cmpgt_epi32($inst.r0, zero);
+                let in_r1 = _mm256_cmpgt_epi32($inst.r1, zero);
+                if _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_and_si256(in_r0, in_r1))) == 0xFF {
+                    step_slow($t, &mut $inst, $wid0, $wid1, $lw, $out_c);
+                } else {
+                    $inst.r0 = _mm256_add_epi32($inst.r0, in_r0);
+                    $inst.r1 = _mm256_add_epi32($inst.r1, in_r1);
+                    let a0 = _mm256_xor_si256(in_r0, ones);
+                    let a1 = _mm256_xor_si256(in_r1, ones);
+                    let x = $inst.xi;
+                    let r = $inst.row;
+                    let (mut s0, mut s1) = if r > 0 {
+                        let (n0, n1) = load16_pair($t, &$inst.prev[x]);
+                        if x > 0 {
+                            (
+                                _mm256_add_epi32($inst.w0, n0),
+                                _mm256_add_epi32($inst.w1, n1),
+                            )
+                        } else {
+                            (_mm256_add_epi32(n0, n0), _mm256_add_epi32(n1, n1))
+                        }
+                    } else if x > 0 {
+                        (
+                            _mm256_add_epi32($inst.w0, $inst.w0),
+                            _mm256_add_epi32($inst.w1, $inst.w1),
+                        )
+                    } else {
+                        (zero, zero)
+                    };
+                    if let Some(cr) = $inst.cross {
+                        let (c0, c1) = load16_pair($t, &cr[x]);
+                        s0 = _mm256_add_epi32(s0, c0);
+                        s1 = _mm256_add_epi32(s1, c1);
+                    }
+                    let i0 = token_idx_all($t, &$inst.k, $inst.x0, s0);
+                    let i1 = token_idx_all($t, &$inst.k, $inst.x1, s1);
+                    let (e0, e1) = gather16_avx2($t, $inst.dec, i0, i1);
+                    token_update($t, e0, a0, $inst.w, &mut $inst.wp, &mut $inst.x0);
+                    token_update($t, e1, a1, $inst.w, &mut $inst.wp, &mut $inst.x1);
+                    let hi = _mm256_or_si256(_mm256_and_si256(e0, a0), _mm256_and_si256(e1, a1));
+                    let (w0, w1) = if _mm256_testz_si256(hi, hi_mask) != 0 {
+                        (
+                            no_extra($t, &$inst.k, &mut $inst.r0, a0, e0),
+                            no_extra($t, &$inst.k, &mut $inst.r1, a1, e1),
+                        )
+                    } else {
+                        (
+                            extra_phase(
+                                $t,
+                                &$inst.k,
+                                $inst.w,
+                                &mut $inst.wp,
+                                &mut $inst.x0,
+                                &mut $inst.r0,
+                                a0,
+                                e0,
+                            ),
+                            extra_phase(
+                                $t,
+                                &$inst.k,
+                                $inst.w,
+                                &mut $inst.wp,
+                                &mut $inst.x1,
+                                &mut $inst.r1,
+                                a1,
+                                e1,
+                            ),
+                        )
+                    };
+                    store16_pair($t, &mut $out_c[x], w0, w1);
+                    $inst.w0 = w0;
+                    $inst.w1 = w1;
+                    $inst.xi = x + 1;
+                }
+            }
+        }};
+    }
+
     /// AVX2 row decoder; bit-identical to [`decode_row_scalar`].
+    /// Hot loop is macro-inlined directly into the `#[arcane]` body so lane states
+    /// stay in YMM registers with zero per-step call/spill overhead.
     #[arcane(import_intrinsics)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_row(
@@ -1608,15 +1857,21 @@ pub(crate) mod avx2 {
         out: &mut [u16],
     ) {
         let (wid0, wid1) = (ld32(t, &widths[..8]), ld32(t, &widths[8..]));
-        let mut a = inst(t, md, words, st, prev, cross, row);
+        let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
+        let prev_c = &prev.as_chunks::<NL>().0[..lw];
+        let cross_c = cross.map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let out_c = &mut out.as_chunks_mut::<NL>().0[..lw];
+        let mut a = inst(t, md, words, st, prev_c, cross_c, row);
+        while a.xi < min_w {
+            avx2_step_inw!(t, a, wid0, wid1, lw, out_c);
+        }
         while a.xi < lw {
-            step(t, &mut a, wid0, wid1, lw, out);
+            step_slow(t, &mut a, wid0, wid1, lw, out_c);
         }
         finish(t, &a, st);
     }
 
-    /// Two independent row decodes stepped together (see the AVX-512
-    /// `decode_row2`).
+    /// Two independent row decodes stepped together (macro-inlined fast path).
     #[arcane(import_intrinsics)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_row2(
@@ -1632,19 +1887,32 @@ pub(crate) mod avx2 {
         out: [&mut [u16]; 2],
     ) {
         let (wid0, wid1) = (ld32(t, &widths[..8]), ld32(t, &widths[8..]));
+        let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
         let [sa, sb] = st;
         let [oa, ob] = out;
-        let mut a = inst(t, md[0], words[0], sa, prev[0], cross[0], rows[0]);
-        let mut b = inst(t, md[1], words[1], sb, prev[1], cross[1], rows[1]);
-        while a.xi < lw && b.xi < lw {
-            step(t, &mut a, wid0, wid1, lw, oa);
-            step(t, &mut b, wid0, wid1, lw, ob);
+        let pa_c = &prev[0].as_chunks::<NL>().0[..lw];
+        let pb_c = &prev[1].as_chunks::<NL>().0[..lw];
+        let ca_c = cross[0].map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let cb_c = cross[1].map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let oa_c = &mut oa.as_chunks_mut::<NL>().0[..lw];
+        let ob_c = &mut ob.as_chunks_mut::<NL>().0[..lw];
+        let mut a = inst(t, md[0], words[0], sa, pa_c, ca_c, rows[0]);
+        let mut b = inst(t, md[1], words[1], sb, pb_c, cb_c, rows[1]);
+        while a.xi < min_w && b.xi < min_w {
+            avx2_step_inw!(t, a, wid0, wid1, lw, oa_c);
+            avx2_step_inw!(t, b, wid0, wid1, lw, ob_c);
+        }
+        while a.xi < min_w {
+            avx2_step_inw!(t, a, wid0, wid1, lw, oa_c);
+        }
+        while b.xi < min_w {
+            avx2_step_inw!(t, b, wid0, wid1, lw, ob_c);
         }
         while a.xi < lw {
-            step(t, &mut a, wid0, wid1, lw, oa);
+            step_slow(t, &mut a, wid0, wid1, lw, oa_c);
         }
         while b.xi < lw {
-            step(t, &mut b, wid0, wid1, lw, ob);
+            step_slow(t, &mut b, wid0, wid1, lw, ob_c);
         }
         finish(t, &a, sa);
         finish(t, &b, sb);
@@ -1657,17 +1925,19 @@ pub(crate) mod avx512 {
     use archmage::prelude::*;
 
     #[rite(import_intrinsics)]
-    fn ld16(_t: X64V4Token, p: &[u16]) -> __m512i {
-        let a: &[u16; 16] = p[..16].try_into().unwrap();
-        _mm512_cvtepu16_epi32(_mm256_loadu_si256(a))
+    #[inline(always)]
+    fn ld16(_t: X64V4Token, p: &[u16; NL]) -> __m512i {
+        _mm512_cvtepu16_epi32(_mm256_loadu_si256(p))
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn ld32(_t: X64V4Token, a: &[u32; NL]) -> __m512i {
         _mm512_loadu_si512(a)
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn refill(
         _t: X64V4Token,
         x: __m512i,
@@ -1681,12 +1951,20 @@ pub(crate) mod avx512 {
         _mm512_mask_mov_epi32(x, need, _mm512_or_si512(_mm512_slli_epi32::<16>(x), v))
     }
 
+    /// 16-lane table lookup via single 512-bit hardware `vpgatherdd`.
+    #[rite(import_intrinsics)]
+    #[inline(always)]
+    fn gather_dec(t: X64V4Token, dec: &[u32; TABLE], idx: __m512i) -> __m512i {
+        use magetypes::simd::generic::u32x16;
+        u32x16::<X64V4Token>::gather_wrapping(dec, u32x16::<X64V4Token>::from_raw_t(t, idx)).raw()
+    }
+
     /// One row decode in flight: one slot's lane states and model.
     struct Inst<'a, 'w> {
         dec: &'a [u32; TABLE],
         w: &'a Words<'w>,
-        prev: &'a [u16],
-        cross: Option<&'a [u16]>,
+        prev: &'a [[u16; NL]],
+        cross: Option<&'a [[u16; NL]]>,
         cmapv: __m512i,
         vt: __m512i,
         dlim_v: __m512i,
@@ -1702,13 +1980,14 @@ pub(crate) mod avx512 {
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn inst<'a, 'w>(
         _t: X64V4Token,
         md: &'a DecModel,
         w: &'a Words<'w>,
         st: &LaneState,
-        prev: &'a [u16],
-        cross: Option<&'a [u16]>,
+        prev: &'a [[u16; NL]],
+        cross: Option<&'a [[u16; NL]]>,
         row: usize,
     ) -> Inst<'a, 'w> {
         let cm: [u32; 16] = core::array::from_fn(|i| md.ctx_map[i] as u32 & 3);
@@ -1733,16 +2012,22 @@ pub(crate) mod avx512 {
     }
 
     #[rite(import_intrinsics)]
+    #[inline(always)]
     fn finish(_t: X64V4Token, i: &Inst<'_, '_>, st: &mut LaneState) {
         _mm512_storeu_si512(&mut st.x, i.x);
         _mm512_storeu_si512(&mut st.run, i.run);
         st.wp = i.wp;
     }
 
-    /// One step (one lane-local column) of `i`, or a skip over columns
-    /// where every lane is in a run or past its width.
+    /// General step when some lane is in a run or past its width.
     #[rite(import_intrinsics)]
-    fn step(t: X64V4Token, i: &mut Inst<'_, '_>, widv: __m512i, lw: usize, out: &mut [u16]) {
+    fn step_slow(
+        t: X64V4Token,
+        i: &mut Inst<'_, '_>,
+        widv: __m512i,
+        lw: usize,
+        out: &mut [[u16; NL]],
+    ) {
         let row = i.row;
         let zero = _mm512_setzero_si512();
         let one = _mm512_set1_epi32(1);
@@ -1760,7 +2045,9 @@ pub(crate) mod avx512 {
             let k = (m as usize).min(lw - xi);
             if k > 0 {
                 i.run = _mm512_mask_sub_epi32(i.run, inw, i.run, _mm512_set1_epi32(k as i32));
-                out[xi * NL..(xi + k) * NL].fill(0);
+                for step_row in &mut out[xi..xi + k] {
+                    *step_row = [0u16; NL];
+                }
                 i.uw = zero;
                 i.xi += k;
                 return;
@@ -1769,9 +2056,8 @@ pub(crate) mod avx512 {
         let in_run = running & inw;
         i.run = _mm512_mask_sub_epi32(i.run, in_run, i.run, one);
         let act = inw & !in_run;
-        let bi = xi * NL;
         let mut sum = if row > 0 {
-            let n = ld16(t, &i.prev[bi..]);
+            let n = ld16(t, &i.prev[xi]);
             if xi > 0 {
                 _mm512_add_epi32(i.uw, n)
             } else {
@@ -1783,51 +2069,149 @@ pub(crate) mod avx512 {
             zero
         };
         if let Some(cr) = i.cross {
-            sum = _mm512_add_epi32(sum, ld16(t, &cr[bi..]));
+            sum = _mm512_add_epi32(sum, ld16(t, &cr[xi]));
         }
         let cls = _mm512_min_epu32(_mm512_sub_epi32(c32, _mm512_lzcnt_epi32(sum)), c15);
         let ctx = _mm512_permutexvar_epi32(cls, i.cmapv);
         let idx = _mm512_or_si512(_mm512_slli_epi32::<10>(ctx), _mm512_and_si512(i.x, c1023));
-        let mut ia = [0u32; 16];
-        _mm512_storeu_si512(&mut ia, idx);
-        let dec = i.dec;
-        let ev: [u32; 16] = core::array::from_fn(|j| dec[ia[j] as usize & (TABLE - 1)]);
-        let e = _mm512_loadu_si512(&ev);
+        let e = gather_dec(t, i.dec, idx);
         let f = _mm512_add_epi32(_mm512_and_si512(e, c1023), one);
         let bias = _mm512_and_si512(_mm512_srli_epi32::<10>(e), c1023);
         let nx = _mm512_add_epi32(_mm512_mullo_epi32(f, _mm512_srli_epi32::<10>(i.x)), bias);
         let mut x = _mm512_mask_mov_epi32(i.x, act, nx);
-        let need = act & _mm512_cmplt_epu32_mask(x, lim);
+        let need = _mm512_mask_cmplt_epu32_mask(act, x, lim);
         x = refill(t, x, need, i.w, &mut i.wp);
-        // Extra bits (skipped when no active lane has any).
         let nb = _mm512_srli_epi32::<28>(e);
         let sym = _mm512_and_si512(_mm512_srli_epi32::<20>(e), _mm512_set1_epi32(255));
         let has_extra: __mmask16 =
-            act & _mm512_test_epi32_mask(e, _mm512_set1_epi32(0xF000_0000u32 as i32));
+            _mm512_mask_test_epi32_mask(act, e, _mm512_set1_epi32(0xF000_0000u32 as i32));
         let ebits = if has_extra != 0 {
             let ebits = _mm512_and_si512(x, _mm512_sub_epi32(_mm512_sllv_epi32(one, nb), one));
             x = _mm512_mask_mov_epi32(x, act, _mm512_srlv_epi32(x, nb));
-            let need = act & _mm512_cmplt_epu32_mask(x, lim);
+            let need = _mm512_mask_cmplt_epu32_mask(act, x, lim);
             x = refill(t, x, need, i.w, &mut i.wp);
             ebits
         } else {
             zero
         };
         i.x = x;
-        let is_run: __mmask16 = _mm512_cmpge_epu32_mask(sym, i.vt);
-        let tt = _mm512_mask_sub_epi32(sym, is_run, sym, i.vt);
-        let dlim = _mm512_mask_mov_epi32(i.dlim_v, is_run, i.dlim_r);
+        let run_now: __mmask16 = _mm512_mask_cmpge_epu32_mask(act, sym, i.vt);
+        let tt = _mm512_mask_sub_epi32(sym, run_now, sym, i.vt);
+        let dlim = _mm512_mask_mov_epi32(i.dlim_v, run_now, i.dlim_r);
         let direct: __mmask16 = _mm512_cmplt_epu32_mask(tt, dlim);
         let hb = _mm512_sllv_epi32(_mm512_or_si512(i.mpow, _mm512_and_si512(tt, i.mmask)), nb);
         let base = _mm512_mask_mov_epi32(hb, direct, tt);
         let u = _mm512_add_epi32(base, ebits);
-        let run_now = act & is_run;
         i.run = _mm512_mask_mov_epi32(i.run, run_now, u);
         let val = _mm512_maskz_mov_epi32(act & !run_now, u);
         i.uw = val;
-        let o: &mut [u16; 16] = (&mut out[bi..bi + 16]).try_into().unwrap();
-        _mm256_storeu_si256(o, _mm512_cvtepi32_epi16(val));
+        _mm256_storeu_si256(&mut out[xi], _mm512_cvtepi32_epi16(val));
         i.xi += 1;
+    }
+
+    macro_rules! avx512_prep_idx {
+        ($i:expr, $act:ident, $idx:ident) => {
+            let zero = _mm512_setzero_si512();
+            let one = _mm512_set1_epi32(1);
+            let c1023 = _mm512_set1_epi32(1023);
+            let c15 = _mm512_set1_epi32(15);
+            let c32 = _mm512_set1_epi32(32);
+            let running: __mmask16 = _mm512_test_epi32_mask($i.run, $i.run);
+            let $act: __mmask16 = !running;
+            if running != 0 {
+                $i.run = _mm512_mask_sub_epi32($i.run, running, $i.run, one);
+            }
+            let xi = $i.xi;
+            let row = $i.row;
+            let mut sum = if row > 0 {
+                let n = _mm512_cvtepu16_epi32(_mm256_loadu_si256(&$i.prev[xi]));
+                if xi > 0 {
+                    _mm512_add_epi32($i.uw, n)
+                } else {
+                    _mm512_add_epi32(n, n)
+                }
+            } else if xi > 0 {
+                _mm512_add_epi32($i.uw, $i.uw)
+            } else {
+                zero
+            };
+            if let Some(cr) = $i.cross {
+                sum = _mm512_add_epi32(sum, _mm512_cvtepu16_epi32(_mm256_loadu_si256(&cr[xi])));
+            }
+            let cls = _mm512_min_epu32(_mm512_sub_epi32(c32, _mm512_lzcnt_epi32(sum)), c15);
+            let ctx = _mm512_permutexvar_epi32(cls, $i.cmapv);
+            let $idx = _mm512_or_si512(_mm512_slli_epi32::<10>(ctx), _mm512_and_si512($i.x, c1023));
+        };
+    }
+
+    macro_rules! avx512_finish_step {
+        ($i:expr, $act:expr, $e:expr, $out:expr) => {{
+            let one = _mm512_set1_epi32(1);
+            let c1023 = _mm512_set1_epi32(1023);
+            let lim = _mm512_set1_epi32(RANS_L as i32);
+            let xi = $i.xi;
+            let f = _mm512_add_epi32(_mm512_and_si512($e, c1023), one);
+            let bias = _mm512_and_si512(_mm512_srli_epi32::<10>($e), c1023);
+            let nx = _mm512_add_epi32(_mm512_mullo_epi32(f, _mm512_srli_epi32::<10>($i.x)), bias);
+            let mut x = _mm512_mask_mov_epi32($i.x, $act, nx);
+            let need = _mm512_mask_cmplt_epu32_mask($act, x, lim);
+            {
+                let wv = $i.w.chunk($i.wp);
+                let v = _mm512_maskz_expand_epi32(need, _mm512_cvtepu16_epi32(_mm256_loadu_si256(wv)));
+                $i.wp += need.count_ones() as usize;
+                x = _mm512_mask_mov_epi32(x, need, _mm512_or_si512(_mm512_slli_epi32::<16>(x), v));
+            }
+            let has_extra: __mmask16 =
+                _mm512_mask_test_epi32_mask($act, $e, _mm512_set1_epi32(0xF000_0000u32 as i32));
+            let val = if has_extra == 0 {
+                // Top 4 bits of e are 0 on every active lane; inactive lanes are masked out.
+                let sym = _mm512_srli_epi32::<20>($e);
+                let run_now: __mmask16 = _mm512_mask_cmpge_epu32_mask($act, sym, $i.vt);
+                let u = _mm512_mask_sub_epi32(sym, run_now, sym, $i.vt);
+                $i.run = _mm512_mask_mov_epi32($i.run, run_now, u);
+                _mm512_maskz_mov_epi32($act & !run_now, u)
+            } else {
+                let nb = _mm512_srli_epi32::<28>($e);
+                let sym = _mm512_and_si512(_mm512_srli_epi32::<20>($e), _mm512_set1_epi32(255));
+                let ebits = _mm512_and_si512(x, _mm512_sub_epi32(_mm512_sllv_epi32(one, nb), one));
+                x = _mm512_mask_mov_epi32(x, $act, _mm512_srlv_epi32(x, nb));
+                let need = _mm512_mask_cmplt_epu32_mask($act, x, lim);
+                {
+                    let wv = $i.w.chunk($i.wp);
+                    let v = _mm512_maskz_expand_epi32(need, _mm512_cvtepu16_epi32(_mm256_loadu_si256(wv)));
+                    $i.wp += need.count_ones() as usize;
+                    x = _mm512_mask_mov_epi32(x, need, _mm512_or_si512(_mm512_slli_epi32::<16>(x), v));
+                }
+                let run_now: __mmask16 = _mm512_mask_cmpge_epu32_mask($act, sym, $i.vt);
+                let tt = _mm512_mask_sub_epi32(sym, run_now, sym, $i.vt);
+                let dlim = _mm512_mask_mov_epi32($i.dlim_v, run_now, $i.dlim_r);
+                let direct: __mmask16 = _mm512_cmplt_epu32_mask(tt, dlim);
+                let hb = _mm512_sllv_epi32(_mm512_or_si512($i.mpow, _mm512_and_si512(tt, $i.mmask)), nb);
+                let base = _mm512_mask_mov_epi32(hb, direct, tt);
+                let u = _mm512_add_epi32(base, ebits);
+                $i.run = _mm512_mask_mov_epi32($i.run, run_now, u);
+                _mm512_maskz_mov_epi32($act & !run_now, u)
+            };
+            $i.x = x;
+            $i.uw = val;
+            _mm256_storeu_si256(&mut $out[xi], _mm512_cvtepi32_epi16(val));
+            $i.xi = xi + 1;
+        }};
+    }
+
+    /// Inline macro for one full-width (`xi < min_w`) AVX-512 step, handling
+    /// partial runs directly in ZMM mask registers without calling `step_slow`
+    /// unless all 16 lanes are simultaneously in runs.
+    macro_rules! avx512_step_inw {
+        ($t:expr, $i:expr, $widv:expr, $lw:expr, $out:expr) => {{
+            if _mm512_test_epi32_mask($i.run, $i.run) == 0xFFFF {
+                step_slow($t, &mut $i, $widv, $lw, $out);
+            } else {
+                avx512_prep_idx!($i, act, idx);
+                let e = gather_dec($t, $i.dec, idx);
+                avx512_finish_step!($i, act, e, $out);
+            }
+        }};
     }
 
     /// AVX-512 row decoder; bit-identical to [`decode_row_scalar`].
@@ -1846,16 +2230,22 @@ pub(crate) mod avx512 {
         out: &mut [u16],
     ) {
         let widv = ld32(t, widths);
-        let mut a = inst(t, md, words, st, prev, cross, row);
+        let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
+        let prev_c = &prev.as_chunks::<NL>().0[..lw];
+        let cross_c = cross.map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let out_c = &mut out.as_chunks_mut::<NL>().0[..lw];
+        let mut a = inst(t, md, words, st, prev_c, cross_c, row);
+        while a.xi < min_w {
+            avx512_step_inw!(t, a, widv, lw, out_c);
+        }
         while a.xi < lw {
-            step(t, &mut a, widv, lw, out);
+            step_slow(t, &mut a, widv, lw, out_c);
         }
         finish(t, &a, st);
     }
 
-    /// Two independent row decodes (two slots that do not read each other)
-    /// stepped together, so their dependency chains overlap. Each result is
-    /// bit-identical to [`decode_row`] on that slot.
+    /// Two independent row decodes stepped together with 2-way phase interleaving
+    /// (prep indices -> gather both -> update both) to overlap hardware gathers.
     #[arcane(import_intrinsics)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_row2(
@@ -1871,26 +2261,53 @@ pub(crate) mod avx512 {
         out: [&mut [u16]; 2],
     ) {
         let widv = ld32(t, widths);
+        let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
         let [sa, sb] = st;
         let [oa, ob] = out;
-        let mut a = inst(t, md[0], words[0], sa, prev[0], cross[0], row);
-        let mut b = inst(t, md[1], words[1], sb, prev[1], cross[1], row);
-        while a.xi < lw && b.xi < lw {
-            step(t, &mut a, widv, lw, oa);
-            step(t, &mut b, widv, lw, ob);
+        let pa_c = &prev[0].as_chunks::<NL>().0[..lw];
+        let pb_c = &prev[1].as_chunks::<NL>().0[..lw];
+        let ca_c = cross[0].map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let cb_c = cross[1].map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let oa_c = &mut oa.as_chunks_mut::<NL>().0[..lw];
+        let ob_c = &mut ob.as_chunks_mut::<NL>().0[..lw];
+        let mut a = inst(t, md[0], words[0], sa, pa_c, ca_c, row);
+        let mut b = inst(t, md[1], words[1], sb, pb_c, cb_c, row);
+        while a.xi < min_w && b.xi < min_w {
+            if _mm512_test_epi32_mask(a.run, a.run) != 0xFFFF
+                && _mm512_test_epi32_mask(b.run, b.run) != 0xFFFF
+            {
+                avx512_prep_idx!(a, act_a, idx_a);
+                avx512_prep_idx!(b, act_b, idx_b);
+                let ea = gather_dec(t, a.dec, idx_a);
+                let eb = gather_dec(t, b.dec, idx_b);
+                avx512_finish_step!(a, act_a, ea, oa_c);
+                avx512_finish_step!(b, act_b, eb, ob_c);
+            } else {
+                avx512_step_inw!(t, a, widv, lw, oa_c);
+                avx512_step_inw!(t, b, widv, lw, ob_c);
+            }
+        }
+        while a.xi < min_w {
+            avx512_step_inw!(t, a, widv, lw, oa_c);
+        }
+        while b.xi < min_w {
+            avx512_step_inw!(t, b, widv, lw, ob_c);
         }
         while a.xi < lw {
-            step(t, &mut a, widv, lw, oa);
+            step_slow(t, &mut a, widv, lw, oa_c);
         }
         while b.xi < lw {
-            step(t, &mut b, widv, lw, ob);
+            step_slow(t, &mut b, widv, lw, ob_c);
         }
         finish(t, &a, sa);
         finish(t, &b, sb);
     }
 
     /// Three independent row decodes stepped together (slots 1 and 2 of a
-    /// row with slot 0 of the next row); `rows[i]` is each one's row index.
+    /// row with slot 0 of the next row) with 3-way phase interleaving
+    /// (prep all 3 indices -> issue all 3 gathers -> update all 3 states)
+    /// so all 3 512-bit hardware gathers pipeline in parallel before any
+    /// data-dependent extra-bits branch.
     #[arcane(import_intrinsics)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_row3(
@@ -1906,24 +2323,58 @@ pub(crate) mod avx512 {
         out: [&mut [u16]; 3],
     ) {
         let widv = ld32(t, widths);
+        let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
         let [sa, sb, sc] = st;
         let [oa, ob, oc] = out;
-        let mut a = inst(t, md[0], words[0], sa, prev[0], cross[0], rows[0]);
-        let mut b = inst(t, md[1], words[1], sb, prev[1], cross[1], rows[1]);
-        let mut c = inst(t, md[2], words[2], sc, prev[2], cross[2], rows[2]);
-        while a.xi < lw && b.xi < lw && c.xi < lw {
-            step(t, &mut a, widv, lw, oa);
-            step(t, &mut b, widv, lw, ob);
-            step(t, &mut c, widv, lw, oc);
+        let pa_c = &prev[0].as_chunks::<NL>().0[..lw];
+        let pb_c = &prev[1].as_chunks::<NL>().0[..lw];
+        let pc_c = &prev[2].as_chunks::<NL>().0[..lw];
+        let ca_c = cross[0].map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let cb_c = cross[1].map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let cc_c = cross[2].map(|c| &c.as_chunks::<NL>().0[..lw]);
+        let oa_c = &mut oa.as_chunks_mut::<NL>().0[..lw];
+        let ob_c = &mut ob.as_chunks_mut::<NL>().0[..lw];
+        let oc_c = &mut oc.as_chunks_mut::<NL>().0[..lw];
+        let mut a = inst(t, md[0], words[0], sa, pa_c, ca_c, rows[0]);
+        let mut b = inst(t, md[1], words[1], sb, pb_c, cb_c, rows[1]);
+        let mut c = inst(t, md[2], words[2], sc, pc_c, cc_c, rows[2]);
+        while a.xi < min_w && b.xi < min_w && c.xi < min_w {
+            if _mm512_test_epi32_mask(a.run, a.run) != 0xFFFF
+                && _mm512_test_epi32_mask(b.run, b.run) != 0xFFFF
+                && _mm512_test_epi32_mask(c.run, c.run) != 0xFFFF
+            {
+                avx512_prep_idx!(a, act_a, idx_a);
+                avx512_prep_idx!(b, act_b, idx_b);
+                avx512_prep_idx!(c, act_c, idx_c);
+                let ea = gather_dec(t, a.dec, idx_a);
+                let eb = gather_dec(t, b.dec, idx_b);
+                let ec = gather_dec(t, c.dec, idx_c);
+                avx512_finish_step!(a, act_a, ea, oa_c);
+                avx512_finish_step!(b, act_b, eb, ob_c);
+                avx512_finish_step!(c, act_c, ec, oc_c);
+            } else {
+                avx512_step_inw!(t, a, widv, lw, oa_c);
+                avx512_step_inw!(t, b, widv, lw, ob_c);
+                avx512_step_inw!(t, c, widv, lw, oc_c);
+            }
+        }
+        while a.xi < min_w {
+            avx512_step_inw!(t, a, widv, lw, oa_c);
+        }
+        while b.xi < min_w {
+            avx512_step_inw!(t, b, widv, lw, ob_c);
+        }
+        while c.xi < min_w {
+            avx512_step_inw!(t, c, widv, lw, oc_c);
         }
         while a.xi < lw {
-            step(t, &mut a, widv, lw, oa);
+            step_slow(t, &mut a, widv, lw, oa_c);
         }
         while b.xi < lw {
-            step(t, &mut b, widv, lw, ob);
+            step_slow(t, &mut b, widv, lw, ob_c);
         }
         while c.xi < lw {
-            step(t, &mut c, widv, lw, oc);
+            step_slow(t, &mut c, widv, lw, oc_c);
         }
         finish(t, &a, sa);
         finish(t, &b, sb);

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- Add per-lane adaptive pixel-color lossless coding (`decor = 4`, feature bit 32
+  `adaptive_color`), fitting per-lane `(gr, gb, rb)` lifting weights in integer
+  arithmetic with fused zero-allocation 4-ISA SIMD row writers (AVX-512, AVX2,
+  NEON, and Wasm SIMD128) and independent `imij-oracle` conformance. Enable at
+  effort >= 7.0 (`-2.72%` across the 32-image lossless corpus, `-7.10%` on
+  screenshots).
+- Optimize lossless rANS decode, spatial reconstruction, and 8-bit row transpose
+  / interleave across x86_64 (AVX-512 / AVX2), ARM64 NEON, and WebAssembly
+  SIMD128 (`transpose16_u8` + compact Wasm codegen), speeding up native and Wasm
+  lossless decoding while shrinking both Full and Explorer Wasm bundles.
+
 - Upgrade `archmage` and `magetypes` requirements to `0.9.33`, migrate
   `imij-bench` `mul_add` calls to `mul_add_relaxed`, and pass
   `CROSS_CONTAINER_OPTS: --security-opt seccomp=unconfined` on the `i686` CI

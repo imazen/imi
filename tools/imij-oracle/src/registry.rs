@@ -67,6 +67,8 @@ pub(crate) const FEATURE_CODING_DEFAULTS: u8 = 29;
 pub(crate) const FEATURE_MODEL_REFERENCES: u8 = 30;
 // feature|dc_coverage
 pub(crate) const FEATURE_DC_COVERAGE: u8 = 31;
+// feature|adaptive_color
+pub(crate) const FEATURE_ADAPTIVE_COLOR: u8 = 32;
 // record|header|file checksum announcement|ignorable|none
 pub(crate) const HEADER_CHECKSUM: u64 = 2;
 // record|header|DATA locator|ignorable|none

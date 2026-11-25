@@ -72,6 +72,7 @@ feature_ids! {
     FEATURE_CODING_DEFAULTS = 29, "coding_defaults";
     FEATURE_MODEL_REFERENCES = 30, "model_references";
     FEATURE_DC_COVERAGE = 31, "dc_coverage";
+    FEATURE_ADAPTIVE_COLOR = 32, "adaptive_color";
 }
 
 record_ids! {
