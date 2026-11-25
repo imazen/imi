@@ -19,6 +19,7 @@ extern crate alloc;
 /// Shared alpha interpretation, including explicit opacity and undefined padding.
 pub use zenpixels::AlphaMode;
 
+mod adapt_color;
 mod bilevel;
 mod bits;
 mod checksum;

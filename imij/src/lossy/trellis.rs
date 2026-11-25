@@ -204,10 +204,15 @@ pub(super) fn huf_rate(cfg: &LossyConfig) -> bool {
 /// The trellis an encoder at `effort` runs: zenjpeg's lambda, with the
 /// effort's rate-model passes (`Effort::trellis_passes`); none below its
 /// threshold.
+#[allow(dead_code)]
 pub(super) fn for_effort(effort: crate::effort::Effort) -> Option<LossyTrellis> {
-    let passes = effort.trellis_passes();
-    (passes > 0).then(|| LossyTrellis {
-        passes,
+    for_effort_plan(effort.lossy_plan(crate::effort::AdaptiveMode::Off))
+}
+
+/// The trellis for a centralized [`crate::effort::LossyEffortPlan`].
+pub(super) fn for_effort_plan(plan: crate::effort::LossyEffortPlan) -> Option<LossyTrellis> {
+    (plan.trellis_passes > 0).then(|| LossyTrellis {
+        passes: plan.trellis_passes,
         ..LossyTrellis::default()
     })
 }
@@ -784,12 +789,14 @@ fn vals(
 /// `stripe_counts_widths` reads back from the written `q`/`nz`).
 #[magetypes(v3, neon, wasm128, scalar)]
 #[allow(clippy::too_many_arguments)]
-fn huf_channel(
+fn huf_channel_norm(
     token: Token,
     src: &[f32],
     steps: &[f32; 64],
     set: &LossyTrellis,
     pw: Powers,
+    norm_override: Option<f64>,
+    lambda_mul: f64,
     count_bits: &[f64; PK_GROUPS + 1],
     wid: &[[f64; WID_PAD]; huf::WID_CTX],
     ctx: impl Fn(usize, u32) -> (usize, usize),
@@ -801,7 +808,8 @@ fn huf_channel(
     let mut near = [0u32; 64];
     let norm =
         incant!(setup(src, steps, &mut a, &mut near) with token, [v3, neon, wasm128, scalar]);
-    let lw = 64.0 * set.lambda_p(norm * 64.0 / 63.0, pw);
+    let norm = norm_override.unwrap_or(norm);
+    let lw = 64.0 * set.lambda_p(norm * 64.0 / 63.0, pw) * lambda_mul;
     // `q`'s AC lanes are zero wherever `nz`'s AC bits are: every
     // `StripeCoefs` writer keeps them paired (the quantizer masks come
     // from `q`, and the lab LF prediction keeps them in step). The
@@ -1044,8 +1052,9 @@ fn zero_out() -> (u32, [u8; PK_GROUPS]) {
 /// prices its count with the next luma count of its slice and this block's
 /// chroma counts and widths (their previous-pass values); chroma prices
 /// under the block's current luma count.
+#[cfg(all(test, feature = "encode"))]
 #[magetypes(v3, neon, wasm128, scalar)]
-#[allow(unused_variables)]
+#[allow(unused_variables, clippy::too_many_arguments)]
 fn huf_block_channel(
     token: Token,
     sc: &mut StripeCoefs,
@@ -1056,6 +1065,28 @@ fn huf_block_channel(
     hp: &HufPrices,
     set: &LossyTrellis,
     pw: Powers,
+    bias: Option<&[[f32; 64]; 2]>,
+) -> (u32, [u8; PK_GROUPS]) {
+    incant!(
+        huf_block_channel_norm(sc, b, ch, src, steps, hp, set, pw, None, 1.0, bias) with token,
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+#[magetypes(v3, neon, wasm128, scalar)]
+#[allow(unused_variables, clippy::too_many_arguments)]
+fn huf_block_channel_norm(
+    token: Token,
+    sc: &mut StripeCoefs,
+    b: usize,
+    ch: usize,
+    src: &[f32],
+    steps: &[f32; 64],
+    hp: &HufPrices,
+    set: &LossyTrellis,
+    pw: Powers,
+    norm_override: Option<f64>,
+    lambda_mul: f64,
     bias: Option<&[[f32; 64]; 2]>,
 ) -> (u32, [u8; PK_GROUPS]) {
     let lum = |sc: &StripeCoefs, b: usize| group_count(sc.nz[b * NCH] & !1);
@@ -1108,11 +1139,13 @@ fn huf_block_channel(
             bits
         });
         incant!(
-            huf_channel(
+            huf_channel_norm(
                 src,
                 steps,
                 set,
                 pw,
+                norm_override,
+                lambda_mul,
                 &count_bits,
                 &hp.wid,
                 |gi, n| {
@@ -1129,11 +1162,13 @@ fn huf_block_channel(
         let l = lum(sc, b);
         let count_bits = hp.chroma[(ch - 1) * huf::CLASSES + huf::class(l)];
         incant!(
-            huf_channel(
+            huf_channel_norm(
                 src,
                 steps,
                 set,
                 pw,
+                norm_override,
+                lambda_mul,
                 &count_bits,
                 &hp.wid,
                 |gi, _| {
@@ -1237,7 +1272,7 @@ const IZIG: [u8; 64] = {
 /// `step` eval: (magnitude, symbol class, raw bits + distortion). `extra`
 /// lanes past `ncand[i]` are `INFINITY`, so a full-width scan can't pick
 /// them.
-struct Cands {
+pub(super) struct Cands {
     mag: [[u32; CAND_PAD]; 64],
     cls: [[u32; CAND_PAD]; 64],
     extra: [[f64; CAND_PAD]; 64],
@@ -1446,6 +1481,7 @@ fn channel(
 /// class, the same for every EOB that far away) across candidate EOBs;
 /// `PRUNE` stops the predecessor scan once the zeroed run alone costs the
 /// best path found. Both are exact (tests compare all four variants).
+#[cfg(all(test, feature = "encode"))]
 #[magetypes(v3, neon, wasm128, scalar)]
 #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 fn channel_impl<const REUSE: bool, const PRUNE: bool>(
@@ -1463,12 +1499,40 @@ fn channel_impl<const REUSE: bool, const PRUNE: bool>(
     q: &mut [i32],
     nz: &mut u64,
 ) {
+    incant!(
+        channel_impl_norm::<REUSE, PRUNE>(
+            src, steps, ch, ref_eob, lookahead, prices, set, pw, None, 1.0, bias, cands, q, nz
+        ) with token,
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+#[magetypes(v3, neon, wasm128, scalar)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn channel_impl_norm<const REUSE: bool, const PRUNE: bool>(
+    token: Token,
+    src: &[f32],
+    steps: &[f32; 64],
+    ch: usize,
+    ref_eob: u32,
+    lookahead: &[f64; coef::EOB_CLASSES],
+    prices: &Prices,
+    set: &LossyTrellis,
+    pw: Powers,
+    norm_override: Option<f64>,
+    lambda_mul: f64,
+    bias: Option<&[[f32; 64]; 2]>,
+    cands: &mut Cands,
+    q: &mut [i32],
+    nz: &mut u64,
+) {
     // Zigzag magnitudes in steps, nearest quantized values, block norm.
     let mut a = [0f64; 64];
     let mut qn = [0u32; 64];
     let norm = incant!(setup(src, steps, &mut a, &mut qn) with token, [v3, neon, wasm128, scalar]);
-    // libjpeg's integer DCT is 8x the orthonormal one.
-    let w = 64.0 * set.lambda_p(norm * 64.0 / 63.0, pw);
+    let norm = norm_override.unwrap_or(norm);
+    // Integer DCT norm scaling.
+    let w = 64.0 * set.lambda_p(norm * 64.0 / 63.0, pw) * lambda_mul;
     // zd[k]: distortion of zeroing positions 1..=k.
     let mut zd = [0f64; 64];
     for k in 1..64 {
@@ -1716,11 +1780,116 @@ fn channel_impl<const REUSE: bool, const PRUNE: bool>(
     *nz = mask;
 }
 
+/// Trellis-quantize one standalone 64-slot AC unit under RunLevel prices
+/// (for candidate pricing in partition selection). Preserves `q[0]` and `*nz & 1`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn trellis_unit_rl(
+    src: &[f32; 64],
+    steps: &[f32; 64],
+    ch: usize,
+    ref_eob: u32,
+    prices: &Prices,
+    set: &LossyTrellis,
+    norm_override: Option<f64>,
+    lambda_mul: f64,
+    cands: &mut Cands,
+    q: &mut [i32; 64],
+    nz: &mut u64,
+) {
+    let pw = set.powers();
+    let la = [0.0f64; coef::EOB_CLASSES];
+    incant!(
+        channel_impl_norm::<true, true>(
+            src,
+            steps,
+            ch,
+            ref_eob,
+            &la,
+            prices,
+            set,
+            pw,
+            norm_override,
+            lambda_mul,
+            None,
+            cands,
+            q,
+            nz,
+        ),
+        [v3, neon, wasm128, scalar]
+    );
+}
+
+/// Trellis-quantize one standalone 64-slot AC unit under SplitHuf prices
+/// (for candidate pricing in partition selection). Preserves `q[0]` and `*nz & 1`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn trellis_unit_sh(
+    src: &[f32; 64],
+    steps: &[f32; 64],
+    ch: usize,
+    ref_count: u32,
+    hp: &HufPrices,
+    set: &LossyTrellis,
+    norm_override: Option<f64>,
+    lambda_mul: f64,
+    q: &mut [i32; 64],
+    nz: &mut u64,
+) {
+    let pw = set.powers();
+    q[1..].fill(0);
+    *nz &= 1;
+    if ch == 0 {
+        let count_bits = hp.luma[huf::class(ref_count)];
+        incant!(
+            huf_channel_norm(
+                src,
+                steps,
+                set,
+                pw,
+                norm_override,
+                lambda_mul,
+                &count_bits,
+                &hp.wid,
+                |gi, n| {
+                    let d = n.saturating_sub(gi as u32).min(5) as usize;
+                    (coef::PK_BAND[gi] as usize * 6 + d, d)
+                },
+                None,
+                q,
+                nz,
+            ),
+            [v3, neon, wasm128, scalar]
+        );
+    } else {
+        let count_bits = hp.chroma[(ch - 1) * huf::CLASSES + huf::class(ref_count)];
+        incant!(
+            huf_channel_norm(
+                src,
+                steps,
+                set,
+                pw,
+                norm_override,
+                lambda_mul,
+                &count_bits,
+                &hp.wid,
+                |gi, _| {
+                    let d = ref_count.saturating_sub(gi as u32).min(5) as usize;
+                    ((ch * 6 + coef::PK_BAND[gi] as usize) * 6 + d, d)
+                },
+                None,
+                q,
+                nz,
+            ),
+            [v3, neon, wasm128, scalar]
+        );
+    }
+}
+
 /// One block of a unit: luma, then chroma. `src(ch)`: the block's canonical
 /// FDCT coefficients of channel `ch` (raster). `pw`: `set.powers()` (the
 /// pow inputs are constant per settings). A block code (`sc.aq`) of 0
 /// keeps the block as coded (inter frames); other codes scale its AC steps
 /// by `a / 64`, as the quantizer does.
+#[cfg(all(test, feature = "encode"))]
 #[magetypes(v3, neon, wasm128, scalar)]
 #[allow(unused_variables, clippy::too_many_arguments)]
 fn block<'a>(
@@ -1733,6 +1902,30 @@ fn block<'a>(
     set: &LossyTrellis,
     lab: &Lab,
     pw: Powers,
+    bias: Option<&[[[f32; 64]; 2]; 3]>,
+    cands: &mut Cands,
+    cspw: Option<&[(LossyTrellis, Powers); NCH]>,
+) -> Option<[(u32, [u8; PK_GROUPS]); NCH]> {
+    incant!(
+        block_norm(sc, b, src, steps, rates, set, lab, pw, None, 1.0, bias, cands, cspw) with token,
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+#[magetypes(v3, neon, wasm128, scalar)]
+#[allow(unused_variables, clippy::too_many_arguments)]
+fn block_norm<'a>(
+    token: Token,
+    sc: &mut StripeCoefs,
+    b: usize,
+    src: impl Fn(usize) -> &'a [f32],
+    steps: &[[f32; 64]; 3],
+    rates: &Rates,
+    set: &LossyTrellis,
+    lab: &Lab,
+    pw: Powers,
+    norm_override: Option<&[f64; NCH]>,
+    lambda_mul: f64,
     bias: Option<&[[[f32; 64]; 2]; 3]>,
     cands: &mut Cands,
     // Per-channel `for_channel`/`powers`, precomputed when `set` is
@@ -1786,7 +1979,7 @@ fn block<'a>(
                     }
                 };
                 hw[ch] = incant!(
-                    huf_block_channel(
+                    huf_block_channel_norm(
                         sc,
                         b,
                         ch,
@@ -1795,6 +1988,8 @@ fn block<'a>(
                         hp,
                         &cs,
                         pw,
+                        norm_override.map(|n| n[ch]),
+                        lambda_mul,
                         bias.map(|t| &t[ch])
                     ) with token,
                     [v3, neon, wasm128, scalar]
@@ -1833,7 +2028,7 @@ fn block<'a>(
         let cs = for_channel(set, ch, lab);
         let pw = if cs == *set { pw } else { cs.powers() };
         incant!(
-            channel_impl::<true, true>(
+            channel_impl_norm::<true, true>(
                 src(ch),
                 &steps[ch],
                 ch,
@@ -1842,6 +2037,8 @@ fn block<'a>(
                 prices,
                 &cs,
                 pw,
+                norm_override.map(|n| n[ch]),
+                lambda_mul,
                 bias.map(|t| &t[ch]),
                 cands,
                 &mut sc.q[bc * 64..][..64],
@@ -1948,8 +2145,12 @@ impl Pass {
 /// recomputes each block row through `rows`, then re-decides every block's
 /// AC coefficients. `freqs` gathers the split-Huffman frequencies the next
 /// pass prices from. `index` is the pass number (0: debug source checks).
+///
+/// `lambda_map` holds per-block trellis-lambda multipliers starting at block
+/// row `lambda_by0` (whole-image map uses `lambda_by0 = 0`; bounded streaming
+/// passes pass the current band's map with `lambda_by0 = band_by0`).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn rewrite_stripe(
+pub(super) fn rewrite_stripe_lambda(
     pass: &Pass,
     stripe: &mut [StripeCoefs],
     rows: RowPlanes,
@@ -1960,6 +2161,9 @@ pub(super) fn rewrite_stripe(
     cfg: &LossyConfig,
     set: &LossyTrellis,
     aq: &[f32],
+    lambda_map: &[f32],
+    lambda_by0: usize,
+    merged_trellis: bool,
     bias: Option<&[[[f32; 64]; 2]; 3]>,
     index: usize,
     mut freqs: Option<&mut Freqs>,
@@ -1968,16 +2172,267 @@ pub(super) fn rewrite_stripe(
     stop.check().map_err(|_| Error::Cancelled)?;
     let cm = dct::dct_matrix();
     let (by0, nby) = (stripe[0].by0, stripe[0].nby);
-    let mut planes = vec![0.0f32; NCH * 8 * pw];
     let mut extremes = Vec::with_capacity(image_bw);
-    let mut coefs = vec![0.0f32; NCH * image_bw * 64];
     // Small transforms: a block's 4x4 planes take their 4x4
     // coefficients and steps (SPEC 2.11).
     let any_split = stripe.iter().any(|sc| sc.splits.iter().any(|&v| v != 0));
+    let any_merged = merged_trellis && stripe.iter().any(|sc| sc.modes.iter().any(|&m| m != 0));
+    let lambda_at = |by: usize, bx: usize| -> f64 {
+        if lambda_map.is_empty() {
+            1.0
+        } else {
+            let rel_by = by.saturating_sub(lambda_by0);
+            lambda_map
+                .get(rel_by * image_bw + bx)
+                .copied()
+                .unwrap_or(1.0) as f64
+        }
+    };
     let mut coefs4 = vec![0.0f32; if any_split { NCH * 64 } else { 0 }];
     let mut cands: alloc::boxed::Box<Cands> = alloc::boxed::Box::default();
+    if any_merged {
+        let enc = super::superblock::select::Enc::new(steps);
+        let mut planes2 = [vec![0.0f32; NCH * 8 * pw], vec![0.0f32; NCH * 8 * pw]];
+        let mut coefs2 = [
+            vec![0.0f32; NCH * image_bw * 64],
+            vec![0.0f32; NCH * image_bw * 64],
+        ];
+        let mut sp = super::superblock::select::new_spectra();
+        for r0 in (0..nby).step_by(2) {
+            stop.check().map_err(|_| Error::Cancelled)?;
+            let rr = if r0 + 1 < nby { 2 } else { 1 };
+            for dy in 0..rr {
+                extremes.clear();
+                rows(by0 + r0 + dy, &mut planes2[dy], &mut extremes);
+                for ch in 0..NCH {
+                    enc_simd::fdct_row(
+                        &planes2[dy][ch * 8 * pw..][..8 * pw],
+                        pw,
+                        image_bw,
+                        &cm,
+                        &mut coefs2[dy][ch * image_bw * 64..][..image_bw * 64],
+                    );
+                }
+            }
+            for (g, sc) in stripe.iter_mut().enumerate() {
+                let bx0 = g * group_bw;
+                let sbw = sc.bw;
+                // Precompute merged parent units for any merged 2x2 groups in
+                // this 2-row strip so raster-order trellis keeps exact lane/slice
+                // EOB contexts while computing each merged block's spectrum once.
+                let mut m_src: Vec<Option<[[f32; 64]; NCH]>> = vec![None; rr * sbw];
+                let mut m_steps: Vec<[[f32; 64]; NCH]> = Vec::new();
+                let mut m_norms: Vec<[f64; NCH]> = Vec::new();
+                let mut m_idx: Vec<usize> = vec![usize::MAX; rr * sbw];
+                if !sc.modes.is_empty() {
+                    for gx in (0..sbw).step_by(2) {
+                        let cols = (sbw - gx).min(2);
+                        let mut has_m = false;
+                        for dy in 0..rr {
+                            for dx in 0..cols {
+                                if sc.modes[(r0 + dy) * sbw + gx + dx] != 0 {
+                                    has_m = true;
+                                }
+                            }
+                        }
+                        if !has_m {
+                            continue;
+                        }
+                        let roles = [
+                            sc.modes[r0 * sbw + gx],
+                            if cols == 2 {
+                                sc.modes[r0 * sbw + gx + 1]
+                            } else {
+                                0
+                            },
+                            if rr == 2 {
+                                sc.modes[(r0 + 1) * sbw + gx]
+                            } else {
+                                0
+                            },
+                            if rr == 2 && cols == 2 {
+                                sc.modes[(r0 + 1) * sbw + gx + 1]
+                            } else {
+                                0
+                            },
+                        ];
+                        let Some(sym) = super::superblock::symbol_of(roles) else {
+                            continue;
+                        };
+                        enc.spectra_at(&planes2, pw, rr, cols, bx0 + gx, &mut sp);
+                        for &(s, py0, px0) in super::superblock::BLOCKS[sym as usize] {
+                            let si = s as usize;
+                            let gather = &enc.gather[si];
+                            let n_parents = (s.ph() * s.pw()) as f64;
+                            let mut norm = [0.0f64; NCH];
+                            for ch in 0..NCH {
+                                let c = sp[ch].get(s, py0, px0);
+                                let mut tot_e = 0.0f64;
+                                for v in 0..s.h() {
+                                    for u in 0..s.w() {
+                                        if v < s.ph() && u < s.pw() {
+                                            continue;
+                                        }
+                                        let cv = c[v * 16 + u] as f64;
+                                        tot_e += cv * cv;
+                                    }
+                                }
+                                norm[ch] = tot_e / n_parents;
+                            }
+                            for py in 0..s.ph() {
+                                for px in 0..s.pw() {
+                                    let p = py * s.pw() + px;
+                                    let mut usrc = [[0.0f32; 64]; NCH];
+                                    let mut usteps = [[1.0f32; 64]; NCH];
+                                    for ch in 0..NCH {
+                                        let c = sp[ch].get(s, py0, px0);
+                                        let st = &enc.steps[ch][si];
+                                        for z in 1..64 {
+                                            let idx = gather[p * 64 + z] as usize;
+                                            usrc[ch][z] = c[idx];
+                                            usteps[ch][z] = st[idx];
+                                        }
+                                    }
+                                    let slot = (py0 + py) * sbw + (gx + px0 + px);
+                                    m_idx[slot] = m_steps.len();
+                                    m_src[slot] = Some(usrc);
+                                    m_steps.push(usteps);
+                                    m_norms.push(norm);
+                                }
+                            }
+                        }
+                    }
+                }
+                for dy in 0..rr {
+                    let r = r0 + dy;
+                    if cfg!(debug_assertions) && index == 0 {
+                        check_sources(sc, r, &coefs2[dy], image_bw, bx0, steps, cfg);
+                    }
+                    for x in 0..sbw {
+                        stop.check().map_err(|_| Error::Cancelled)?;
+                        let b = r * sbw + x;
+                        let slot = dy * sbw + x;
+                        let coupled;
+                        let (set, tpw) = if set.aq_coupling != 0.0 {
+                            let strength = aq
+                                .get((by0 + r) * image_bw + bx0 + x)
+                                .copied()
+                                .unwrap_or(0.0);
+                            coupled = set.coupled(strength);
+                            (&coupled, coupled.powers())
+                        } else {
+                            (set, pass.pw0)
+                        };
+                        if let Some(usrc) = &m_src[slot] {
+                            let mi = m_idx[slot];
+                            let usteps = &m_steps[mi];
+                            let unorm = &m_norms[mi];
+                            let lmul = lambda_at(by0 + r, bx0 + x);
+                            let at = |ch: usize| -> &[f32] { &usrc[ch] };
+                            let hw = incant!(
+                                block_norm(
+                                    sc,
+                                    b,
+                                    at,
+                                    usteps,
+                                    &pass.rates,
+                                    set,
+                                    &pass.lab,
+                                    tpw,
+                                    Some(unorm),
+                                    lmul,
+                                    None,
+                                    &mut cands,
+                                    pass.cspw.as_ref()
+                                ),
+                                [v3, neon, wasm128, scalar]
+                            );
+                            if let Some(f) = &mut freqs {
+                                emit_huf(f, sc, b, hw.as_ref());
+                            }
+                            continue;
+                        }
+                        if sc.modes.get(b).is_some_and(|&m| m != 0) {
+                            continue;
+                        }
+                        let split = sc.splits.get(b).copied().unwrap_or(0);
+                        let local;
+                        let steps = if split == 0 {
+                            steps
+                        } else {
+                            for ch in 0..NCH {
+                                if split >> ch & 1 == 0 {
+                                    continue;
+                                }
+                                let px: [f32; 64] = core::array::from_fn(|i| {
+                                    planes2[dy][ch * 8 * pw + (i / 8) * pw + (bx0 + x) * 8 + i % 8]
+                                });
+                                coefs4[ch * 64..][..64]
+                                    .copy_from_slice(&super::small::forward_cfg(cfg, &px));
+                            }
+                            local = core::array::from_fn(|ch| {
+                                if split >> ch & 1 != 0 {
+                                    super::small::steps4(&steps[ch])
+                                } else {
+                                    steps[ch]
+                                }
+                            });
+                            &local
+                        };
+                        let local_bias;
+                        let bias = match bias {
+                            Some(t) if split != 0 => {
+                                local_bias = core::array::from_fn::<_, NCH, _>(|ch| {
+                                    if split >> ch & 1 != 0 {
+                                        [[0.0f32; 64]; 2]
+                                    } else {
+                                        t[ch]
+                                    }
+                                });
+                                Some(&local_bias)
+                            }
+                            b => b,
+                        };
+                        let at = |ch: usize| -> &[f32] {
+                            if split >> ch & 1 != 0 {
+                                &coefs4[ch * 64..][..64]
+                            } else {
+                                &coefs2[dy][(ch * image_bw + bx0 + x) * 64..][..64]
+                            }
+                        };
+                        let lmul = lambda_at(by0 + r, bx0 + x);
+                        let hw = incant!(
+                            block_norm(
+                                sc,
+                                b,
+                                at,
+                                steps,
+                                &pass.rates,
+                                set,
+                                &pass.lab,
+                                tpw,
+                                None,
+                                lmul,
+                                bias,
+                                &mut cands,
+                                pass.cspw.as_ref()
+                            ),
+                            [v3, neon, wasm128, scalar]
+                        );
+                        if let Some(f) = &mut freqs {
+                            emit_huf(f, sc, b, hw.as_ref());
+                        }
+                    }
+                }
+            }
+        }
+        return stop.check().map_err(|_| Error::Cancelled);
+    }
+    let mut planes = vec![0.0f32; NCH * 8 * pw];
+    let mut coefs = vec![0.0f32; NCH * image_bw * 64];
     for r in 0..nby {
         stop.check().map_err(|_| Error::Cancelled)?;
+        extremes.clear();
         rows(by0 + r, &mut planes, &mut extremes);
         for ch in 0..NCH {
             enc_simd::fdct_row(
@@ -2057,8 +2512,9 @@ pub(super) fn rewrite_stripe(
                         &coefs[(ch * image_bw + bx0 + x) * 64..][..64]
                     }
                 };
+                let lmul = lambda_at(by0 + r, bx0 + x);
                 let hw = incant!(
-                    block(
+                    block_norm(
                         sc,
                         b,
                         at,
@@ -2067,6 +2523,8 @@ pub(super) fn rewrite_stripe(
                         set,
                         &pass.lab,
                         pw,
+                        None,
+                        lmul,
                         bias,
                         &mut cands,
                         pass.cspw.as_ref()
@@ -2093,6 +2551,7 @@ pub(super) fn optimize(
     effort: crate::effort::Effort,
     set: &LossyTrellis,
     aq: &[f32],
+    open_lambda_map: &[f32],
     bias: Option<&[[[f32; 64]; 2]; 3]>,
     huf_model: bool,
     stop: &dyn how_far::Stop,
@@ -2104,6 +2563,29 @@ pub(super) fn optimize(
         image_bw.div_ceil(group_bw)
     };
     debug_assert_eq!(units.len() % groups, 0);
+    let plan = effort.lossy_plan(super::adaptive_mode(cfg));
+    let bh = units.iter().map(|sc| sc.by0 + sc.nby).max().unwrap_or(0);
+    let nb = image_bw.checked_mul(bh).ok_or(Error::TooLarge)?;
+    let mut lambda_map: Vec<f32> = if !open_lambda_map.is_empty() {
+        let mut v = super::adaptive_rdo::try_vec_cap(open_lambda_map.len())?;
+        v.extend_from_slice(open_lambda_map);
+        v
+    } else if plan.lambda_aq_open != 0.0 {
+        super::adaptive_rdo::build_open_loop_lambda_map(
+            rows,
+            pw,
+            image_bw,
+            bh,
+            steps,
+            plan.lambda_aq_open,
+            cfg.threads,
+            stop,
+        )?
+    } else if plan.lambda_aq_closed_loop != 0.0 {
+        super::adaptive_rdo::try_vec(nb, 1.0f32)?
+    } else {
+        Vec::new()
+    };
     // Split-Huffman (context, symbol) frequencies a pass's rewritten
     // blocks emitted: the next pass's `HufPrices` builds its tables from
     // them (small and fixed-size where a retained per-block record would
@@ -2137,9 +2619,11 @@ pub(super) fn optimize(
         // shared accumulator (workers merge per-stripe rows at stripe end).
         let emit = huf_model && index + 1 < set.passes;
         let shared = emit.then(shared_freqs);
+        let lmap_ref: &[f32] = &lambda_map;
+        let merged_trellis = plan.merged_trellis;
         let done = crate::par::par_map(stripes, cfg.threads, |_, mut stripe| {
             let mut freqs = emit.then(freqs_new);
-            rewrite_stripe(
+            rewrite_stripe_lambda(
                 &pass,
                 &mut stripe,
                 rows,
@@ -2150,6 +2634,9 @@ pub(super) fn optimize(
                 cfg,
                 set,
                 aq,
+                lmap_ref,
+                0,
+                merged_trellis,
                 bias,
                 index as usize,
                 freqs.as_mut(),
@@ -2179,6 +2666,23 @@ pub(super) fn optimize(
                     .collect()
             })
         });
+        // Closed-loop perceptual + unfiltered seam residual feedback updates
+        // per-block trellis lambda before the final pass.
+        if plan.lambda_aq_closed_loop != 0.0 && index + 1 < set.passes {
+            super::adaptive_rdo::update_lambda_map_closed_loop(
+                &mut lambda_map,
+                &units,
+                rows,
+                pw,
+                image_bw,
+                bh,
+                group_bw,
+                steps,
+                plan.lambda_aq_closed_loop,
+                cfg.threads,
+                stop,
+            )?;
+        }
     }
     stop.check().map_err(|_| Error::Cancelled)?;
     Ok(units)
@@ -2345,6 +2849,7 @@ mod tests {
             &cfg,
             crate::effort::Effort::new(9.0).unwrap(),
             &set,
+            &[],
             &[],
             None,
             false,

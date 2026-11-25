@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {levelsFor,selectRepresentation,minScale,planRegions,displayRepresentations,refinementOrder,qualityOptions,defaultQuality,storageRegions,imageFromFragment,fragmentForImage,startupScene} from '../gigapixel/view-plan.js';
+import {representationKey,levelsFor,selectRepresentation,minScale,planRegions,displayRepresentations,refinementOrder,qualityOptions,defaultQuality,storageRegions,imageFromFragment,fragmentForImage,startupScene} from '../gigapixel/view-plan.js';
 import {gesture,applyGesture} from '../gigapixel/gestures.js';
+test('native decoded cache keys distinguish coding profile promises',()=>{
+ const rep={kind:'native',contentId:'content',viewId:'1'};
+ assert.equal(representationKey(rep),'content:1');
+ assert.notEqual(representationKey(rep),representationKey({...rep,codingProfile:'narrow-still'}));
+ assert.notEqual(representationKey({...rep,codingProfile:'complete-v4'}),representationKey({...rep,codingProfile:'narrow-still'}));
+});
 test('image links preserve other fragment options and round-trip scene ids',()=>{
  assert.equal(imageFromFragment(''),null);
  assert.equal(imageFromFragment('#fullscreen'),null);

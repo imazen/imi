@@ -1050,6 +1050,7 @@ async fn read_file<R: Input, A: crate::parse::limits::Admission>(
     // The order every route keeps: the header, what this build decodes,
     // the limits, then the chunks and the checksum.
     crate::parse::header::check_decodable(&header, declared)?;
+    admission.coding_profile(&header)?;
     let info = header.info.clone();
     let bytes = usize::try_from(n).map_err(|_| Error::TooLarge)?;
     crate::parse::limits::check_limits(&info, limits)?;

@@ -456,6 +456,7 @@ impl AttachmentDescriptor {
 /// These do not promise an RSS cap for the existing native codec's scratch.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaneSetLimits {
+    v4_profile: Option<crate::v4::CodingProfile>,
     max_index_bytes: usize,
     max_planes: usize,
     max_levels: usize,
@@ -478,6 +479,7 @@ pub struct PlaneSetLimits {
 impl Default for PlaneSetLimits {
     fn default() -> Self {
         Self {
+            v4_profile: None,
             max_index_bytes: 4 << 20,
             max_planes: 1_024,
             max_levels: 1024,
@@ -500,6 +502,13 @@ impl Default for PlaneSetLimits {
     }
 }
 impl PlaneSetLimits {
+    /// Require this profile for every image view or plane tile decoded through
+    /// this reader. Directory inspection can still describe other views.
+    pub fn with_v4_profile(mut self, profile: crate::v4::CodingProfile) -> Self {
+        self.v4_profile = Some(profile);
+        self
+    }
+
     /// Request up to this many workers for reconstructing a fetched image tile.
     /// Range reads stay on the owning thread. The default is one worker.
     #[doc(hidden)]

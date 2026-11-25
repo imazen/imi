@@ -554,6 +554,14 @@ name = "upgrade"
 required-features = ["encode"]
 
 [[test]]
+name = "adaptive_color"
+required-features = ["encode"]
+
+[[test]]
+name = "v4_bounded_lossy"
+required-features = ["encode", "lab"]
+
+[[test]]
 name = "v1_roundtrip"
 required-features = ["encode"]
 

@@ -165,11 +165,12 @@ fn encode_document(pages: &[Page]) -> Vec<u8> {
     }
 }
 
-/// A page coded on its own, decoded on its own: what the page must decode to.
+/// A page coded on its own (matching `encode_document`'s legacy V3 framing),
+/// decoded on its own: what the page must decode to.
 fn standalone(p: &Page) -> (ImageInfo, Vec<u8>) {
     let f = p
         .coding
-        .encode_samples(
+        .encode_legacy_samples(
             imij::ImageRef::new(&p.px, p.info.row_bytes(), &p.info),
             &p.meta,
         )

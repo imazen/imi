@@ -134,6 +134,22 @@ pub(crate) fn head_features(info: &ImageInfo, head: &[u8]) -> crate::parse::head
     walk().expect("the encoder's own head")
 }
 
+/// Features signalled solely by emitted stripe payloads (not present in the
+/// lossless head): `adaptive_color` when at least one final stripe uses
+/// `DECOR_ADAPT_PIX = 4` (SPEC 2.4.1).
+#[cfg(feature = "encode")]
+pub(crate) fn stripes_features(stripes: &[Vec<u8>]) -> crate::parse::header::Features {
+    use crate::parse::header::{Feature, Features};
+    if stripes
+        .iter()
+        .any(|s| s.first() == Some(&crate::adapt_color::DECOR_ADAPT_PIX))
+    {
+        Features::EMPTY.with(Feature::AdaptiveColor)
+    } else {
+        Features::EMPTY
+    }
+}
+
 /// Encoder settings.
 ///
 /// New fields can arrive in any release: start from [`EncodeConfig::default`]
@@ -227,7 +243,7 @@ impl Default for EncodeConfig {
             run_min: 4,
             max_ctx: NCTX,
             ctx_cross: true,
-            decor_mask: 0b1111,
+            decor_mask: 0b1_1111,
             predictor_mask: 0x7F,
             threads: 1,
             effort: 7.5,
@@ -488,7 +504,7 @@ pub(crate) fn encode_frame_with_progress(
             crate::Coding::Lossless,
             None,
             crate::DecodeSpeed::Balanced,
-            head_features(info, &head),
+            head_features(info, &head).union(stripes_features(&stripes)),
         )?;
         // The head (with the unit table hint for two or more units, SPEC
         // 2.7), then one framed record per unit.
@@ -868,10 +884,15 @@ fn encode_parts_ref_with_progress(
         .stripe_rows
         .unwrap_or_else(|| default_stripe_rows(info.width))
         .max(1);
+    let raw_decor = if standalone && reference.is_none() {
+        cfg.decor_mask
+    } else {
+        cfg.decor_mask & 0x0f
+    };
     let ecfg = AnalysisConfig {
         stripe_rows: Some(hs),
         lanes,
-        decor_mask: effort.decorrelations(cfg.decor_mask),
+        decor_mask: effort.decorrelations(raw_decor),
         predictor_mask: effort.predictors(cfg.predictor_mask),
         threads: cfg.threads,
         #[cfg(feature = "lab")]
@@ -1052,6 +1073,7 @@ fn encode_parts_ref_with_progress(
                 Vec<Vec<Vec<u64>>>,
                 Option<(PalStripe, Vec<Vec<u64>>)>,
                 u8,
+                Option<crate::adapt_color::AdaptWeights>,
                 Vec<u8>,
             )> = crate::par::par_map(unit_ids, cfg.threads, |_, u| -> Result<_, Error> {
                 pulse.check().map_err(|_| Error::Cancelled)?;
@@ -1063,50 +1085,57 @@ fn encode_parts_ref_with_progress(
                 // Slot planes and residuals of the unit: the full-image analysis
                 // (rows y0..y1 of planes `pw` wide), or for column groups the
                 // group's columns cropped and analysed here (rows 0..rows).
-                let (local, decor, preds) = if rectangles.is_none() && ng == 1 && guide.is_none() {
-                    (None, a.stripe_decor[si], a.row_pred[y0..y1].to_vec())
-                } else {
-                    let lp: Vec<Vec<u32>> = slot_planes
-                        .iter()
-                        .map(|p| {
+                let (local, decor, adapt, preds) =
+                    if rectangles.is_none() && ng == 1 && guide.is_none() {
+                        (
+                            None,
+                            a.stripe_decor[si],
+                            a.stripe_adapt[si],
+                            a.row_pred[y0..y1].to_vec(),
+                        )
+                    } else {
+                        let lp: Vec<Vec<u32>> = slot_planes
+                            .iter()
+                            .map(|p| {
+                                (y0..y1)
+                                    .flat_map(|y| p[y * w + x0..y * w + x0 + gw].iter().copied())
+                                    .collect()
+                            })
+                            .collect();
+                        let mut lr = vec![vec![0u32; gw * rows]; ns];
+                        let lpr: Vec<&[u32]> = lp.iter().map(|v| v.as_slice()).collect();
+                        let mut views: Vec<&mut [u32]> =
+                            lr.iter_mut().map(|v| v.as_mut_slice()).collect();
+                        let crop = |p: &[u32]| -> Vec<u32> {
                             (y0..y1)
                                 .flat_map(|y| p[y * w + x0..y * w + x0 + gw].iter().copied())
                                 .collect()
-                        })
-                        .collect();
-                    let mut lr = vec![vec![0u32; gw * rows]; ns];
-                    let lpr: Vec<&[u32]> = lp.iter().map(|v| v.as_slice()).collect();
-                    let mut views: Vec<&mut [u32]> =
-                        lr.iter_mut().map(|v| v.as_mut_slice()).collect();
-                    let crop = |p: &[u32]| -> Vec<u32> {
-                        (y0..y1)
-                            .flat_map(|y| p[y * w + x0..y * w + x0 + gw].iter().copied())
-                            .collect()
+                        };
+                        let gl: Option<Vec<Vec<u32>>> =
+                            guide.as_ref().map(|g| g.iter().map(|p| crop(p)).collect());
+                        let glr: Option<Vec<&[u32]>> = gl
+                            .as_ref()
+                            .map(|g| g.iter().map(|v| v.as_slice()).collect());
+                        let (d, ad, pr) = if layout.is_near() {
+                            let (d, pr) = crate::near::analyze_stripe_near(
+                                layout, &lpr, gw, lw, 0, rows, &ecfg, &mut views,
+                            );
+                            (d, None, pr)
+                        } else {
+                            encode::analyze_stripe_with_adapt(
+                                layout,
+                                &lpr,
+                                gw,
+                                lw,
+                                0,
+                                rows,
+                                &ecfg,
+                                &mut views,
+                                glr.as_deref(),
+                            )?
+                        };
+                        (Some((lp, lr)), d, ad, pr)
                     };
-                    let gl: Option<Vec<Vec<u32>>> =
-                        guide.as_ref().map(|g| g.iter().map(|p| crop(p)).collect());
-                    let glr: Option<Vec<&[u32]>> = gl
-                        .as_ref()
-                        .map(|g| g.iter().map(|v| v.as_slice()).collect());
-                    let (d, pr) = if layout.is_near() {
-                        crate::near::analyze_stripe_near(
-                            layout, &lpr, gw, lw, 0, rows, &ecfg, &mut views,
-                        )
-                    } else {
-                        encode::analyze_stripe_fast(
-                            layout,
-                            &lpr,
-                            gw,
-                            lw,
-                            0,
-                            rows,
-                            &ecfg,
-                            &mut views,
-                            glr.as_deref(),
-                        )
-                    };
-                    (Some((lp, lr)), d, pr)
-                };
                 let (pw, py0) = if local.is_none() { (w, y0) } else { (gw, 0) };
                 let planes_u: Vec<&[u32]> = match &local {
                     Some((lp, _)) => lp.iter().map(|v| v.as_slice()).collect(),
@@ -1130,9 +1159,12 @@ fn encode_parts_ref_with_progress(
                             &mut [&mut res],
                             None,
                         );
+                        let adapt_hdr =
+                            adapt.map_or(0.0, |aw| 8.0 * aw.byte_len(active_lanes(&widths)) as f64);
                         let normal: f64 = (0..ns)
                             .map(|s| est_bits(&res_u[s][py0 * pw..(py0 + rows) * pw]))
-                            .sum();
+                            .sum::<f64>()
+                            + adapt_hdr;
                         let pal = est_bits(&res) + 8.0 * (entries.len() * entry_bytes + 1) as f64;
                         (pal < normal).then(|| PalStripe {
                             entries,
@@ -1146,7 +1178,7 @@ fn encode_parts_ref_with_progress(
                 if let Some(ps) = pal {
                     let hist = pal_hist(&ps.plane, lw, &widths, rows);
                     pulse.check().map_err(|_| Error::Cancelled)?;
-                    return Ok((Vec::new(), Vec::new(), Some((ps, hist)), decor, preds));
+                    return Ok((Vec::new(), Vec::new(), Some((ps, hist)), decor, None, preds));
                 }
                 let pl: Vec<Vec<u32>> = (0..ns)
                     .map(|s| step_major(res_u[s], pw, lw, py0, py0 + rows))
@@ -1177,7 +1209,7 @@ fn encode_parts_ref_with_progress(
                     hists.push(hist);
                 }
                 pulse.check().map_err(|_| Error::Cancelled)?;
-                Ok((pl, hists, None, decor, preds))
+                Ok((pl, hists, None, decor, adapt, preds))
             })
             .into_iter()
             .collect::<Result<_, _>>()?;
@@ -1347,9 +1379,15 @@ fn encode_parts_ref_with_progress(
 
             // Pass 2 (parallel over stripes): code streams.
             #[allow(clippy::type_complexity)]
-            let planes: Vec<(Vec<Vec<u32>>, Option<PalStripe>, u8, Vec<u8>)> = pass1
+            let planes: Vec<(
+                Vec<Vec<u32>>,
+                Option<PalStripe>,
+                u8,
+                Option<crate::adapt_color::AdaptWeights>,
+                Vec<u8>,
+            )> = pass1
                 .into_iter()
-                .map(|p| (p.0, p.2.map(|x| x.0), p.3, p.4))
+                .map(|p| (p.0, p.2.map(|x| x.0), p.3, p.4, p.5))
                 .collect();
             // Stripes and payload head coded with `all` (slot models, then the
             // palette model when present), tables behind selectors with `bank`.
@@ -1513,7 +1551,7 @@ fn encode_parts_ref_with_progress(
                             if only_unit.is_some_and(|selected| selected != u) {
                                 return Ok(Vec::new());
                             }
-                            let (pl, pal, decor, preds) = p;
+                            let (pl, pal, decor, adapt, preds) = p;
                             let (y0, y1, gi) = bounds(u);
                             let rows = y1 - y0;
                             let (_, gw, lw) = geo(gi);
@@ -1565,6 +1603,9 @@ fn encode_parts_ref_with_progress(
                                 return Ok(sb);
                             }
                             sb.push(*decor);
+                            if let Some(aw) = adapt {
+                                aw.write_to(&mut sb, active_lanes(&widths));
+                            }
                             for pair in preds.chunks(2) {
                                 sb.push(pair[0] | (pair.get(1).copied().unwrap_or(0) << 4));
                             }
@@ -1837,6 +1878,8 @@ pub(crate) struct Parsed<'a> {
     /// Inter frame: the output buffer holds the previous frame, and rows may
     /// predict from it (predictors 7..=9). Set by the caller, not the file.
     pub inter: bool,
+    /// Whether the file's header declared feature 32 (`adaptive_color`, SPEC 2.4.1).
+    pub adaptive_color_allowed: bool,
     pub models: Vec<DecModel>,
     /// Palette stripes' index channel (when the file has any).
     pub pal: Option<Pal>,
@@ -2146,6 +2189,7 @@ impl Parsed<'_> {
             reserve: self.reserve,
             unit_ordinals: self.unit_ordinals,
             inter: self.inter,
+            adaptive_color_allowed: self.adaptive_color_allowed,
             models: self.models,
             pal: self.pal,
             bilevel: self.bilevel,
@@ -2280,14 +2324,16 @@ fn parse_body_checked<'a>(
 pub(crate) fn parse_head_checked(
     info: ImageInfo,
     r: &mut impl crate::parse::payload::HeadInput,
-    admission: &impl crate::parse::limits::Admission,
+    admission: &dyn crate::parse::limits::Admission,
     d: crate::parse::header::Features,
 ) -> Result<Parsed<'static>, Error> {
-    crate::parse::payload::ready(parse_head_async(
+    crate::parse::payload::ready(parse_head_inner(
         info,
         &mut crate::parse::payload::ReadyInput(r),
         admission,
+        None,
         d,
+        false,
     ))
 }
 
@@ -2308,7 +2354,7 @@ pub(crate) async fn parse_head_async(
 pub(crate) fn parse_head_nested(
     info: ImageInfo,
     r: &mut impl crate::parse::payload::HeadInput,
-    admission: &impl crate::parse::limits::Admission,
+    admission: &dyn crate::parse::limits::Admission,
     bank: Option<&'static crate::seeds::Bank>,
     d: crate::parse::header::Features,
 ) -> Result<Parsed<'static>, Error> {
@@ -2316,7 +2362,8 @@ pub(crate) fn parse_head_nested(
     let d = d
         .without(Feature::NearLossless)
         .without(Feature::FloatShift)
-        .without(Feature::ValueTables);
+        .without(Feature::ValueTables)
+        .without(Feature::AdaptiveColor);
     crate::parse::payload::ready(parse_head_inner(
         info,
         &mut crate::parse::payload::ReadyInput(r),
@@ -2329,10 +2376,10 @@ pub(crate) fn parse_head_nested(
 
 /// The lossless head parser under the declared features `declared`;
 /// `nested`: the head of a lossy payload's nested image.
-async fn parse_head_inner(
+async fn parse_head_inner<A: crate::parse::limits::Admission + ?Sized>(
     info: ImageInfo,
     r: &mut impl crate::parse::payload::AsyncHeadInput,
-    admission: &impl crate::parse::limits::Admission,
+    admission: &A,
     bank: Option<&'static crate::seeds::Bank>,
     declared: crate::parse::header::Features,
     nested: bool,
@@ -2738,6 +2785,7 @@ async fn parse_head_inner(
         reserve,
         unit_ordinals,
         inter: false,
+        adaptive_color_allowed: declared.allows(Feature::AdaptiveColor),
         models,
         #[cfg(all(feature = "lab", feature = "std"))]
         slot_names,
@@ -2785,11 +2833,11 @@ fn near_bounds(info: &ImageInfo, layout: &Layout, rec: &[u8]) -> Result<Vec<u32>
 /// A value table (map mode 9, SPEC 2.1) of `count` ascending ordered
 /// values below `2^depth`: each a varint, the distance from the smallest
 /// value it may take (0 for the first entry, its predecessor plus one after).
-async fn read_value_table(
+async fn read_value_table<A: crate::parse::limits::Admission + ?Sized>(
     r: &mut impl crate::parse::payload::AsyncHeadInput,
     count: usize,
     depth: u32,
-    admission: &impl crate::parse::limits::Admission,
+    admission: &A,
     info: &ImageInfo,
     cc: usize,
 ) -> Result<Vec<u32>, Error> {
@@ -3110,19 +3158,78 @@ impl OutMap {
         self.tables16.as_deref().map_or(&NO_TABLES16, |t| &t.l16)
     }
 
+    /// The expanded value of coded channel `c` for already-decoded coded value `cv`.
+    #[inline(always)]
+    fn expand_coded(&self, c: usize, cv: u32, depth: u32) -> u32 {
+        match &self.luts[c] {
+            Some(t) => t[cv as usize],
+            None => self.maps[c].expand(cv, depth),
+        }
+    }
+
     /// The expanded value of coded channel `c` at step position `i`.
     #[inline(always)]
     fn value<S: crate::px::Px>(&self, cur: &[Vec<S>], c: usize, i: usize, depth: u32) -> u32 {
         match self.slot_of[c] {
-            Some(s) => {
-                let cv = cur[s][i].get();
-                match &self.luts[c] {
-                    Some(t) => t[cv as usize],
-                    None => self.maps[c].expand(cv, depth),
-                }
-            }
+            Some(s) => self.expand_coded(c, cur[s][i].get(), depth),
             None => self.consts[c],
         }
+    }
+
+    /// Returns `Some((nch, alpha_const))` when `adapt_color` fused 8-bit RGB/RGBA
+    /// SIMD writers apply directly (U8 identity color slots, optional identity or
+    /// const alpha).
+    #[inline(always)]
+    #[cfg_attr(
+        not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        )),
+        allow(dead_code)
+    )]
+    fn plain_adapt8(&self) -> Option<(usize, Option<u8>)> {
+        if self.sample != SampleType::U8 || (self.nch != 3 && self.nch != 4) {
+            return None;
+        }
+        if self.slot_of.len() != self.nch
+            || self.slot_of[0] != Some(1)
+            || self.slot_of[1] != Some(0)
+            || self.slot_of[2] != Some(2)
+        {
+            return None;
+        }
+        if !(0..3).all(|c| self.maps[c].is_identity(8)) {
+            return None;
+        }
+        if self.nch == 3 {
+            return Some((3, None));
+        }
+        match self.slot_of[3] {
+            Some(3) if self.maps[3].is_identity(8) => Some((4, None)),
+            None if self.maps[3].mode == MapMode::Const => Some((4, Some(self.consts[3] as u8))),
+            _ => None,
+        }
+    }
+}
+
+/// Reconstructs one row (scalar reference) without writing output pixels.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+#[allow(clippy::too_many_arguments)]
+fn recon_row_scalar_only<S: crate::px::Px>(
+    layout: &Layout,
+    res: &[Vec<S>],
+    prev: &[Vec<S>],
+    cur: &mut [Vec<S>],
+    widths: &[u32; NL],
+    row: usize,
+    pred: u8,
+    decor: u8,
+) {
+    if layout.is_near() {
+        recon_row_scalar_impl::<S, true>(layout, res, prev, cur, widths, row, pred, decor)
+    } else {
+        recon_row_scalar_impl::<S, false>(layout, res, prev, cur, widths, row, pred, decor)
     }
 }
 
@@ -3141,18 +3248,11 @@ pub(crate) fn recon_row_scalar<S: crate::px::Px>(
     om: &OutMap,
     out_row: &mut [u8],
 ) {
-    if layout.is_near() {
-        recon_row_scalar_impl::<S, true>(
-            layout, res, prev, cur, widths, lw, row, pred, decor, om, out_row,
-        )
-    } else {
-        recon_row_scalar_impl::<S, false>(
-            layout, res, prev, cur, widths, lw, row, pred, decor, om, out_row,
-        )
-    }
+    recon_row_scalar_only(layout, res, prev, cur, widths, row, pred, decor);
+    write_output_row(om, cur, widths, lw, out_row);
 }
 
-/// [`recon_row_scalar`]; `NEAR`: the layout has near-lossless slots.
+/// [`recon_row_scalar_only`]; `NEAR`: the layout has near-lossless slots.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn recon_row_scalar_impl<S: crate::px::Px, const NEAR: bool>(
@@ -3161,12 +3261,9 @@ fn recon_row_scalar_impl<S: crate::px::Px, const NEAR: bool>(
     prev: &[Vec<S>],
     cur: &mut [Vec<S>],
     widths: &[u32; NL],
-    lw: usize,
     row: usize,
     pred: u8,
     decor: u8,
-    om: &OutMap,
-    out_row: &mut [u8],
 ) {
     let ns = res.len();
     let cs = layout.color_slots;
@@ -3206,10 +3303,167 @@ fn recon_row_scalar_impl<S: crate::px::Px, const NEAR: bool>(
             }
         }
     }
-    write_output_row(om, cur, widths, lw, out_row);
+}
+
+/// Applies the per-lane adaptive pixel color inverse (`DECOR_ADAPT_PIX = 4`)
+/// and writes output pixels without mutating `cur` (which remains in transformed
+/// color space for the next row's spatial predictors) and with zero heap allocations.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn write_output_row_adapt<S: crate::px::Px>(
+    om: &OutMap,
+    cur: &[Vec<S>],
+    widths: &[u32; NL],
+    lw: usize,
+    aw: &crate::adapt_color::AdaptWeights,
+    out_row: &mut [u8],
+) {
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ))]
+    if !force_scalar()
+        && let Some((nch, alpha_const)) = om.plain_adapt8()
+        && let Some(cur16) = S::rows16(cur)
+    {
+        use archmage::SimdToken;
+        let refs: [&[u16]; MAX_SLOTS] =
+            core::array::from_fn(|s| cur16.get(s).map_or(&[][..], |row| row.as_slice()));
+        let cs = &refs[..cur16.len()];
+        #[cfg(target_arch = "x86_64")]
+        {
+            #[cfg(feature = "avx512")]
+            if !force_avx2()
+                && let Some(t4) = archmage::X64V4xToken::summon()
+            {
+                crate::adapt_color::v4x::write_row8_pix_adapt(
+                    t4,
+                    cs,
+                    nch,
+                    alpha_const,
+                    widths,
+                    lw,
+                    aw,
+                    out_row,
+                );
+                return;
+            }
+            if let Some(t3) = archmage::X64V3Token::summon() {
+                crate::adapt_color::avx2::write_row8_pix_adapt(
+                    t3,
+                    cs,
+                    nch,
+                    alpha_const,
+                    widths,
+                    lw,
+                    aw,
+                    out_row,
+                );
+                return;
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(t) = archmage::NeonToken::summon() {
+            crate::adapt_color::neon::write_row8_pix_adapt(
+                t,
+                cs,
+                nch,
+                alpha_const,
+                widths,
+                lw,
+                aw,
+                out_row,
+            );
+            return;
+        }
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        if let Some(t) = archmage::Wasm128Token::summon() {
+            crate::adapt_color::wasm128::write_row8_pix_adapt(
+                t,
+                cs,
+                nch,
+                alpha_const,
+                widths,
+                lw,
+                aw,
+                out_row,
+            );
+            return;
+        }
+    }
+
+    let nch = om.nch;
+    let depth = om.sample.word_depth();
+    let bps = om.sample.bytes();
+    if om.sample.words() == 2 {
+        for l in 0..NL {
+            let wl = widths[l] as usize;
+            for x in 0..wl {
+                let (px, i) = (l * lw + x, x * NL + l);
+                let (g, r, b) = crate::adapt_color::inverse_pixel_triple(
+                    aw,
+                    l,
+                    cur[0][i].get(),
+                    cur[1][i].get(),
+                    cur[2][i].get(),
+                );
+                for c in 0..nch {
+                    let hi_coded = match c {
+                        0 => Some(r),
+                        1 => Some(g),
+                        2 => Some(b),
+                        _ => om.slot_of[c].map(|s| cur[s][i].get()),
+                    };
+                    let hi_exp = match hi_coded {
+                        Some(cv) => om.expand_coded(c, cv, depth),
+                        None => om.consts[c],
+                    };
+                    let hi = om.sample.order(hi_exp);
+                    let lo = om.value(cur, nch + c, i, depth);
+                    let v = ((hi as u64) << 32) | lo as u64;
+                    let o = (px * nch + c) * 8;
+                    out_row[o..o + 8].copy_from_slice(&v.to_ne_bytes());
+                }
+            }
+        }
+        return;
+    }
+    for l in 0..NL {
+        let wl = widths[l] as usize;
+        for x in 0..wl {
+            let (px, i) = (l * lw + x, x * NL + l);
+            let (g, r, b) = crate::adapt_color::inverse_pixel_triple(
+                aw,
+                l,
+                cur[0][i].get(),
+                cur[1][i].get(),
+                cur[2][i].get(),
+            );
+            for c in 0..nch {
+                let coded = match c {
+                    0 => Some(r),
+                    1 => Some(g),
+                    2 => Some(b),
+                    _ => om.slot_of[c].map(|s| cur[s][i].get()),
+                };
+                let exp = match coded {
+                    Some(cv) => om.expand_coded(c, cv, depth),
+                    None => om.consts[c],
+                };
+                let v = om.sample.order(exp);
+                let o = (px * nch + c) * bps;
+                match bps {
+                    1 => out_row[o] = v as u8,
+                    2 => out_row[o..o + 2].copy_from_slice(&(v as u16).to_ne_bytes()),
+                    _ => out_row[o..o + 4].copy_from_slice(&v.to_ne_bytes()),
+                }
+            }
+        }
+    }
 }
 
 /// Writes coded values (step-major per slot) as output pixels.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
 pub(crate) fn write_output_row<S: crate::px::Px>(
     om: &OutMap,
     cur: &[Vec<S>],
@@ -4247,6 +4501,8 @@ struct StripeCore<S: crate::px::Px> {
     bl: Option<crate::bilevel::Rows>,
     /// Template palette stripe (SPEC 2.14): its decoded index rows.
     tp: Option<crate::template::Rows>,
+    /// Per-lane adaptive pixel color weights (`decor = 4`, SPEC 2.4.1).
+    adapt_pix: Option<crate::adapt_color::AdaptWeights>,
 }
 
 /// The reference (previous frame) rows an inter stripe predicts from, in
@@ -4522,6 +4778,7 @@ impl<'a, S: crate::px::Px> StripeState<'a, S> {
             crate::trace::describe::decor(*v)
         });
         let mut pal = None;
+        let mut adapt_pix = None;
         let bl_pal = decor == crate::bilevel::PAL;
         let tp = decor == crate::template::STRIPE || decor == crate::template::SHARED;
         if decor == PAL_STRIPE || bl_pal || decor == crate::template::STRIPE {
@@ -4594,6 +4851,29 @@ impl<'a, S: crate::px::Px> StripeState<'a, S> {
                 bpp: p.bpp(),
                 scratch: Vec::new(),
             });
+        } else if decor == crate::adapt_color::DECOR_ADAPT_PIX {
+            if !p.adaptive_color_allowed {
+                return Err(Error::Corrupt(
+                    "adaptive color stripe without the feature adaptive_color",
+                ));
+            }
+            if !p.layout.adapt_pix_ok() {
+                return Err(Error::Corrupt("adaptive color stripe on ineligible layout"));
+            }
+            let active = active_lanes(&widths);
+            #[cfg(all(feature = "lab", feature = "std"))]
+            let w_at = r.mark();
+            let aw = crate::adapt_color::AdaptWeights::read_from(&mut r, active)?;
+            #[cfg(all(feature = "lab", feature = "std"))]
+            if crate::trace::on() {
+                crate::trace::field_addr(
+                    "adaptive color weights",
+                    alloc::format!("{active} active lanes (gr, gb, rb)"),
+                    w_at,
+                    r.mark(),
+                );
+            }
+            adapt_pix = Some(aw);
         } else if decor != crate::bilevel::STRIPE
             && (decor >= crate::coding_layout::NUM_DECOR || (decor != 0 && !p.layout.decor_ok))
         {
@@ -4656,6 +4936,7 @@ impl<'a, S: crate::px::Px> StripeState<'a, S> {
                     refs: None,
                     bl: None,
                     tp: Some(crate::template::Rows::new(lw, w, n, typical)),
+                    adapt_pix: None,
                 },
             });
         }
@@ -4707,6 +4988,7 @@ impl<'a, S: crate::px::Px> StripeState<'a, S> {
                     refs: None,
                     bl: Some(crate::bilevel::Rows::new(lw, w)),
                     tp: None,
+                    adapt_pix: None,
                 },
             });
         }
@@ -4722,9 +5004,13 @@ impl<'a, S: crate::px::Px> StripeState<'a, S> {
             .map(|i| (pb[i / 2] >> (4 * (i % 2))) & 15)
             .collect();
         // Inter predictors read the previous frame as coded values of at
-        // most 32 bits; 64-bit samples and near-lossless images never use
-        // them (SPEC 4, 2.6).
-        let inter = inter && pal.is_none() && p.info.sample.words() == 1 && !p.layout.is_near();
+        // most 32 bits; 64-bit samples, near-lossless images, and adaptive
+        // color stripes never use them (SPEC 4, 2.4.1, 2.6).
+        let inter = inter
+            && pal.is_none()
+            && adapt_pix.is_none()
+            && p.info.sample.words() == 1
+            && !p.layout.is_near();
         let npred = if inter {
             predict::NUM_PREDICTORS_INTER
         } else {
@@ -4803,6 +5089,7 @@ impl<'a, S: crate::px::Px> StripeState<'a, S> {
                 refs,
                 bl: None,
                 tp: None,
+                adapt_pix,
             },
         })
     }
@@ -4991,33 +5278,34 @@ impl<S: crate::px::Px> StripeCore<S> {
             write_output_row(om, &self.val_cur, &self.widths, lw, out_row);
             return self.finish_row(words, ahead_next);
         }
+        let eff_decor = if self.adapt_pix.is_some() { 0 } else { decor };
         let simd = match (S::rows16(&self.res_cur), S::rows16(&self.val_prev)) {
             (Some(r), Some(vp)) => {
                 let vc = S::rows16_mut(&mut self.val_cur).unwrap();
-                recon_row_simd(&p.layout, r, vp, vc, &self.widths, lw, row, pred, decor)
+                recon_row_simd(&p.layout, r, vp, vc, &self.widths, lw, row, pred, eff_decor)
             }
             _ => match (S::rows32(&self.res_cur), S::rows32(&self.val_prev)) {
                 (Some(r), Some(vp)) => {
                     let vc = S::rows32_mut(&mut self.val_cur).unwrap();
-                    recon_row_simd32(&p.layout, r, vp, vc, &self.widths, lw, row, pred, decor)
+                    recon_row_simd32(&p.layout, r, vp, vc, &self.widths, lw, row, pred, eff_decor)
                 }
                 _ => false,
             },
         };
         if !simd {
-            recon_row_scalar(
+            recon_row_scalar_only(
                 &p.layout,
                 &self.res_cur,
                 &self.val_prev,
                 &mut self.val_cur,
                 &self.widths,
-                lw,
                 row,
                 pred,
-                decor,
-                om,
-                out_row,
+                eff_decor,
             );
+        }
+        if let Some(aw) = &self.adapt_pix {
+            write_output_row_adapt(om, &self.val_cur, &self.widths, lw, aw, out_row);
         } else {
             write_output_row(om, &self.val_cur, &self.widths, lw, out_row);
         }

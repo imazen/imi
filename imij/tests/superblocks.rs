@@ -157,10 +157,15 @@ fn only_compact_merges_and_not_below_128_px() {
     }
     let file = enc(&px, &info, &imij::ImiEncoderConfig::lossy(30.0));
     assert_eq!(feature_mask(&file) & SUPERBLOCKS, 0, "no tier");
-    // Efforts with the trellis keep 8x8 blocks.
-    for effort in [9.0f32, 10.0] {
+    // Compact retains superblocks across trellis efforts (9.0, 9.5, 10.0).
+    for effort in [9.0f32, 9.5, 10.0] {
         let file = enc(&px, &info, &compact(30.0).with_effort(effort));
-        assert_eq!(feature_mask(&file) & SUPERBLOCKS, 0, "effort {effort}");
+        assert_ne!(
+            feature_mask(&file) & SUPERBLOCKS,
+            0,
+            "Compact should retain superblocks at effort {effort}"
+        );
+        let _ = common::decode_all(&file, &info);
     }
     // The longer side decides: 127 px never merges, 128 may.
     for (w, h, on) in [

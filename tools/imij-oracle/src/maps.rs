@@ -24,7 +24,7 @@ impl Map {
         value: u32,
         depth: u32,
         kind: MapKind,
-        features: u32,
+        features: u64,
     ) -> Result<Map> {
         if mode > 9 {
             // The lossless map mode is a closed field (SPEC 0.3); modes 7, 8

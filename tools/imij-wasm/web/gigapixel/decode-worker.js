@@ -55,7 +55,18 @@ async function run({id,job}){
     for(const span of job.ranges||[])ctx.source.add(span.start,new Uint8Array(span.bytes));ctx.source.trim();
     const started=performance.now();
     try{
-      ctx.reader??=job.kind==='native'?new RangePyramid(job.length,ctx.source.read,undefined,threads,job.verify):new RangeImage(job.length,ctx.source.read);
+      if(job.kind==='native'){
+        if(ctx.codingProfile!==job.codingProfile){
+          ctx.reader?.free();
+          ctx.reader=null;
+          ctx.codingProfile=job.codingProfile;
+        }
+        ctx.reader??=job.codingProfile===undefined
+          ?new RangePyramid(job.length,ctx.source.read,undefined,threads,job.verify)
+          :RangePyramid.openProfile(job.codingProfile,job.length,ctx.source.read,undefined,threads,job.verify);
+      }else{
+        ctx.reader??=new RangeImage(job.length,ctx.source.read);
+      }
       if(job.kind==='native')rgb=ctx.reader.decodeRegion(BigInt(job.viewId),job.x,job.y,job.width,job.height);
       else if(job.output==='rgba')rgba=ctx.reader.decodeRegionRgba(job.x,job.y,job.width,job.height);
       else rgb=ctx.reader.decodeRegion(job.x,job.y,job.width,job.height);

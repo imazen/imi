@@ -62,6 +62,9 @@ pub(crate) trait Admission {
     fn header(&self, _info: &ImageInfo, _bytes: usize) -> Result<(), Error> {
         Ok(())
     }
+    fn coding_profile(&self, _header: &crate::Header) -> Result<(), Error> {
+        Ok(())
+    }
     #[inline]
     fn chunk_start(&self) -> Result<(), Error> {
         Ok(())

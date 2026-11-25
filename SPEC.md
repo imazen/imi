@@ -101,12 +101,13 @@ simpler decoders.
 | 29 | `coding_defaults` | scoped partition and AC-scale defaults | critical lossy head record 41 and the AC settings prefix (2.15) |
 | 30 | `model_references` | typed root, catalog or first-use model selection | critical lossy head record 43 and DC/AC model selectors (2.16) |
 | 31 | `dc_coverage` | nonuniform consecutive DC coverage | critical lossy head record 45 and derived DC record ordering (2.17) |
+| 32 | `adaptive_color` | a lossless payload has adaptive pixel-color stripes | stripe layout byte 4 and its per-lane weight bitstream (2.4.1) |
 
 * **Gated syntax requires its feature.** In a file whose feature set lacks
   a feature, its gated syntax is `Corrupt`; a decoder without the feature
   has already failed with `Unsupported` at the header. A decoder checks this
   where it reads the syntax, against its own file's feature set.
-* **Unknown feature bits** (ids 32 and up,
+* **Unknown feature bits** (ids 33 and up,
   wherever they sit in a mask of any length): `Unsupported` until implemented.
 * **Over-declaring is allowed**: a file may declare a feature it does not
   use, an implied one included.
@@ -1517,16 +1518,74 @@ groups, else G / 8 (DC image) and G (alpha image).
 
 ```
 decor        u8        0..=3 (must be 0 unless decorrelation is allowed),
+                       4: an adaptive color stripe (2.4.1; feature
+                       adaptive_color),
                        0x80: a palette stripe (2.5), 0x81 / 0x82: a
                        bilevel stripe / bilevel palette stripe (2.10), or
                        0x83 / 0x84: a template palette stripe with its own
                        / the shared entries (2.14)
+weights      (decor=4) LSB-first per-lane weight bitstream (2.4.1)
 predictors   ceil(rows/2) bytes, 4 bits per row (low nibble first), 0..=6
              (0..=9 in inter frames of samples of at most 32 bits, section
-             4); row 0 must be 0 (W), or 7 in those inter frames
+             4; 0..=6 only when decor = 4); row 0 must be 0 (W), or 7 in
+             those inter frames
 stream lens  varint per slot
 streams      one per slot (section 3)
 ```
+
+### 2.4.1 Adaptive color stripes (feature `adaptive_color`)
+
+An adaptive color stripe (`decor = 4`) applies a reversible per-lane integer
+lifting transform to the three 8-bit color slots `(G, R, B)` in pixel space
+before spatial prediction, instead of fixed residual decorrelation (`1..=3`).
+
+**Eligibility.** A stripe with `decor = 4` is valid only when:
+
+* the file's header declares feature 32 (`adaptive_color`, 0.1),
+* the payload is a standalone lossless image (not a nested DC, alpha or
+  exact-block head of a lossy payload),
+* the channel layout is RGB or RGBA with three 8-bit color slots `[G, R, B]`
+  (`slot_bits[0..3] = [8, 8, 8]`),
+* the payload carries no near-lossless bounds (2.6), and
+* every row predictor in the stripe is intra (`0..=6`; inter predictors
+  `7..=9` are `Corrupt`).
+
+Any violation is `Corrupt`.
+
+**Weight bitstream.** Immediately after `decor = 4` and before `predictors`
+sits an LSB-first bitstream encoding `3 * active` signed integer weights in
+`-127..=127`, where `active` (`1..=L`) is the number of non-empty lanes in
+the stripe (or column group, 2.3), in order: `gr[0..active]`,
+`gb[0..active]`, `rb[0..active]`.
+
+Each sequence predicts lane `0` from its default (`32` for `gr`, `16` for
+`gb`, `16` for `rb`) and lane `l > 0` from `w[l - 1]`:
+
+* `flag` (1 bit) = `0`: followed by 4-bit unsigned `u`; `w = pred + (u - 8)`.
+  If `w` is outside `-127..=127`, the stripe is `Corrupt`.
+* `flag` (1 bit) = `1`: followed by 8-bit two's-complement `raw` (`i8`);
+  if `raw == -128`, the stripe is `Corrupt`.
+
+The final byte is padded to a byte boundary with zero bits; any non-zero
+trailing padding bit is `Corrupt`. Unused lanes `l >= active` take weight `0`.
+
+**Reconstruction.** Entropy decoding and spatial prediction (sections 3 and 4)
+run with residual decorrelation `0` in the transformed domain `(G, R', B')`,
+so every spatial predictor reads reconstructed transformed values `(G, R', B')`
+for slots `0..3` (and unchanged values for any later slots such as alpha or
+64-bit low words). Before channel-map expansion (step 4 of section 4), each
+pixel in lane `l` recovers `(G, R, B)` in `0..=255` via exact arithmetic:
+
+```
+gs = G - 128
+R  = (R' + ((gr[l] * gs) >> 5)) & 0xFF
+rs = R - 128
+B  = (B' + ((gb[l] * gs + rb[l] * rs) >> 5)) & 0xFF
+```
+
+where `>> 5` is arithmetic right shift (floor division by 32). Because
+`|w| <= 127` and `gs, rs in -128..=127`, `|gb * gs + rb * rs| <= 32512 <= 32767`,
+so signed 16-bit arithmetic never overflows.
 
 ### 2.5 Palette stripes
 

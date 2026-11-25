@@ -39,7 +39,7 @@ fn common_bits(info: &ImageInfo, cfg: &AnalysisConfig, maps: &[ChannelMap]) -> O
     // Full-storage inputs keep their previous mapping/search policy. The mask
     // has already been reduced to the caller's effective effort budget.
     if info.channel_bits(0) == Some(info.sample.depth() as u8)
-        || cfg.decor_mask & 0b1110 == 0
+        || cfg.decor_mask & 0b1_1110 == 0
         || cfg.maps_only
     {
         return None;

@@ -82,8 +82,10 @@ fn bounded_lossy_matches_encode_lossy_pixels_through_the_public_api() {
     assert!(sums.is_none());
     let file = out.into_inner();
     let px = packed(&info, &src, stride);
+    // `stream_encode::encode_lossy_bounded` emits V3, so compare 0-bit exact
+    // against `encode_legacy_samples`.
     let whole = lossy
-        .encode_samples(
+        .encode_legacy_samples(
             imij::ImageRef::new(&px, info.row_bytes(), &info),
             &Metadata::default(),
         )
@@ -197,7 +199,7 @@ fn bounded_lossy_streams_a_verified_file_checksum() {
         .with_checksum(true);
     let want = imij::decode(
         &lossy
-            .encode_samples(
+            .encode_legacy_samples(
                 imij::ImageRef::new(&src, info.row_bytes(), &info),
                 &Metadata::default(),
             )
@@ -342,7 +344,7 @@ fn bounded_lossy_reports_injected_io_failures() {
     assert!(index_bytes > 0);
     assert_eq!(sum_bytes, 0);
     let whole = lossy
-        .encode_samples(
+        .encode_legacy_samples(
             imij::ImageRef::new(&src, info.row_bytes(), &info),
             &Metadata::default(),
         )
@@ -444,7 +446,7 @@ fn bounded_files_read_regions_through_latent_ranges() {
         .with_checksum(true);
     let want = imij::decode(
         &lossy
-            .encode_samples(
+            .encode_legacy_samples(
                 imij::ImageRef::new(&src, info.row_bytes(), &info),
                 &Metadata::default(),
             )

@@ -95,6 +95,7 @@ pub(super) fn repack(p: &LossyParsed<'_>, cfg: &LossyConfig, q: &[i32], aq: &[f3
         false,
         None,
         &[],
+        &[],
         None,
         stripes,
         &how_far::NoPulse,

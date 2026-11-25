@@ -197,11 +197,13 @@ pub enum Feature {
     ModelReferences = crate::registry::FEATURE_MODEL_REFERENCES as isize,
     /// Consecutive nonuniform DC stripe coverage.
     DcCoverage = crate::registry::FEATURE_DC_COVERAGE as isize,
+    /// Per-lane adaptive pixel color transform in lossless stripes (SPEC 2.4.1).
+    AdaptiveColor = crate::registry::FEATURE_ADAPTIVE_COLOR as isize,
 }
 
 /// Number of implemented feature ids; higher bits (including reservations)
 /// are unsupported until their syntax is implemented.
-const FEATURE_COUNT: u32 = 32;
+const FEATURE_COUNT: u32 = 33;
 /// Every assigned feature's bit.
 const FEATURES_ALL: u64 = (1 << FEATURE_COUNT) - 1;
 
@@ -240,6 +242,7 @@ impl Feature {
         Feature::CodingDefaults,
         Feature::ModelReferences,
         Feature::DcCoverage,
+        Feature::AdaptiveColor,
     ];
 
     /// The feature id: its bit in the header's feature mask.
@@ -282,6 +285,7 @@ impl Feature {
             Feature::CodingDefaults => "coding_defaults",
             Feature::DcCoverage => "dc_coverage",
             Feature::ModelReferences => "model_references",
+            Feature::AdaptiveColor => "adaptive_color",
         }
     }
 
@@ -320,6 +324,7 @@ impl Feature {
             Feature::CodingDefaults => "feature coding_defaults (Lossy 0.7)",
             Feature::DcCoverage => "feature dc_coverage (Lossy 0.7)",
             Feature::ModelReferences => "feature model_references (Lossy 0.7)",
+            Feature::AdaptiveColor => "feature adaptive_color",
         })
     }
 
@@ -1231,7 +1236,7 @@ mod tests {
 
     #[test]
     fn feature_ids_and_sets() {
-        let ids: Vec<_> = (0..32).collect();
+        let ids: Vec<_> = (0..FEATURE_COUNT as usize).collect();
         assert_eq!(Feature::ALL.len(), ids.len());
         for (id, f) in ids.into_iter().zip(Feature::ALL) {
             assert_eq!(f as usize, id);
@@ -1283,7 +1288,11 @@ mod tests {
             Features::from_bits(1 << 31),
             Some(Features::EMPTY.with(Feature::DcCoverage))
         );
-        assert_eq!(Features::from_bits(1 << 32), None);
+        assert_eq!(
+            Features::from_bits(1 << 32),
+            Some(Features::EMPTY.with(Feature::AdaptiveColor))
+        );
+        assert_eq!(Features::from_bits(1 << 33), None);
         assert_eq!(Features::from_bits(u64::MAX), None);
         let f = Features::EMPTY
             .with(Feature::SeedBank1)
@@ -1467,7 +1476,8 @@ mod tests {
                 .with(Feature::PixelModels)
                 .with(Feature::QuickPixels)
                 .with(Feature::QuickBitSmarts)
-                .with(Feature::UnitOrdinals),
+                .with(Feature::UnitOrdinals)
+                .with(Feature::AdaptiveColor),
             Features::from_bits(FEATURES_ALL).unwrap()
         );
         assert_eq!(

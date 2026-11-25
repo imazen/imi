@@ -154,6 +154,21 @@ impl ImiEncoderConfig {
         Self::default().with_quality(quality)
     }
 
+    /// Restricted writer preset for [`crate::v4::CodingProfile::Fixed8x8Photo`].
+    /// Supply an RGB8 still. Keep ordinary 8×8 transforms and turn off
+    /// exact overlays and activity AQ in the DC raster. Uniform AC scale
+    /// and either entropy coder remain available. Changing transform or
+    /// coding controls can take the output outside the profile.
+    pub fn lossy_fixed_8x8_photo(quality: impl Into<LossyQuality>) -> Self {
+        Self::lossy(quality).tune_lossy(|tuning| {
+            tuning.channel_layouts = [crate::LossyChannelLayout::default(); 3];
+            tuning.exact_blocks = Some(0.0);
+            tuning.adaptive_partitions = false;
+            tuning.small_transforms = false;
+            tuning.aq_gamma = 0.0;
+        })
+    }
+
     /// The low-analysis lossless coder without bit analysis.
     pub fn quick() -> Self {
         Self::default().with_coder(Coder::Quick(QuickBitSmarts::Off))
@@ -755,7 +770,9 @@ pub struct LosslessTuning {
     pub max_ctx: usize,
     /// Cross-channel context modelling.
     pub ctx_cross: bool,
-    /// Allowed residual decorrelation modes, one bit each.
+    /// Allowed color decorrelation modes, one bit each: bits 0..=3 are the
+    /// fixed residual modes (none, R-G/B-G, R-G/B-R, R-G/B-avg(R,G)) and bit 4
+    /// (`0x10`) is per-lane adaptive pixel color transform (8-bit RGB/RGBA).
     pub decor_mask: u8,
     /// Allowed spatial predictors, one bit each.
     pub predictor_mask: u8,

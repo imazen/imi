@@ -27,6 +27,8 @@
 //! inverse-transfer interpolation are lossy even at maximum quality: U32
 //! storage is not a promise of 32-bit color precision. Alpha remains lossless.
 
+#[cfg(feature = "encode")]
+pub(crate) mod adaptive_rdo;
 #[cfg(all(feature = "lab", feature = "std"))]
 pub(crate) mod block_lab;
 #[cfg(feature = "encode")]
@@ -554,6 +556,26 @@ pub struct LossyLabSwitches {
     /// Small transforms (`small.rs`, SPEC 2.11): the study's switches
     /// ([`SmallLab`]), boxed; `None`: the production rule throughout.
     pub small: Option<alloc::boxed::Box<SmallLab>>,
+}
+
+/// Adaptive-partition mode for this lossy configuration.
+#[cfg(feature = "encode")]
+pub(crate) fn adaptive_mode(cfg: &LossyConfig) -> crate::effort::AdaptiveMode {
+    if cfg.adaptive_partitions {
+        crate::effort::AdaptiveMode::Explicit
+    } else if cfg.decode_speed == Some(crate::DecodeSpeed::Compact) {
+        crate::effort::AdaptiveMode::Compact
+    } else {
+        crate::effort::AdaptiveMode::Off
+    }
+}
+
+/// Whether adaptive partitions and surrounding-block adaptive RDO are enabled
+/// for this lossy configuration: either explicit `adaptive_partitions` or the
+/// `DecodeSpeed::Compact` tier (consistent across all efforts).
+#[cfg(feature = "encode")]
+pub(crate) fn adaptive_enabled(cfg: &LossyConfig) -> bool {
+    adaptive_mode(cfg) != crate::effort::AdaptiveMode::Off
 }
 
 /// LAB switches of small transforms (4x4 planes, SPEC 2.11).
@@ -1737,13 +1759,6 @@ fn superblocks_on(cfg: &LossyConfig, info: &ImageInfo, eligible: bool) -> bool {
         && info.width.max(info.height) >= SUPERBLOCK_MIN_SIDE
 }
 
-/// The small-transform selector's distortion weight for the 8x8 / 4x4
-/// choice, relative to the merge decision's: chosen on a third of imazen-26
-/// VALIDATE (XYB, run-level, effort 7.5; rule written before the data,
-/// `benchmarks/smallxf_2026-10-11`): among 0.75, 1, 1.5 and 2 the best
-/// SSIM2 80-99 size change with CVVDP 8 and SSIM2 10-50 within +0.5%.
-#[cfg(feature = "encode")]
-const SMALL_KAPPA: f32 = 1.5;
 /// The small-transform selector's inner-edge weight: 0 (0.5, 1 and 4 cost
 /// at CVVDP 6-8 and gained nothing at the top on the same set).
 #[cfg(feature = "encode")]
@@ -1751,11 +1766,18 @@ const SMALL_EDGE: f32 = 0.0;
 
 /// Whether the encoder may code planes as four 4x4 DCTs (small transforms,
 /// `small.rs`). `eligible`: the format and the encoder's other tools allow
-/// them (default layouts, no keep blocks). Production encoding opts in
-/// explicitly; the default remains off. Lab overrides retain the study
+/// them (default layouts, no keep blocks). Production encoding enables them
+/// for explicit `small_transforms`, `adaptive_partitions` on U8, and
+/// `DecodeSpeed::Compact` at trellis efforts (`>= 9.0`) on U8 images with
+/// longer side `>= SUPERBLOCK_MIN_SIDE`. Lab overrides retain the study
 /// configurations (`benchmarks/smallxf_2026-10-11/README.md`).
 #[cfg(feature = "encode")]
-fn small_on(cfg: &LossyConfig, info: &ImageInfo, eligible: bool) -> bool {
+fn small_on(
+    cfg: &LossyConfig,
+    info: &ImageInfo,
+    effort: crate::effort::Effort,
+    eligible: bool,
+) -> bool {
     if !eligible {
         return false;
     }
@@ -1763,7 +1785,12 @@ fn small_on(cfg: &LossyConfig, info: &ImageInfo, eligible: bool) -> bool {
     if let Some(on) = cfg.lab.small.as_ref().and_then(|s| s.on) {
         return on;
     }
-    cfg.small_transforms || (cfg.adaptive_partitions && info.sample == SampleType::U8)
+    cfg.small_transforms
+        || (cfg.adaptive_partitions && info.sample == SampleType::U8)
+        || (cfg.decode_speed == Some(crate::DecodeSpeed::Compact)
+            && effort.trellis_passes() >= 1
+            && info.sample == SampleType::U8
+            && info.width.max(info.height) >= SUPERBLOCK_MIN_SIDE)
 }
 
 /// LAB: a lossy file's entropy-decoded coefficients (quantized DCs from the
@@ -3141,6 +3168,8 @@ pub(crate) fn encode_lossy_frame_with_progress(
             return Err(Error::InvalidInput("invalid reconstruction bias band"));
         }
     }
+    // Centralized lossy effort policy (effort.rs).
+    let plan = effort.lossy_plan(adaptive_mode(cfg));
     // The AC trellis: (settings, set by the lab override). The effort's
     // trellis is narrowed to run-level XYB coding after pass 1. Subblock
     // layouts and the lab RDOQ / LF prediction modes encode without it.
@@ -3150,10 +3179,10 @@ pub(crate) fn encode_lossy_frame_with_progress(
             // min_quality is compared with the resolved quantizer scale below
             // (a quality target leaves `cfg.quality` as it was).
             Some(t) => (t.passes > 0).then_some((t, true)),
-            None => trellis::for_effort(effort).map(|t| (t, false)),
+            None => trellis::for_effort_plan(plan).map(|t| (t, false)),
         };
         #[cfg(not(feature = "lab"))]
-        let set = trellis::for_effort(effort).map(|t| (t, false));
+        let set = trellis::for_effort_plan(plan).map(|t| (t, false));
         #[cfg(feature = "lab")]
         let set = set.filter(|_| cfg.rdoq_lambda == 0.0 && cfg.lf_pred == 0);
         set.filter(|_| cfg.channel_layouts == [LossyChannelLayout::default(); 3])
@@ -3759,7 +3788,7 @@ pub(crate) fn encode_lossy_frame_with_progress(
             .into_iter()
             .collect::<Result<Vec<_>, Error>>()
         })?;
-        let (stripes, exact, sb_on) = stages.run(|pulse| {
+        let (stripes, exact, sb_on, open_lambda_map) = stages.run(|pulse| {
             pulse.check().map_err(|_| Error::Cancelled)?;
             let (stripes, bias_stats): (Vec<StripeCoefs>, Vec<BiasSums>) =
                 stripe_parts.into_iter().unzip();
@@ -3848,7 +3877,7 @@ pub(crate) fn encode_lossy_frame_with_progress(
             // which carries the merged blocks' lowest coefficients). Exact parents
             // take block code 0 for the selection (never merged) and get their
             // codes back after it.
-            let sb_eligible = (trellis.is_none() || cfg.adaptive_partitions)
+            let sb_eligible = (trellis.is_none() || adaptive_enabled(cfg))
                 && !skip_on
                 && layouts == [LossyChannelLayout::default(); 3]
                 && (cfg.decode_speed.is_some()
@@ -3864,7 +3893,23 @@ pub(crate) fn encode_lossy_frame_with_progress(
                     || matches!(cfg.entropy, LossyEntropy::RunLevel | LossyEntropy::SplitHuf));
             #[cfg(feature = "lab")]
             let small_eligible = small_eligible && cfg.rdoq_lambda == 0.0 && cfg.lf_pred == 0;
-            let small_on = small_on(cfg, info, small_eligible);
+            let small_on = small_on(cfg, info, effort, small_eligible);
+            let trellis_active = trellis.as_ref().is_some_and(|&(_, forced)| forced || xyb);
+            let open_lambda_map: Vec<f32> =
+                if plan.lambda_aq_open != 0.0 && (sb_on || small_on || trellis_active) {
+                    adaptive_rdo::build_open_loop_lambda_map(
+                        &fill_block_row,
+                        pw,
+                        g.bw,
+                        g.bh,
+                        &steps,
+                        plan.lambda_aq_open,
+                        cfg.threads,
+                        pulse,
+                    )?
+                } else {
+                    Vec::new()
+                };
             let stripes = if sb_on || small_on {
                 let mut stripes = stripes;
                 if exact.is_some() {
@@ -3886,61 +3931,359 @@ pub(crate) fn encode_lossy_frame_with_progress(
                 );
                 #[cfg(not(feature = "lab"))]
                 let (shapes, force) = (7, None);
-                let mut stripes = superblock::select::apply(
-                    stripes,
-                    &fill_block_row,
-                    pw,
-                    lossy_group_cols(cfg, g.w) / 8,
-                    &steps,
-                    round,
-                    cfg,
-                    effort,
-                    superblock::select::Opts {
-                        merges: sb_on,
-                        // The trellis runs on XYB files (or where the lab forces
-                        // it); it is narrowed to them after this selection.
-                        trellis: trellis.as_ref().is_some_and(|&(_, forced)| forced || xyb),
-                        shapes,
-                        small: small_on.then_some(force),
-                        split_huf: split,
-                        forward: {
-                            #[cfg(feature = "lab")]
-                            let f: fn(&[f32; 64]) -> [f32; 64] =
-                                if cfg.lab.small.as_ref().is_some_and(|s| s.int) {
-                                    small_lab::forward_int
-                                } else {
-                                    small::forward
-                                };
-                            #[cfg(not(feature = "lab"))]
-                            let f: fn(&[f32; 64]) -> [f32; 64] = small::forward;
-                            f
-                        },
-                        kappa: {
-                            #[cfg(feature = "lab")]
-                            let k = cfg
-                                .lab
-                                .small
-                                .as_ref()
-                                .and_then(|s| s.lambda)
-                                .unwrap_or(SMALL_KAPPA);
-                            #[cfg(not(feature = "lab"))]
-                            let k = SMALL_KAPPA;
-                            k
-                        },
-                        edge: {
-                            #[cfg(feature = "lab")]
-                            let e = cfg
-                                .lab
-                                .small
-                                .as_ref()
-                                .and_then(|s| s.edge)
-                                .unwrap_or(SMALL_EDGE);
-                            #[cfg(not(feature = "lab"))]
-                            let e = SMALL_EDGE;
-                            e
-                        },
+                let sel_opts = superblock::select::Opts {
+                    merges: sb_on,
+                    // The trellis runs on XYB files (or where the lab forces
+                    // it); it is narrowed to them after this selection.
+                    trellis: trellis_active,
+                    shapes,
+                    small: small_on.then_some(force),
+                    split_huf: split,
+                    forward: {
+                        #[cfg(feature = "lab")]
+                        let f: fn(&[f32; 64]) -> [f32; 64] =
+                            if cfg.lab.small.as_ref().is_some_and(|s| s.int) {
+                                small_lab::forward_int
+                            } else {
+                                small::forward
+                            };
+                        #[cfg(not(feature = "lab"))]
+                        let f: fn(&[f32; 64]) -> [f32; 64] = small::forward;
+                        f
                     },
-                );
+                    kappa: {
+                        let base_k = plan.small_kappa;
+                        #[cfg(feature = "lab")]
+                        let k = cfg
+                            .lab
+                            .small
+                            .as_ref()
+                            .and_then(|s| s.lambda)
+                            .unwrap_or(base_k);
+                        #[cfg(not(feature = "lab"))]
+                        let k = base_k;
+                        k
+                    },
+                    edge: {
+                        #[cfg(feature = "lab")]
+                        let e = cfg
+                            .lab
+                            .small
+                            .as_ref()
+                            .and_then(|s| s.edge)
+                            .unwrap_or(SMALL_EDGE);
+                        #[cfg(not(feature = "lab"))]
+                        let e = SMALL_EDGE;
+                        e
+                    },
+                    rdo: plan,
+                };
+                let gbw = lossy_group_cols(cfg, g.w) / 8;
+                let mut stripes = if plan.two_pass_pilot {
+                    // Two-pass empirical pilot without cloning the whole image's
+                    // `StripeCoefs`: keep clean pass-1 `stripes` untouched, run
+                    // pilot selection one stripe at a time per worker to gather
+                    // fixed-size empirical map/flag/token histograms (~25 KiB),
+                    // then run final selection directly in place on `stripes`.
+                    let mut pilot_opts = sel_opts;
+                    pilot_opts.rdo.trellis_select = false;
+                    let pilot_coder = superblock::select::Coder::of_stripes(
+                        &stripes,
+                        gbw,
+                        cfg,
+                        superblock::select::price_effort(effort, pilot_opts),
+                        split,
+                    );
+                    let pilot_sel = superblock::select::Selector::new_learned(
+                        pilot_coder,
+                        pw,
+                        gbw,
+                        &steps,
+                        round,
+                        pilot_opts,
+                        None,
+                        None,
+                    );
+                    let rl_len = LossyEntropy::RunLevel.nraw() * coef::ALPHA;
+                    let pilot_huf_model = split && trellis::huf_rate(cfg);
+                    let want_pilot_huf = if trellis_active {
+                        pilot_huf_model
+                    } else {
+                        split
+                    };
+
+                    struct PilotA {
+                        map: adaptive_rdo::MapBitStats,
+                        flags: adaptive_rdo::FlagStats,
+                        rl: Vec<u64>,
+                        freqs: trellis::Freqs,
+                    }
+                    let parts_a = crate::par::par_fold(
+                        &stripes,
+                        cfg.threads,
+                        || {
+                            Ok::<PilotA, Error>(PilotA {
+                                map: adaptive_rdo::MapBitStats::default(),
+                                flags: adaptive_rdo::FlagStats::default(),
+                                rl: if want_pilot_huf {
+                                    Vec::new()
+                                } else {
+                                    vec![0u64; rl_len]
+                                },
+                                freqs: if want_pilot_huf {
+                                    trellis::freqs_new()
+                                } else {
+                                    [Vec::new(), Vec::new(), Vec::new()]
+                                },
+                            })
+                        },
+                        |acc, sc| {
+                            let Ok(st) = acc else { return };
+                            let selected = match pilot_sel.stripe_with_lambda(
+                                sc.clone(),
+                                &fill_block_row,
+                                &open_lambda_map,
+                                0,
+                                pulse,
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    *acc = Err(e);
+                                    return;
+                                }
+                            };
+                            if let Err(e) = st.map.add_stripe(&selected, gbw) {
+                                *acc = Err(e);
+                                return;
+                            }
+                            if small_on {
+                                st.flags.add_stripe(&selected);
+                            }
+                            let mut tally = |u: &StripeCoefs| {
+                                if want_pilot_huf {
+                                    let (counts, widths) = stripe_counts_widths(u, u.bw);
+                                    let syms = huf::stripe_syms(&counts, &widths, u.nby * u.bw);
+                                    let [luma, chroma, wid] = &mut st.freqs;
+                                    for (h, symbols) in [
+                                        (luma, &syms.luma),
+                                        (chroma, &syms.chroma),
+                                        (wid, &syms.wid),
+                                    ] {
+                                        for &(ctx, sym) in symbols {
+                                            h[ctx as usize][sym as usize] += 1;
+                                        }
+                                    }
+                                } else {
+                                    stripe_tokens(u, u.bw, Group::ALL, |_, ctx, tok, _, _| {
+                                        st.rl[ctx * coef::ALPHA + tok as usize] += 1;
+                                    });
+                                }
+                            };
+                            if gbw == 0 {
+                                tally(&selected);
+                            } else {
+                                for u in split_units(selected, gbw) {
+                                    tally(&u);
+                                }
+                            }
+                        },
+                    );
+                    let mut map_stats = adaptive_rdo::MapBitStats::default();
+                    let mut flag_stats = adaptive_rdo::FlagStats::default();
+                    let mut pilot_rl = if want_pilot_huf {
+                        Vec::new()
+                    } else {
+                        vec![0u64; rl_len]
+                    };
+                    let mut pilot_freqs = if want_pilot_huf {
+                        trellis::freqs_new()
+                    } else {
+                        [Vec::new(), Vec::new(), Vec::new()]
+                    };
+                    for p in parts_a {
+                        let p = p?;
+                        map_stats.merge(&p.map);
+                        flag_stats.merge(&p.flags);
+                        if want_pilot_huf {
+                            for (dst, src) in pilot_freqs.iter_mut().zip(p.freqs) {
+                                for (drow, srow) in dst.iter_mut().zip(src) {
+                                    for (d, s) in drow.iter_mut().zip(srow) {
+                                        *d += s;
+                                    }
+                                }
+                            }
+                        } else {
+                            for (d, s) in pilot_rl.iter_mut().zip(p.rl) {
+                                *d += s;
+                            }
+                        }
+                    }
+                    let learned_map = map_stats.into_table();
+                    let learned_flags = small_on.then(|| flag_stats.into_flags());
+
+                    let learned_coder = if let Some((mut t_set, forced)) = trellis
+                        && (forced || xyb)
+                    {
+                        t_set.passes = 1;
+                        let pilot_bias = qp.bias.filter(|b| !b.is_zero()).map(|b| b.tables());
+                        let pilot_pass = if pilot_huf_model {
+                            trellis::Pass::split_huf(&pilot_freqs, &t_set, cfg, effort)
+                        } else {
+                            trellis::Pass::run_level(&pilot_rl, &t_set, cfg, effort)
+                        };
+                        let parts_b = crate::par::par_fold(
+                            &stripes,
+                            cfg.threads,
+                            || {
+                                Ok::<(Vec<u64>, trellis::Freqs), Error>((
+                                    if split {
+                                        Vec::new()
+                                    } else {
+                                        vec![0u64; rl_len]
+                                    },
+                                    if split {
+                                        trellis::freqs_new()
+                                    } else {
+                                        [Vec::new(), Vec::new(), Vec::new()]
+                                    },
+                                ))
+                            },
+                            |acc, sc| {
+                                let Ok((rl_acc, fr_acc)) = acc else { return };
+                                let selected = match pilot_sel.stripe_with_lambda(
+                                    sc.clone(),
+                                    &fill_block_row,
+                                    &open_lambda_map,
+                                    0,
+                                    pulse,
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        *acc = Err(e);
+                                        return;
+                                    }
+                                };
+                                let mut units = if gbw == 0 {
+                                    alloc::vec![selected]
+                                } else {
+                                    split_units(selected, gbw)
+                                };
+                                if let Err(e) = trellis::rewrite_stripe_lambda(
+                                    &pilot_pass,
+                                    &mut units,
+                                    &fill_block_row,
+                                    pw,
+                                    g.bw,
+                                    gbw,
+                                    &steps,
+                                    cfg,
+                                    &t_set,
+                                    &trellis_aq,
+                                    &open_lambda_map,
+                                    0,
+                                    plan.merged_trellis,
+                                    pilot_bias.as_ref(),
+                                    0,
+                                    None,
+                                    pulse,
+                                ) {
+                                    *acc = Err(e);
+                                    return;
+                                }
+                                for u in &units {
+                                    if split {
+                                        let (counts, widths) = stripe_counts_widths(u, u.bw);
+                                        let syms = huf::stripe_syms(&counts, &widths, u.nby * u.bw);
+                                        let [luma, chroma, wid] = fr_acc;
+                                        for (h, symbols) in [
+                                            (luma, &syms.luma),
+                                            (chroma, &syms.chroma),
+                                            (wid, &syms.wid),
+                                        ] {
+                                            for &(ctx, sym) in symbols {
+                                                h[ctx as usize][sym as usize] += 1;
+                                            }
+                                        }
+                                    } else {
+                                        stripe_tokens(u, u.bw, Group::ALL, |_, ctx, tok, _, _| {
+                                            rl_acc[ctx * coef::ALPHA + tok as usize] += 1;
+                                        });
+                                    }
+                                }
+                            },
+                        );
+                        let mut learned_rl = if split {
+                            Vec::new()
+                        } else {
+                            vec![0u64; rl_len]
+                        };
+                        let mut learned_freqs = if split {
+                            trellis::freqs_new()
+                        } else {
+                            [Vec::new(), Vec::new(), Vec::new()]
+                        };
+                        for p in parts_b {
+                            let (rl_p, fr_p) = p?;
+                            if split {
+                                for (dst, src) in learned_freqs.iter_mut().zip(fr_p) {
+                                    for (drow, srow) in dst.iter_mut().zip(src) {
+                                        for (d, s) in drow.iter_mut().zip(srow) {
+                                            *d += s;
+                                        }
+                                    }
+                                }
+                            } else {
+                                for (d, s) in learned_rl.iter_mut().zip(rl_p) {
+                                    *d += s;
+                                }
+                            }
+                        }
+                        superblock::select::Coder::of_counts(
+                            &learned_rl,
+                            &learned_freqs,
+                            cfg,
+                            effort,
+                            split,
+                        )
+                    } else {
+                        superblock::select::Coder::of_counts(
+                            &pilot_rl,
+                            &pilot_freqs,
+                            cfg,
+                            effort,
+                            split,
+                        )
+                    };
+                    superblock::select::apply_with_learned(
+                        stripes,
+                        &fill_block_row,
+                        pw,
+                        gbw,
+                        &steps,
+                        round,
+                        cfg,
+                        learned_coder,
+                        Some(learned_map),
+                        learned_flags,
+                        &open_lambda_map,
+                        sel_opts,
+                        pulse,
+                    )?
+                } else {
+                    superblock::select::apply_with_lambda(
+                        stripes,
+                        &fill_block_row,
+                        pw,
+                        gbw,
+                        &steps,
+                        round,
+                        cfg,
+                        effort,
+                        &open_lambda_map,
+                        sel_opts,
+                        pulse,
+                    )?
+                };
                 if exact.is_some() {
                     for sc in &mut stripes {
                         for code in &mut sc.aq {
@@ -3953,7 +4296,7 @@ pub(crate) fn encode_lossy_frame_with_progress(
                 stripes
             };
             pulse.check().map_err(|_| Error::Cancelled)?;
-            Ok((stripes, exact, sb_on))
+            Ok((stripes, exact, sb_on, open_lambda_map))
         })?;
         stages.run(|pulse| {
             finish_lossy_frame(
@@ -3976,6 +4319,7 @@ pub(crate) fn encode_lossy_frame_with_progress(
                 sb_on,
                 trellis,
                 &trellis_aq,
+                &open_lambda_map,
                 dc_fix.then_some(white_code.is_some()),
                 stripes,
                 pulse,
@@ -4013,6 +4357,7 @@ fn finish_lossy_frame(
     sb_on: bool,
     trellis: Option<(trellis::LossyTrellis, bool)>,
     trellis_aq: &[f32],
+    open_lambda_map: &[f32],
     rdoq_dc: Option<bool>,
     stripes: Vec<StripeCoefs>,
     pulse: &dyn Pulse,
@@ -4265,6 +4610,7 @@ fn finish_lossy_frame(
                 sb_on,
                 trellis.map(|t| (t, false)),
                 trellis_aq,
+                open_lambda_map,
                 rdoq_dc,
                 stripes.clone(),
                 &nested,
@@ -4330,6 +4676,7 @@ fn finish_lossy_frame(
             effort,
             t,
             trellis_aq,
+            open_lambda_map,
             trellis_bias.as_ref(),
             tier_huf
                 || (cfg.decode_speed.is_none()
@@ -4361,6 +4708,7 @@ fn finish_lossy_frame(
                 effort,
                 t,
                 trellis_aq,
+                open_lambda_map,
                 trellis_bias.as_ref(),
                 true,
                 pulse,
@@ -5161,6 +5509,7 @@ fn finish_quantized_coefficients(
         None,
         false,
         None,
+        &[],
         &[],
         None,
         stripes,

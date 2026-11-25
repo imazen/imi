@@ -16,8 +16,10 @@ pub(crate) mod plan;
 pub use migrate::upgrade_image;
 mod checks;
 mod pixel_checks;
+mod profile;
 pub(crate) use pixel_checks::RetainedPixelCheckState;
 pub use pixel_checks::{CheckCoverage, PixelCheckIdentity, PixelChecks};
+pub use profile::CodingProfile;
 #[cfg(all(feature = "std", feature = "encode"))]
 mod file_write;
 mod header;

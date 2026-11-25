@@ -622,6 +622,7 @@ impl<R: ReadAt> PlaneSetReader<R> {
                 let verify_pixels = self.limits.verify_scoped_pixels;
                 let session = crate::decode_resources::DecodeSession::new(
                     crate::decode_resources::DecodePolicy::default()
+                        .with_optional_v4_profile(self.limits.v4_profile)
                         .with_output_limits(limits)
                         .with_scoped_pixel_checks(verify_pixels, verify_pixels),
                 );
@@ -1277,6 +1278,7 @@ fn native_profile_in_session<'a>(
             "significant bits require a version2 plane index",
         ));
     }
+    session.check_coding_profile(&header)?;
     // Metadata, frames, previews, nested plane sets and temporal coding remain
     // outside the tile profile. V4 can retain standalone tile checksums and
     // its directory; the complete parser validates their framing and cSUM.

@@ -295,6 +295,11 @@ impl LossySettings {
                 flags,
                 || session.adapter_work(0),
             )?;
+            if session.v4_profile() == Some(super::CodingProfile::Fixed8x8Photo) {
+                return Err(Error::Unsupported(
+                    "adaptive transforms outside V4 fixed-photo profile",
+                ));
+            }
             return Ok(PreparedUnit {
                 settings: self,
                 group: self.image,
@@ -366,6 +371,8 @@ impl LossySettings {
             _charge: charge,
         };
         if !unit.inherits_default() {
+            let fixed = session.v4_profile() == Some(super::CodingProfile::Fixed8x8Photo);
+            let mut outside_fixed = false;
             unit.visit(|y, x, state| {
                 let right = x * 2 + 1 < parent_columns;
                 let bottom = y * 2 + 1 < parent_rows;
@@ -373,8 +380,16 @@ impl LossySettings {
                     | (u8::from(right) << 1)
                     | (u8::from(bottom) << 2)
                     | (u8::from(right && bottom) << 3);
-                state.validate(present, declared)
+                state.validate(present, declared)?;
+                outside_fixed |=
+                    fixed && (state.partition() != 0 || state.plane_plans() != [0; 12]);
+                Ok(())
             })?;
+            if outside_fixed {
+                return Err(Error::Unsupported(
+                    "adaptive transforms outside V4 fixed-photo profile",
+                ));
+            }
         }
         Ok(unit)
     }

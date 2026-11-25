@@ -279,6 +279,8 @@ pub(super) async fn prepare<I: PassIo>(
         passes: Vec::new(),
         exact: None,
         merges: None,
+        open_lambda: None,
+        closed_lambda: None,
     };
     if cfg.local_ans_contexts && !aq {
         train_first_band_dc(p, &mut prepared)?;

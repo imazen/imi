@@ -162,13 +162,37 @@ fn recon_row16_impl<const NS: usize, const P: u8, const NEAR: bool>(
         token,
         core::array::from_fn(|l| widths[l].min(u16::MAX as u32) as u16),
     );
+    let r_ch: [&[[u16; NL]]; NS] = core::array::from_fn(|s| {
+        if active(s) {
+            &res[s].as_chunks::<NL>().0[..lw]
+        } else {
+            &[]
+        }
+    });
+    let p_ch: [&[[u16; NL]]; NS] = core::array::from_fn(|s| {
+        if active(s) && P != FIRST_ROW {
+            &prev[s].as_chunks::<NL>().0[..lw]
+        } else {
+            &[]
+        }
+    });
+    let c_ch: [&mut [[u16; NL]]; NS] = {
+        let mut it = cur.iter_mut();
+        core::array::from_fn(|s| {
+            let sl = it.next().unwrap();
+            if active(s) {
+                &mut sl.as_chunks_mut::<NL>().0[..lw]
+            } else {
+                &mut []
+            }
+        })
+    };
     let mut wv = [zero; NS];
     let mut nwv = [zero; NS];
     for x in 0..lw {
-        let bi = x * NL;
         let mut d: [u16x16; NS] = core::array::from_fn(|s| {
             if active(s) {
-                let u = u16x16::from_slice_t(token, &res[s][bi..bi + NL]);
+                let u = u16x16::load_t(token, &r_ch[s][x]);
                 unzz(u, masks[s])
             } else {
                 zero
@@ -206,10 +230,10 @@ fn recon_row16_impl<const NS: usize, const P: u8, const NEAR: bool>(
                     (w + d[s]) & masks[s]
                 }
             } else {
-                let n = u16x16::from_slice_t(token, &prev[s][bi..bi + NL]);
+                let n = u16x16::load_t(token, &p_ch[s][x]);
                 let (w, nw) = if x > 0 { (wv[s], nwv[s]) } else { (n, n) };
-                let ne = if x + 1 < lw {
-                    let ner = u16x16::from_slice_t(token, &prev[s][bi + NL..bi + 2 * NL]);
+                let ne = if P == predict::P_AVG_WNE && x + 1 < lw {
+                    let ner = u16x16::load_t(token, &p_ch[s][x + 1]);
                     let has = widv.simd_gt(u16x16::splat_t(token, (x + 1) as u16));
                     incant!(crate::wasm_relaxed::sel_u16x16(token, has, ner, n) without token)
                 } else {
@@ -224,7 +248,7 @@ fn recon_row16_impl<const NS: usize, const P: u8, const NEAR: bool>(
                 }
             };
             wv[s] = v;
-            v.store((&mut cur[s][bi..bi + NL]).try_into().unwrap());
+            v.store(&mut c_ch[s][x]);
         }
     }
 }
@@ -366,7 +390,7 @@ fn recon_row32_impl<const NS: usize, const P: u8, const NEAR: bool>(
                 } else {
                     let n = u32x8::from_slice_t(token, &prev[s][bi..bi + 8]);
                     let (w, nw) = if x > 0 { (wv[s], nwv[s]) } else { (n, n) };
-                    let ne = if x + 1 < lw {
+                    let ne = if P == predict::P_AVG_WNE && x + 1 < lw {
                         let ner = u32x8::from_slice_t(token, &prev[s][bi + NL..bi + NL + 8]);
                         let has = wid[h].simd_gt(u32x8::splat_t(token, (x + 1) as u32));
                         incant!(crate::wasm_relaxed::sel_u32x8(token, has, ner, n) without token)
@@ -549,20 +573,63 @@ pub(crate) fn recon_row16(
         let (r, pv, c) = (&res[s0..s0 + n], &prev[s0..s0 + n], &mut cur[s0..s0 + n]);
         match (n, near_on) {
             (1, false) => go16::<1, false>(pred, b, nr, cs, r, pv, c, widths, lw, row, decor),
+            #[cfg(target_arch = "wasm32")]
+            (2, false) => {
+                // Two slots have no residual decorrelation dependency; share `go16::<1, false>`.
+                for s in 0..2 {
+                    let (r, pv, c) = (&r[s..=s], &pv[s..=s], &mut c[s..=s]);
+                    go16::<1, false>(pred, &b[s..], &nr[s..], 0, r, pv, c, widths, lw, row, 0);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             (2, false) => go16::<2, false>(pred, b, nr, cs, r, pv, c, widths, lw, row, decor),
             (3, false) => go16::<3, false>(pred, b, nr, cs, r, pv, c, widths, lw, row, decor),
+            #[cfg(target_arch = "wasm32")]
+            (_, false) => {
+                // Slot 3 never participates in 3-channel residual decorrelation;
+                // run slots 0..3 through the hot RGB kernel and slot 3 through the 1-slot kernel.
+                let (c0, c1) = c.split_at_mut(3);
+                go16::<3, false>(
+                    pred,
+                    b,
+                    nr,
+                    cs,
+                    &r[..3],
+                    &pv[..3],
+                    c0,
+                    widths,
+                    lw,
+                    row,
+                    decor,
+                );
+                go16::<1, false>(
+                    pred,
+                    &b[3..],
+                    &nr[3..],
+                    0,
+                    &r[3..],
+                    &pv[3..],
+                    c1,
+                    widths,
+                    lw,
+                    row,
+                    0,
+                );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             (_, false) => go16::<4, false>(pred, b, nr, cs, r, pv, c, widths, lw, row, decor),
+            #[cfg(not(target_arch = "wasm32"))]
             (1, true) => go16::<1, true>(pred, b, nr, cs, r, pv, c, widths, lw, row, decor),
             #[cfg(target_arch = "wasm32")]
             (2, true) => {
                 // Two slots have no residual decorrelation dependency.
-                // Run the shared single-slot loops with the same predictor.
+                // Share the exact 1-slot or dynamic near-lossless kernel.
                 for s in 0..2 {
                     let (r, pv, c) = (&r[s..=s], &pv[s..=s], &mut c[s..=s]);
                     if nr[s] == 0 {
                         go16::<1, false>(pred, &b[s..], &nr[s..], 0, r, pv, c, widths, lw, row, 0);
                     } else {
-                        go16::<1, true>(pred, &b[s..], &nr[s..], 0, r, pv, c, widths, lw, row, 0);
+                        go16::<4, true>(pred, &b[s..], &nr[s..], 0, r, pv, c, widths, lw, row, 0);
                     }
                 }
             }

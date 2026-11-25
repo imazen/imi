@@ -33,7 +33,7 @@ if [ "${IMIJ_WASM_STREAMING_EVALUATION:-0}" = 1 ]; then extra_features+=(--featu
 variants=("$@")
 if [ "${IMIJ_WASM_EXPLORER:-0}" = 1 ]; then
   DIST=$DIST/explorer
-  extra_features=(--no-default-features)
+  extra_features+=(--no-default-features)
   [ ${#variants[@]} -ne 0 ] || variants=(simd relaxed)
 else
   [ ${#variants[@]} -ne 0 ] || variants=(simd threads)

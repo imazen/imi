@@ -1,6 +1,7 @@
 //! Browser range access to a native image directory.
 use crate::ranges::{BrowserReadAt, browser_source, region_rect};
 use imij::planes::{ImageViewRole, PlaneSetLimits, PlaneSetReader, ViewRegistration};
+use imij::v4::CodingProfile;
 use js_sys::{Array, Function, Object, Uint8Array};
 use wasm_bindgen::prelude::*;
 
@@ -19,6 +20,32 @@ impl RangePyramid {
         workers: Option<u32>,
         verify: Option<bool>,
     ) -> Result<RangePyramid, JsError> {
+        Self::open(length, read, read_many, workers, verify, None)
+    }
+
+    /// Open a catalog-certified view source under a V4 coding profile.
+    /// Unread tiles remain unverified until selected for decoding.
+    #[wasm_bindgen(js_name = openProfile)]
+    pub fn open_profile(
+        profile: &str,
+        length: f64,
+        read: Function,
+        read_many: Option<Function>,
+        workers: Option<u32>,
+        verify: Option<bool>,
+    ) -> Result<RangePyramid, JsError> {
+        let profile = profile.parse().map_err(super::js_err)?;
+        Self::open(length, read, read_many, workers, verify, Some(profile))
+    }
+
+    fn open(
+        length: f64,
+        read: Function,
+        read_many: Option<Function>,
+        workers: Option<u32>,
+        verify: Option<bool>,
+        profile: Option<CodingProfile>,
+    ) -> Result<RangePyramid, JsError> {
         if !length.is_finite()
             || length < 1.0
             || length.fract() != 0.0
@@ -27,17 +54,18 @@ impl RangePyramid {
             return Err(JsError::new("invalid source length"));
         }
         let verify = verify.unwrap_or(true);
-        let reader = PlaneSetReader::open(
-            browser_source(length as u64, read, read_many),
-            PlaneSetLimits::default()
-                .with_file_bytes(1 << 46)
-                .with_plane_pixels(1 << 40)
-                .with_work_bytes(16 << 20, 64 << 20)
-                .with_decode_workers(workers.unwrap_or(1) as usize)
-                .with_checksum_verification(verify)
-                .with_scoped_pixel_verification(verify),
-        )
-        .map_err(super::js_err)?;
+        let mut limits = PlaneSetLimits::default()
+            .with_file_bytes(1 << 46)
+            .with_plane_pixels(1 << 40)
+            .with_work_bytes(16 << 20, 64 << 20)
+            .with_decode_workers(workers.unwrap_or(1) as usize)
+            .with_checksum_verification(verify)
+            .with_scoped_pixel_verification(verify);
+        if let Some(profile) = profile {
+            limits = limits.with_v4_profile(profile);
+        }
+        let reader = PlaneSetReader::open(browser_source(length as u64, read, read_many), limits)
+            .map_err(super::js_err)?;
         if reader.image_directory().is_none() {
             return Err(JsError::new("missing native image directory"));
         }

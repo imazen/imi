@@ -1,5 +1,5 @@
 //! aarch64 NEON row decoder: [`rans::decode_row_scalar`] bit-identical,
-//! structured like `rans::avx2` but with the 16 lanes carried as four
+//! structured like `rans::avx2` with the 16 lanes carried as four
 //! `u32x4` quarters. Lane state (`x`, `run`) and the west context term
 //! stay in registers across the row; per-lane scalar work remains only
 //! for the decode-table gather. Refill and pull idioms match
@@ -52,8 +52,8 @@ struct Inst<'a, 'w> {
     k: K,
     dec: &'a [u32; TABLE],
     w: &'a Words<'w>,
-    prev: &'a [u16],
-    cross: Option<&'a [u16]>,
+    prev: &'a [[u16; NL]],
+    cross: Option<&'a [[u16; NL]]>,
     x: [uint32x4_t; 4],
     run: [uint32x4_t; 4],
     west: [uint32x4_t; 4],
@@ -63,32 +63,44 @@ struct Inst<'a, 'w> {
 }
 
 #[rite(import_intrinsics)]
-fn ld4(_t: NeonToken, a: &[u32]) -> uint32x4_t {
-    let a: &[u32; 4] = a[..4].try_into().unwrap();
+#[inline(always)]
+fn ld4(_t: NeonToken, a: &[u32; 4]) -> uint32x4_t {
     vld1q_u32(a)
 }
 
 #[rite(import_intrinsics)]
-fn st4(_t: NeonToken, a: &mut [u32], v: uint32x4_t) {
-    let a: &mut [u32; 4] = (&mut a[..4]).try_into().unwrap();
+#[inline(always)]
+fn st4(_t: NeonToken, a: &mut [u32; 4], v: uint32x4_t) {
     vst1q_u32(a, v);
 }
 
+/// Loads all 16 u16 values of a step into four widened `uint32x4_t` quarters.
 #[rite(import_intrinsics)]
-fn st16(_t: NeonToken, a: &mut [u16], v: uint32x4_t) {
-    let a: &mut [u16; 4] = (&mut a[..4]).try_into().unwrap();
-    vst1_u16(a, vmovn_u32(v));
+#[inline(always)]
+fn ld16_all(_t: NeonToken, p: &[u16; NL]) -> [uint32x4_t; 4] {
+    let lo = vld1q_u16(p[..8].try_into().unwrap());
+    let hi = vld1q_u16(p[8..].try_into().unwrap());
+    [
+        vmovl_u16(vget_low_u16(lo)),
+        vmovl_high_u16(lo),
+        vmovl_u16(vget_low_u16(hi)),
+        vmovl_high_u16(hi),
+    ]
 }
 
-/// Widens four u16s (step-major slot values) into a u32x4.
+/// Stores four `uint32x4_t` quarters (values <= u16::MAX) into one 16-lane step.
 #[rite(import_intrinsics)]
-fn ld16(_t: NeonToken, p: &[u16]) -> uint32x4_t {
-    let a: &[u16; 4] = p[..4].try_into().unwrap();
-    vmovl_u16(vld1_u16(a))
+#[inline(always)]
+fn st16_all(_t: NeonToken, dst: &mut [u16; NL], v: [uint32x4_t; 4]) {
+    let lo = vcombine_u16(vmovn_u32(v[0]), vmovn_u32(v[1]));
+    let hi = vcombine_u16(vmovn_u32(v[2]), vmovn_u32(v[3]));
+    vst1q_u16((&mut dst[..8]).try_into().unwrap(), lo);
+    vst1q_u16((&mut dst[8..]).try_into().unwrap(), hi);
 }
 
 /// Lane mask as 4 bits.
 #[rite(import_intrinsics)]
+#[inline(always)]
 fn bits4(t: NeonToken, m: uint32x4_t) -> usize {
     vaddvq_u32(vandq_u32(m, ld4(t, &[1, 2, 4, 8]))) as usize
 }
@@ -97,6 +109,7 @@ fn bits4(t: NeonToken, m: uint32x4_t) -> usize {
 /// `w.word(wp + rank)` in ascending lane order, `wp` advanced by the
 /// count. Same ordering as the scalar loop.
 #[rite(import_intrinsics)]
+#[inline(always)]
 fn refill(
     t: NeonToken,
     x: uint32x4_t,
@@ -118,53 +131,68 @@ fn refill(
 
 /// x >> n per lane.
 #[rite(import_intrinsics)]
+#[inline(always)]
 fn shr(_t: NeonToken, x: uint32x4_t, n: uint32x4_t) -> uint32x4_t {
     vshlq_u32(x, vnegq_s32(vreinterpretq_s32_u32(n)))
 }
 
-/// `ctx_map[class]` per lane through `vqtbl1q_u8`, matching the AVX2
-/// kernel's `shuffle_epi8` + `& 3`.
+/// Computes all 16 lanes' table indices in one `vqtbl1q_u8` lookup.
 #[rite(import_intrinsics)]
-fn ctx_v(_t: NeonToken, cmapv: uint8x16_t, cls: uint32x4_t) -> uint32x4_t {
-    let b = vmovn_u16(vcombine_u16(vmovn_u32(cls), vdup_n_u16(0)));
-    let got = vqtbl1q_u8(cmapv, vcombine_u8(b, vdup_n_u8(0)));
-    vandq_u32(
-        vmovl_u16(vget_low_u16(vmovl_u8(vget_low_u8(got)))),
-        vdupq_n_u32(3),
-    )
+#[inline(always)]
+fn idx_all(
+    _t: NeonToken,
+    cmapv: uint8x16_t,
+    x: &[uint32x4_t; 4],
+    sum: &[uint32x4_t; 4],
+) -> [uint32x4_t; 4] {
+    let zero = vdupq_n_s32(0);
+    let c126 = vdupq_n_s32(126);
+    let c15 = vdupq_n_s32(15);
+    let cls: [uint32x4_t; 4] = core::array::from_fn(|g| {
+        let ex = vshrq_n_u32::<23>(vreinterpretq_u32_f32(vcvtq_f32_s32(vreinterpretq_s32_u32(
+            sum[g],
+        ))));
+        let c = vmaxq_s32(vsubq_s32(vreinterpretq_s32_u32(ex), c126), zero);
+        vreinterpretq_u32_s32(vminq_s32(c, c15))
+    });
+    let c01 = vcombine_u16(vmovn_u32(cls[0]), vmovn_u32(cls[1]));
+    let c23 = vcombine_u16(vmovn_u32(cls[2]), vmovn_u32(cls[3]));
+    let c_all = vcombine_u8(vmovn_u16(c01), vmovn_u16(c23));
+    let ctx_all = vandq_u8(vqtbl1q_u8(cmapv, c_all), vdupq_n_u8(3));
+    let lo16 = vmovl_u8(vget_low_u8(ctx_all));
+    let hi16 = vmovl_high_u8(ctx_all);
+    let ctx: [uint32x4_t; 4] = [
+        vmovl_u16(vget_low_u16(lo16)),
+        vmovl_high_u16(lo16),
+        vmovl_u16(vget_low_u16(hi16)),
+        vmovl_high_u16(hi16),
+    ];
+    let c1023 = vdupq_n_u32(1023);
+    core::array::from_fn(|g| vorrq_u32(vshlq_n_u32::<10>(ctx[g]), vandq_u32(x[g], c1023)))
 }
 
-/// Context + table index for one quarter; also returns `act` and
-/// decrements in-run lanes.
+/// Gathers 16 decode entries across four quarters.
 #[rite(import_intrinsics)]
-fn token_idx(
-    t: NeonToken,
-    k: &K,
-    x: uint32x4_t,
-    run: &mut uint32x4_t,
-    sum: uint32x4_t,
-    inw: uint32x4_t,
-) -> (uint32x4_t, uint32x4_t) {
-    let in_run = vandq_u32(vcgtq_s32(vreinterpretq_s32_u32(*run), vdupq_n_s32(0)), inw);
-    *run = vaddq_u32(*run, in_run);
-    let act = vbicq_u32(inw, in_run);
-    let ex = vshrq_n_u32::<23>(vreinterpretq_u32_f32(vcvtq_f32_s32(vreinterpretq_s32_u32(
-        sum,
-    ))));
-    let cls = vmaxq_s32(
-        vsubq_s32(vreinterpretq_s32_u32(ex), vdupq_n_s32(126)),
-        vdupq_n_s32(0),
-    );
-    let cls = vreinterpretq_u32_s32(vminq_s32(cls, vdupq_n_s32(15)));
-    let idx = vorrq_u32(
-        vshlq_n_u32::<10>(ctx_v(t, k.cmapv, cls)),
-        vandq_u32(x, vdupq_n_u32(1023)),
-    );
-    (act, idx)
+#[inline(always)]
+fn gather_all(t: NeonToken, dec: &[u32; TABLE], idx: &[uint32x4_t; 4]) -> [uint32x4_t; 4] {
+    core::array::from_fn(|g| {
+        let mut ia = [0u32; 4];
+        st4(t, &mut ia, idx[g]);
+        ld4(
+            t,
+            &[
+                dec[ia[0] as usize & (TABLE - 1)],
+                dec[ia[1] as usize & (TABLE - 1)],
+                dec[ia[2] as usize & (TABLE - 1)],
+                dec[ia[3] as usize & (TABLE - 1)],
+            ],
+        )
+    })
 }
 
-/// rANS state advance for one quarter.
+/// rANS state advance for one quarter (masked).
 #[rite(import_intrinsics)]
+#[inline(always)]
 fn token_update(
     t: NeonToken,
     e: uint32x4_t,
@@ -183,9 +211,28 @@ fn token_update(
     *x = refill(t, xx, need, w, wp);
 }
 
-/// Extra-bits phase + emit for one quarter (u16 storage: nb <= 15 is
-/// exact in the decode entry). Returns the emitted vector.
+/// rANS state advance for one quarter when all 4 lanes are active.
 #[rite(import_intrinsics)]
+#[inline(always)]
+fn token_update_all(
+    t: NeonToken,
+    e: uint32x4_t,
+    w: &Words<'_>,
+    wp: &mut usize,
+    x: &mut uint32x4_t,
+) {
+    let zero = vdupq_n_u32(0);
+    let c1023 = vdupq_n_u32(1023);
+    let f = vaddq_u32(vandq_u32(e, c1023), vdupq_n_u32(1));
+    let bias = vandq_u32(vshrq_n_u32::<10>(e), c1023);
+    let nx = vaddq_u32(vmulq_u32(f, vshrq_n_u32::<10>(*x)), bias);
+    let need = vceqq_u32(vshrq_n_u32::<16>(nx), zero);
+    *x = refill(t, nx, need, w, wp);
+}
+
+/// Extra-bits phase + emit for one quarter (masked).
+#[rite(import_intrinsics)]
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn extra_phase(
     t: NeonToken,
@@ -223,8 +270,47 @@ fn extra_phase(
     vbicq_u32(vandq_u32(act, u), run_now)
 }
 
-/// Emit when no active lane has extra bits: tokens are direct.
+/// Extra-bits phase + emit for one quarter when all 4 lanes are active (`run` was 0).
 #[rite(import_intrinsics)]
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn extra_phase_all(
+    t: NeonToken,
+    k: &K,
+    w: &Words<'_>,
+    wp: &mut usize,
+    x: &mut uint32x4_t,
+    run: &mut uint32x4_t,
+    e: uint32x4_t,
+) -> uint32x4_t {
+    let zero = vdupq_n_u32(0);
+    let one = vdupq_n_u32(1);
+    let nb = vshrq_n_u32::<28>(e);
+    let sym = vandq_u32(vshrq_n_u32::<20>(e), vdupq_n_u32(255));
+    let ebits = vandq_u32(
+        *x,
+        vsubq_u32(vshlq_u32(one, vreinterpretq_s32_u32(nb)), one),
+    );
+    let xx = shr(t, *x, nb);
+    let need = vceqq_u32(vshrq_n_u32::<16>(xx), zero);
+    *x = refill(t, xx, need, w, wp);
+    let is_run = vcgtq_s32(vreinterpretq_s32_u32(sym), vreinterpretq_s32_u32(k.vtm1));
+    let tt = vsubq_u32(sym, vandq_u32(is_run, k.vt));
+    let dlim = vbslq_u32(is_run, k.dlim_r, k.dlim_v);
+    let direct = vcgtq_s32(vreinterpretq_s32_u32(dlim), vreinterpretq_s32_u32(tt));
+    let hb = vshlq_u32(
+        vorrq_u32(k.mpow, vandq_u32(tt, k.mmask)),
+        vreinterpretq_s32_u32(nb),
+    );
+    let base = vbslq_u32(direct, tt, hb);
+    let u = vaddq_u32(base, ebits);
+    *run = vandq_u32(is_run, u);
+    vbicq_u32(u, is_run)
+}
+
+/// Emit when no active lane has extra bits (masked).
+#[rite(import_intrinsics)]
+#[inline(always)]
 fn no_extra(
     _t: NeonToken,
     k: &K,
@@ -240,25 +326,65 @@ fn no_extra(
     vbicq_u32(vandq_u32(act, u), run_now)
 }
 
-/// One step of `i` (or a skip over all-run columns), over four quarters.
+/// Emit when all 4 lanes are active and have `nb == 0` (top 4 bits of `e` are 0).
 #[rite(import_intrinsics)]
-fn step(t: NeonToken, i: &mut Inst<'_, '_>, wid: &[uint32x4_t; 4], lw: usize, out: &mut [u16]) {
+#[inline(always)]
+fn no_extra_all(_t: NeonToken, k: &K, run: &mut uint32x4_t, e: uint32x4_t) -> uint32x4_t {
+    let sym = vshrq_n_u32::<20>(e);
+    let is_run = vcgtq_s32(vreinterpretq_s32_u32(sym), vreinterpretq_s32_u32(k.vtm1));
+    let u = vsubq_u32(sym, vandq_u32(is_run, k.vt));
+    *run = vandq_u32(is_run, u);
+    vbicq_u32(u, is_run)
+}
+
+#[rite(import_intrinsics)]
+#[inline(always)]
+fn context_sum(t: NeonToken, i: &Inst<'_, '_>, x: usize) -> [uint32x4_t; 4] {
     let zero = vdupq_n_u32(0);
-    let (row, x) = (i.row, i.xi);
-    let k = &i.k;
+    let mut s = if i.row > 0 {
+        let n = ld16_all(t, &i.prev[x]);
+        if x > 0 {
+            core::array::from_fn(|g| vaddq_u32(i.west[g], n[g]))
+        } else {
+            core::array::from_fn(|g| vaddq_u32(n[g], n[g]))
+        }
+    } else if x > 0 {
+        core::array::from_fn(|g| vaddq_u32(i.west[g], i.west[g]))
+    } else {
+        [zero; 4]
+    };
+    if let Some(cr) = i.cross {
+        let c = ld16_all(t, &cr[x]);
+        for g in 0..4 {
+            s[g] = vaddq_u32(s[g], c[g]);
+        }
+    }
+    s
+}
+
+/// General step when some lane is past its width or all 16 lanes are in runs.
+#[rite(import_intrinsics)]
+fn step_slow(
+    t: NeonToken,
+    i: &mut Inst<'_, '_>,
+    wid: &[uint32x4_t; 4],
+    lw: usize,
+    out: &mut [[u16; NL]],
+) {
+    let zero = vdupq_n_u32(0);
+    let x = i.xi;
     let colv = vdupq_n_u32(x as u32);
     let inw: [uint32x4_t; 4] = core::array::from_fn(|g| {
         vcgtq_s32(vreinterpretq_s32_u32(wid[g]), vreinterpretq_s32_u32(colv))
     });
-    // Fast path: every lane is either past its width or inside a run.
     let busy: [uint32x4_t; 4] = core::array::from_fn(|g| {
         vorrq_u32(
             vcgtq_s32(vreinterpretq_s32_u32(i.run[g]), vdupq_n_s32(0)),
             vmvnq_u32(inw[g]),
         )
     });
-    if bits4(t, busy[0]) & bits4(t, busy[1]) & bits4(t, busy[2]) & bits4(t, busy[3]) == 0xF {
-        // Steps to skip: min run over active lanes, min width - x.
+    let all_busy = vandq_u32(vandq_u32(busy[0], busy[1]), vandq_u32(busy[2], busy[3]));
+    if vminvq_u32(all_busy) != 0 {
         let big = vdupq_n_u32(i32::MAX as u32);
         let mut m = big;
         for g in 0..4 {
@@ -274,50 +400,40 @@ fn step(t: NeonToken, i: &mut Inst<'_, '_>, wid: &[uint32x4_t; 4], lw: usize, ou
                 i.run[g] = vsubq_u32(i.run[g], vandq_u32(kv, inw[g]));
                 i.west[g] = zero;
             }
-            out[x * NL..(x + kk) * NL].fill(0);
+            for step_row in &mut out[x..x + kk] {
+                *step_row = [0u16; NL];
+            }
             i.xi += kk;
             return;
         }
     }
-    let bi = x * NL;
-    let mut s: [uint32x4_t; 4] = if row > 0 {
-        if x > 0 {
-            core::array::from_fn(|g| vaddq_u32(i.west[g], ld16(t, &i.prev[bi + 4 * g..])))
-        } else {
-            core::array::from_fn(|g| {
-                let n = ld16(t, &i.prev[bi + 4 * g..]);
-                vaddq_u32(n, n)
-            })
-        }
-    } else if x > 0 {
-        core::array::from_fn(|g| vaddq_u32(i.west[g], i.west[g]))
-    } else {
-        [zero; 4]
-    };
-    if let Some(cr) = i.cross {
-        for g in 0..4 {
-            s[g] = vaddq_u32(s[g], ld16(t, &cr[bi + 4 * g..]));
-        }
-    }
-    // A quarter whose lanes are all in runs (or past their width) only
-    // advances its run counters; it consumes no words.
+    let s = context_sum(t, i, x);
     let mut act = [zero; 4];
+    for g in 0..4 {
+        let in_run = vandq_u32(
+            vcgtq_s32(vreinterpretq_s32_u32(i.run[g]), vdupq_n_s32(0)),
+            inw[g],
+        );
+        i.run[g] = vaddq_u32(i.run[g], in_run);
+        act[g] = vbicq_u32(inw[g], in_run);
+    }
+    let idx = idx_all(t, i.k.cmapv, &i.x, &s);
     let mut e = [zero; 4];
     let mut live = [false; 4];
     for g in 0..4 {
-        let (a, idx) = token_idx(t, k, i.x[g], &mut i.run[g], s[g], inw[g]);
-        act[g] = a;
-        live[g] = bits4(t, a) != 0;
+        live[g] = vmaxvq_u32(act[g]) != 0;
         if live[g] {
-            let ia = {
-                let mut ia = [0u32; 4];
-                st4(t, &mut ia, idx);
-                ia
-            };
+            let mut ia = [0u32; 4];
+            st4(t, &mut ia, idx[g]);
             let dec = i.dec;
             e[g] = ld4(
                 t,
-                &core::array::from_fn::<u32, 4, _>(|j| dec[ia[j] as usize & (TABLE - 1)]),
+                &[
+                    dec[ia[0] as usize & (TABLE - 1)],
+                    dec[ia[1] as usize & (TABLE - 1)],
+                    dec[ia[2] as usize & (TABLE - 1)],
+                    dec[ia[3] as usize & (TABLE - 1)],
+                ],
             );
         }
     }
@@ -326,9 +442,8 @@ fn step(t: NeonToken, i: &mut Inst<'_, '_>, wid: &[uint32x4_t; 4], lw: usize, ou
             token_update(t, e[g], act[g], i.w, &mut i.wp, &mut i.x[g]);
         }
     }
-    // nb lives in bits 28..32: any active lane with extra bits?
     let nbmask = vdupq_n_u32(0xF000_0000);
-    let mut any_nb = vdupq_n_u32(0);
+    let mut any_nb = zero;
     for g in 0..4 {
         any_nb = vorrq_u32(any_nb, vandq_u32(vandq_u32(e[g], act[g]), nbmask));
     }
@@ -336,7 +451,7 @@ fn step(t: NeonToken, i: &mut Inst<'_, '_>, wid: &[uint32x4_t; 4], lw: usize, ou
     if vmaxvq_u32(any_nb) == 0 {
         for g in 0..4 {
             if live[g] {
-                u[g] = no_extra(t, k, &mut i.run[g], act[g], e[g]);
+                u[g] = no_extra(t, &i.k, &mut i.run[g], act[g], e[g]);
             }
         }
     } else {
@@ -344,7 +459,7 @@ fn step(t: NeonToken, i: &mut Inst<'_, '_>, wid: &[uint32x4_t; 4], lw: usize, ou
             if live[g] {
                 u[g] = extra_phase(
                     t,
-                    k,
+                    &i.k,
                     i.w,
                     &mut i.wp,
                     &mut i.x[g],
@@ -355,22 +470,112 @@ fn step(t: NeonToken, i: &mut Inst<'_, '_>, wid: &[uint32x4_t; 4], lw: usize, ou
             }
         }
     }
-    for g in 0..4 {
-        st16(t, &mut out[bi + 4 * g..], u[g]);
-        i.west[g] = u[g];
-    }
+    st16_all(t, &mut out[x], u);
+    i.west = u;
     i.xi += 1;
+}
+
+/// Inline full-width (`xi < min_w`) step:
+/// - Fast all-active path when all 16 lanes have `run == 0` (zero masks).
+/// - Inline partial-run path when `1..=15` lanes are in runs.
+/// - Delegates to `step_slow` only when all 16 lanes are simultaneously in runs.
+macro_rules! neon_step_inw {
+    ($t:expr, $i:expr, $wid:expr, $lw:expr, $out:expr) => {{
+        let any_run = vorrq_u32(
+            vorrq_u32($i.run[0], $i.run[1]),
+            vorrq_u32($i.run[2], $i.run[3]),
+        );
+        if vmaxvq_u32(any_run) == 0 {
+            let x = $i.xi;
+            let s = context_sum($t, &$i, x);
+            let idx = idx_all($t, $i.k.cmapv, &$i.x, &s);
+            let e = gather_all($t, $i.dec, &idx);
+            for g in 0..4 {
+                token_update_all($t, e[g], $i.w, &mut $i.wp, &mut $i.x[g]);
+            }
+            let any_nb = vandq_u32(
+                vorrq_u32(vorrq_u32(e[0], e[1]), vorrq_u32(e[2], e[3])),
+                vdupq_n_u32(0xF000_0000),
+            );
+            let u: [uint32x4_t; 4] = if vmaxvq_u32(any_nb) == 0 {
+                core::array::from_fn(|g| no_extra_all($t, &$i.k, &mut $i.run[g], e[g]))
+            } else {
+                core::array::from_fn(|g| {
+                    extra_phase_all(
+                        $t,
+                        &$i.k,
+                        $i.w,
+                        &mut $i.wp,
+                        &mut $i.x[g],
+                        &mut $i.run[g],
+                        e[g],
+                    )
+                })
+            };
+            st16_all($t, &mut $out[x], u);
+            $i.west = u;
+            $i.xi = x + 1;
+        } else {
+            let in_r: [uint32x4_t; 4] = core::array::from_fn(|g| {
+                vcgtq_s32(vreinterpretq_s32_u32($i.run[g]), vdupq_n_s32(0))
+            });
+            let all_r = vandq_u32(vandq_u32(in_r[0], in_r[1]), vandq_u32(in_r[2], in_r[3]));
+            if vminvq_u32(all_r) != 0 {
+                step_slow($t, &mut $i, &$wid, $lw, $out);
+            } else {
+                let x = $i.xi;
+                let s = context_sum($t, &$i, x);
+                let mut act = [vdupq_n_u32(0); 4];
+                for g in 0..4 {
+                    $i.run[g] = vaddq_u32($i.run[g], in_r[g]);
+                    act[g] = vmvnq_u32(in_r[g]);
+                }
+                let idx = idx_all($t, $i.k.cmapv, &$i.x, &s);
+                let e = gather_all($t, $i.dec, &idx);
+                for g in 0..4 {
+                    token_update($t, e[g], act[g], $i.w, &mut $i.wp, &mut $i.x[g]);
+                }
+                let any_nb = vandq_u32(
+                    vorrq_u32(
+                        vorrq_u32(vandq_u32(e[0], act[0]), vandq_u32(e[1], act[1])),
+                        vorrq_u32(vandq_u32(e[2], act[2]), vandq_u32(e[3], act[3])),
+                    ),
+                    vdupq_n_u32(0xF000_0000),
+                );
+                let u: [uint32x4_t; 4] = if vmaxvq_u32(any_nb) == 0 {
+                    core::array::from_fn(|g| no_extra($t, &$i.k, &mut $i.run[g], act[g], e[g]))
+                } else {
+                    core::array::from_fn(|g| {
+                        extra_phase(
+                            $t,
+                            &$i.k,
+                            $i.w,
+                            &mut $i.wp,
+                            &mut $i.x[g],
+                            &mut $i.run[g],
+                            act[g],
+                            e[g],
+                        )
+                    })
+                };
+                st16_all($t, &mut $out[x], u);
+                $i.west = u;
+                $i.xi = x + 1;
+            }
+        }
+    }};
 }
 
 /// Loads `st` into an `Inst`.
 #[rite(import_intrinsics)]
+#[inline(always)]
 fn inst<'a, 'w>(
     _t: NeonToken,
     md: &'a DecModel,
     w: &'a Words<'w>,
     st: &LaneState,
-    prev: &'a [u16],
-    cross: Option<&'a [u16]>,
+    prev: &'a [[u16; NL]],
+    cross: Option<&'a [[u16; NL]]>,
     row: usize,
 ) -> Inst<'a, 'w> {
     let mut i = Inst {
@@ -403,10 +608,15 @@ fn inst<'a, 'w>(
 
 /// Writes `st` back from an `Inst`.
 #[rite(import_intrinsics)]
+#[inline(always)]
 fn finish(t: NeonToken, i: &Inst<'_, '_>, st: &mut LaneState) {
     for g in 0..4 {
-        st4(t, &mut st.x[4 * g..], i.x[g]);
-        st4(t, &mut st.run[4 * g..], i.run[g]);
+        st4(t, (&mut st.x[4 * g..4 * g + 4]).try_into().unwrap(), i.x[g]);
+        st4(
+            t,
+            (&mut st.run[4 * g..4 * g + 4]).try_into().unwrap(),
+            i.run[g],
+        );
     }
     st.wp = i.wp;
 }
@@ -428,11 +638,22 @@ pub(crate) fn decode_row(
 ) {
     let wid: [uint32x4_t; 4] =
         core::array::from_fn(|g| vld1q_u32(widths[4 * g..4 * g + 4].try_into().unwrap()));
-    let mut i = inst(t, md, words, st, prev, cross, row);
-    while i.xi < lw {
-        step(t, &mut i, &wid, lw, out);
+    let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
+    let prev_c = if row > 0 {
+        &prev.as_chunks::<NL>().0[..lw]
+    } else {
+        &[]
+    };
+    let cross_c = cross.map(|c| &c.as_chunks::<NL>().0[..lw]);
+    let out_c = &mut out.as_chunks_mut::<NL>().0[..lw];
+    let mut a = inst(t, md, words, st, prev_c, cross_c, row);
+    while a.xi < min_w {
+        neon_step_inw!(t, a, wid, lw, out_c);
     }
-    finish(t, &i, st);
+    while a.xi < lw {
+        step_slow(t, &mut a, &wid, lw, out_c);
+    }
+    finish(t, &a, st);
 }
 
 /// Two independent row decodes stepped together: their dependency chains
@@ -453,19 +674,40 @@ pub(crate) fn decode_row2(
 ) {
     let wid: [uint32x4_t; 4] =
         core::array::from_fn(|g| vld1q_u32(widths[4 * g..4 * g + 4].try_into().unwrap()));
+    let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
     let [sa, sb] = st;
     let [oa, ob] = out;
-    let mut a = inst(t, md[0], words[0], sa, prev[0], cross[0], rows[0]);
-    let mut b = inst(t, md[1], words[1], sb, prev[1], cross[1], rows[1]);
-    while a.xi < lw && b.xi < lw {
-        step(t, &mut a, &wid, lw, oa);
-        step(t, &mut b, &wid, lw, ob);
+    let pa_c = if rows[0] > 0 {
+        &prev[0].as_chunks::<NL>().0[..lw]
+    } else {
+        &[]
+    };
+    let pb_c = if rows[1] > 0 {
+        &prev[1].as_chunks::<NL>().0[..lw]
+    } else {
+        &[]
+    };
+    let ca_c = cross[0].map(|c| &c.as_chunks::<NL>().0[..lw]);
+    let cb_c = cross[1].map(|c| &c.as_chunks::<NL>().0[..lw]);
+    let oa_c = &mut oa.as_chunks_mut::<NL>().0[..lw];
+    let ob_c = &mut ob.as_chunks_mut::<NL>().0[..lw];
+    let mut a = inst(t, md[0], words[0], sa, pa_c, ca_c, rows[0]);
+    let mut b = inst(t, md[1], words[1], sb, pb_c, cb_c, rows[1]);
+    while a.xi < min_w && b.xi < min_w {
+        neon_step_inw!(t, a, wid, lw, oa_c);
+        neon_step_inw!(t, b, wid, lw, ob_c);
+    }
+    while a.xi < min_w {
+        neon_step_inw!(t, a, wid, lw, oa_c);
+    }
+    while b.xi < min_w {
+        neon_step_inw!(t, b, wid, lw, ob_c);
     }
     while a.xi < lw {
-        step(t, &mut a, &wid, lw, oa);
+        step_slow(t, &mut a, &wid, lw, oa_c);
     }
     while b.xi < lw {
-        step(t, &mut b, &wid, lw, ob);
+        step_slow(t, &mut b, &wid, lw, ob_c);
     }
     finish(t, &a, sa);
     finish(t, &b, sb);
@@ -489,24 +731,55 @@ pub(crate) fn decode_row3(
 ) {
     let wid: [uint32x4_t; 4] =
         core::array::from_fn(|g| vld1q_u32(widths[4 * g..4 * g + 4].try_into().unwrap()));
+    let min_w = widths.iter().copied().min().unwrap_or(0) as usize;
     let [sa, sb, sc] = st;
     let [oa, ob, oc] = out;
-    let mut a = inst(t, md[0], words[0], sa, prev[0], cross[0], rows[0]);
-    let mut b = inst(t, md[1], words[1], sb, prev[1], cross[1], rows[1]);
-    let mut c = inst(t, md[2], words[2], sc, prev[2], cross[2], rows[2]);
-    while a.xi < lw && b.xi < lw && c.xi < lw {
-        step(t, &mut a, &wid, lw, oa);
-        step(t, &mut b, &wid, lw, ob);
-        step(t, &mut c, &wid, lw, oc);
+    let pa_c = if rows[0] > 0 {
+        &prev[0].as_chunks::<NL>().0[..lw]
+    } else {
+        &[]
+    };
+    let pb_c = if rows[1] > 0 {
+        &prev[1].as_chunks::<NL>().0[..lw]
+    } else {
+        &[]
+    };
+    let pc_c = if rows[2] > 0 {
+        &prev[2].as_chunks::<NL>().0[..lw]
+    } else {
+        &[]
+    };
+    let ca_c = cross[0].map(|c| &c.as_chunks::<NL>().0[..lw]);
+    let cb_c = cross[1].map(|c| &c.as_chunks::<NL>().0[..lw]);
+    let cc_c = cross[2].map(|c| &c.as_chunks::<NL>().0[..lw]);
+    let oa_c = &mut oa.as_chunks_mut::<NL>().0[..lw];
+    let ob_c = &mut ob.as_chunks_mut::<NL>().0[..lw];
+    let oc_c = &mut oc.as_chunks_mut::<NL>().0[..lw];
+    let mut a = inst(t, md[0], words[0], sa, pa_c, ca_c, rows[0]);
+    let mut b = inst(t, md[1], words[1], sb, pb_c, cb_c, rows[1]);
+    let mut c = inst(t, md[2], words[2], sc, pc_c, cc_c, rows[2]);
+    while a.xi < min_w && b.xi < min_w && c.xi < min_w {
+        neon_step_inw!(t, a, wid, lw, oa_c);
+        neon_step_inw!(t, b, wid, lw, ob_c);
+        neon_step_inw!(t, c, wid, lw, oc_c);
+    }
+    while a.xi < min_w {
+        neon_step_inw!(t, a, wid, lw, oa_c);
+    }
+    while b.xi < min_w {
+        neon_step_inw!(t, b, wid, lw, ob_c);
+    }
+    while c.xi < min_w {
+        neon_step_inw!(t, c, wid, lw, oc_c);
     }
     while a.xi < lw {
-        step(t, &mut a, &wid, lw, oa);
+        step_slow(t, &mut a, &wid, lw, oa_c);
     }
     while b.xi < lw {
-        step(t, &mut b, &wid, lw, ob);
+        step_slow(t, &mut b, &wid, lw, ob_c);
     }
     while c.xi < lw {
-        step(t, &mut c, &wid, lw, oc);
+        step_slow(t, &mut c, &wid, lw, oc_c);
     }
     finish(t, &a, sa);
     finish(t, &b, sb);

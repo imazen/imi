@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- Enforce checked V4 coding profiles (`v4::CodingProfile`: `narrow-still`,
+  `fixed-8x8-photo`, `exact-numeric`, `complete-v4`) across native slice,
+  indexed ROI, caller-fed, plane-tile, `validate --v4-profile`, and browser
+  Explorer (`RangePyramid.openProfile`) decoders, and add the
+  `ImiEncoderConfig::lossy_fixed_8x8_photo` writer preset.
+- Upgrade the lossy encoder with surrounding-block adaptive RDO (merged-block AC
+  trellis, 9-context partition-map Viterbi DP, empirical two-pass pilot table
+  learning, and open-loop + closed-loop perceptual/seam lambda AQ), centralize
+  the lossy effort ladder (`effort.rs` `LossyEffortPlan` with smooth `7.5 / 9.0
+  / 9.5 / 10.0` rungs), fix `DecodeSpeed::Compact` disabling superblocks at
+  `effort >= 9.0`, parallelize adaptive RDO with byte-exact `1T == 4T == 8T`
+  determinism and fallible allocations, eliminate whole-image `StripeCoefs`
+  clones, and stream the full adaptive RDO pipeline in bounded memory.
+- Add per-lane adaptive pixel-color lossless coding (`decor = 4`, feature bit 32
+  `adaptive_color`), fitting per-lane `(gr, gb, rb)` lifting weights in integer
+  arithmetic with fused zero-allocation 4-ISA SIMD row writers (AVX-512, AVX2,
+  NEON, and Wasm SIMD128) and independent `imij-oracle` conformance. Enable at
+  effort >= 7.0 (`-2.72%` across the 32-image lossless corpus, `-7.10%` on
+  screenshots).
+- Optimize lossless rANS decode, spatial reconstruction, and 8-bit row transpose
+  / interleave across x86_64 (AVX-512 / AVX2), ARM64 NEON, and WebAssembly
+  SIMD128 (`transpose16_u8` + compact Wasm codegen), speeding up native and Wasm
+  lossless decoding while shrinking both Full and Explorer Wasm bundles.
+
 - Upgrade `archmage` and `magetypes` requirements to `0.9.33`, migrate
   `imij-bench` `mul_add` calls to `mul_add_relaxed`, and pass
   `CROSS_CONTAINER_OPTS: --security-opt seccomp=unconfined` on the `i686` CI

@@ -51,8 +51,8 @@ fn low_effort_matches_qualified_masks_and_retains_higher_efforts() {
             (2.5, 0x09, 0x02),
             (4.9, 0x0b, 0x03),
             (5.0, 0x0f, 0x03),
-            (7.5, 0x1f, 0x07),
-            (10.0, 0x7f, 0x0f),
+            (7.5, 0x1f, 0x17),
+            (10.0, 0x7f, 0x1f),
         ] {
             let cfg = {
                 let mut cfg = imij::ImiEncoderConfig::default();
