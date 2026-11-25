@@ -65,8 +65,10 @@ fn ac_control_matches_bounded_and_region_routes() {
                 let cfg = config(40., color, entropy)
                     .with_ac_scale(scale)
                     .with_column_groups(Some(32));
+                // `stream_encode::encode_lossy_bounded` emits V3, so compare
+                // 0-bit exact against `encode_legacy_samples`.
                 let whole = cfg
-                    .encode_samples(ImageRef::new(&px, stride, &info), &Metadata::default())
+                    .encode_legacy_samples(ImageRef::new(&px, stride, &info), &Metadata::default())
                     .unwrap();
                 let want = imij::decode(&whole).unwrap().1;
                 let (out, _, _) = encode_lossy_bounded(

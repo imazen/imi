@@ -260,13 +260,118 @@ mod tests {
         let limits = limits.with_v4_profile(CodingProfile::Complete);
         let mut reader = PlaneSetReader::open(SliceReader::new(&combined), limits).unwrap();
         reader.decode_region(plane, 0, rect, &mut out, 8).unwrap();
-        for (y, row) in out.chunks_exact(8).enumerate() {
+        for (y, row) in out.as_chunks::<8>().0.iter().enumerate() {
             assert!(
                 row.iter()
                     .zip(&pixels[y * info.row_bytes()..])
                     .all(|(&a, &b)| a.abs_diff(b) <= 3)
             );
         }
+    }
+
+    #[test]
+    fn adaptive_color_and_compact_superblocks_respect_profiles() {
+        // 1. PR #99 adaptive_color (feature 32) is exact 8-bit lossless RGB:
+        //    accepted by NarrowStill, ExactNumeric, and Complete; rejected by Fixed8x8Photo.
+        let (w, h) = (160u32, 128u32);
+        let info = ImageInfo::new(w, h, Channels::Rgb, SampleType::U8);
+        let mut pixels = Vec::with_capacity(info.checked_buffer_len().unwrap());
+        for y in 0..h {
+            for x in 0..w {
+                let g = (((x * 3 + y * 5 + ((x ^ y) & 15)) & 0xFF) as u8)
+                    .wrapping_add(((x.wrapping_mul(17) ^ y.wrapping_mul(31)) & 7) as u8);
+                let gs = g as i32 - 128;
+                let r = (128 + ((48 * gs) >> 5) + ((x + y) & 3) as i32 - 1).clamp(0, 255) as u8;
+                let rs = r as i32 - 128;
+                let b = (128 + ((8 * gs + 24 * rs) >> 5) + ((x ^ y) & 3) as i32 - 1).clamp(0, 255)
+                    as u8;
+                pixels.extend_from_slice(&[r, g, b]);
+            }
+        }
+        let adapt_cfg = ImiEncoderConfig::lossless()
+            .with_effort(10.0)
+            .tune_lossless(|t| {
+                t.decor_mask = 1 << 4;
+                t.palette = false;
+            });
+        let adapt_file = encode(&info, &pixels, &adapt_cfg);
+        assert!(
+            crate::header(&adapt_file)
+                .unwrap()
+                .features
+                .contains(crate::Feature::AdaptiveColor)
+        );
+        assert_eq!(
+            decode(&adapt_file, CodingProfile::NarrowStill).unwrap().1,
+            pixels
+        );
+        assert_eq!(
+            decode(&adapt_file, CodingProfile::ExactNumeric).unwrap().1,
+            pixels
+        );
+        assert!(matches!(
+            decode(&adapt_file, CodingProfile::Fixed8x8Photo),
+            Err(Error::Unsupported(_))
+        ));
+
+        // 2. PR #100 DecodeSpeed::Compact at effort >= 9.0 emits superblocks and
+        //    4x4 splits: accepted by NarrowStill and Complete, rejected by Fixed8x8Photo.
+        let mut mixed = vec![0u8; info.checked_buffer_len().unwrap()];
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let i = (y * w as usize + x) * 3;
+                if y < 64 {
+                    mixed[i] = (40 + x) as u8;
+                    mixed[i + 1] = (90 + y) as u8;
+                    mixed[i + 2] = 170;
+                } else {
+                    let stripe = if ((x + y) / 2) % 2 == 0 { 230 } else { 30 };
+                    mixed[i] = stripe;
+                    mixed[i + 1] = (stripe ^ 0x24).wrapping_add((x & 7) as u8);
+                    mixed[i + 2] = 255 - stripe;
+                }
+            }
+        }
+        let compact_cfg = ImiEncoderConfig::lossy(70.0)
+            .with_decode_speed(crate::DecodeSpeed::Compact)
+            .with_effort(9.0);
+        let compact_file = encode(&info, &mixed, &compact_cfg);
+        let (_, expected) = crate::decode(&compact_file).unwrap();
+        assert_eq!(
+            decode(&compact_file, CodingProfile::NarrowStill).unwrap().1,
+            expected
+        );
+        assert_eq!(
+            decode(&compact_file, CodingProfile::Complete).unwrap().1,
+            expected
+        );
+        let refusal = Error::Unsupported("adaptive transforms outside V4 fixed-photo profile");
+        assert_eq!(
+            decode(&compact_file, CodingProfile::Fixed8x8Photo).unwrap_err(),
+            refusal
+        );
+        assert_eq!(
+            crop(&compact_file, CodingProfile::Fixed8x8Photo).unwrap_err(),
+            refusal
+        );
+        let fixed_policy = DecodePolicy::default().with_v4_profile(CodingProfile::Fixed8x8Photo);
+        assert_eq!(
+            super::super::feed_tests::feed_with_policy(&compact_file, 251, fixed_policy)
+                .unwrap_err(),
+            refusal
+        );
+
+        // 3. The fixed-photo preset stays within Fixed8x8Photo even at effort 10.0.
+        let fixed_e10 = encode(
+            &info,
+            &mixed,
+            &ImiEncoderConfig::lossy_fixed_8x8_photo(70.0).with_effort(10.0),
+        );
+        let (_, fixed_px) = crate::decode(&fixed_e10).unwrap();
+        assert_eq!(
+            decode(&fixed_e10, CodingProfile::Fixed8x8Photo).unwrap().1,
+            fixed_px
+        );
     }
 
     #[cfg(feature = "extended")]
