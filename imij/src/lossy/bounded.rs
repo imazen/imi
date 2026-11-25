@@ -69,6 +69,8 @@ struct Plan {
     inv_steps: [[f32; 64]; 3],
     /// The AC trellis this effort runs (XYB only, as `finish_lossy_frame`).
     trellis: Option<trellis::LossyTrellis>,
+    /// Centralized lossy effort plan (`effort.rs`).
+    plan: crate::effort::LossyEffortPlan,
     cm: [[f32; 8]; 8],
     round: f32,
     dc_fix: bool,
@@ -259,14 +261,16 @@ fn prepare_plan(info: &ImageInfo, cfg: &LossyConfig) -> Result<NativePreparation
     if !quantizer_scale.is_finite() {
         return Err(Error::InvalidInput("invalid lossy numeric parameter"));
     }
-    // Superblock merges (Compact): eligible as in `encode_lossy_frame`, where
-    // the effort's trellis (any color) excludes them.
+    // Centralized lossy effort policy: superblocks and 4x4 adaptive partitions
+    // stay eligible alongside the AC trellis for `DecodeSpeed::Compact` and
+    // `adaptive_partitions`, matching `encode_lossy_frame`.
     // Channel layouts turn the trellis, merges, small transforms and exact
     // blocks off, as there.
-    let effort_trellis = trellis::for_effort(effort)
+    let effort_plan = effort.lossy_plan(adaptive_mode(cfg));
+    let effort_trellis = trellis::for_effort_plan(effort_plan)
         .filter(|t| quantizer_scale >= t.min_quality)
         .filter(|_| full_layouts);
-    let sb_eligible = effort_trellis.is_none()
+    let sb_eligible = (effort_trellis.is_none() || adaptive_enabled(cfg))
         && full_layouts
         && (cfg.decode_speed.is_some()
             || matches!(cfg.entropy, LossyEntropy::RunLevel | LossyEntropy::SplitHuf));
@@ -275,13 +279,15 @@ fn prepare_plan(info: &ImageInfo, cfg: &LossyConfig) -> Result<NativePreparation
     let small = small_on(
         cfg,
         info,
+        effort,
         full_layouts
             && (cfg.decode_speed.is_some()
                 || matches!(cfg.entropy, LossyEntropy::RunLevel | LossyEntropy::SplitHuf)),
     );
+    let trellis = effort_trellis.filter(|_| color == LossyColor::Xyb);
     let merges = (sb_on || small).then(|| superblock::select::Opts {
         merges: sb_on,
-        trellis: false,
+        trellis: trellis.is_some(),
         #[cfg(feature = "lab")]
         shapes: cfg.lab.superblock_shapes.unwrap_or(7),
         #[cfg(not(feature = "lab"))]
@@ -293,10 +299,10 @@ fn prepare_plan(info: &ImageInfo, cfg: &LossyConfig) -> Result<NativePreparation
                 Some(crate::DecodeSpeed::Fast | crate::DecodeSpeed::Fastest)
             ),
         forward: small::forward,
-        kappa: SMALL_KAPPA,
+        kappa: effort_plan.small_kappa,
         edge: SMALL_EDGE,
+        rdo: effort_plan,
     });
-    let trellis = effort_trellis.filter(|_| color == LossyColor::Xyb);
     if trellis.is_some()
         && (info.width as usize).saturating_mul(info.height as usize) <= SMALL_IMAGE
     {
@@ -359,6 +365,7 @@ fn prepare_plan(info: &ImageInfo, cfg: &LossyConfig) -> Result<NativePreparation
         steps,
         inv_steps: steps.map(|st| st.map(|v| 1.0 / v)),
         trellis,
+        plan: effort_plan,
         cm: dct::dct_matrix(),
         round: cfg.round.clamp(0.0, 0.5),
         dc_fix,
@@ -432,10 +439,22 @@ impl Plan {
         self.work < self.dc_rows
     }
 
+    /// Whether this plan runs the streaming open-loop trellis-lambda AQ model.
+    fn needs_open_lambda(&self) -> bool {
+        self.plan.lambda_aq_open != 0.0 && (self.merges.is_some() || self.trellis.is_some())
+    }
+
+    /// Whether this plan runs closed-loop seam residual feedback between
+    /// trellis pass 0 and pass 1.
+    fn needs_closed_lambda(&self) -> bool {
+        self.plan.lambda_aq_closed_loop != 0.0 && self.trellis.is_some_and(|t| t.passes >= 2)
+    }
+
     /// Source passes an encode of this plan reads, `(min, max)`, as `pass1`
     /// and `pass2` run them; content decides between the two. Always:
-    /// statistics (1) and coding (2), plus exact-block prices (0) and
-    /// superblock prices (4) when planned. The nested pass (3) always runs
+    /// statistics (1) and coding (2), plus exact-block prices (0),
+    /// superblock/open-loop prices (4), and optional two-pass pilot passes
+    /// (5, 6) when planned. The nested pass (3) always runs
     /// when DC stripes span several work bands; otherwise it runs only when
     /// pass 0's prices select exact blocks. The trellis rate-model passes
     /// (10 + k) depend on pass 1's statistics only when a decode speed whose
@@ -448,6 +467,14 @@ impl Plan {
             always += 1;
         }
         if self.merges.is_some() {
+            always += 1;
+            if self.plan.two_pass_pilot {
+                always += 1;
+                if self.trellis.is_some() {
+                    always += 1;
+                }
+            }
+        } else if self.needs_open_lambda() {
             always += 1;
         }
         if self.split_dc() {
@@ -695,7 +722,9 @@ impl Plan {
 
     /// Applies trellis `passes` in order to one stripe's units (its column
     /// groups), recomputing rows from `band`; the last pass emits its
-    /// split-Huffman frequencies into `freqs`.
+    /// split-Huffman frequencies into `freqs`, and pass 0 optionally feeds
+    /// `closed_stream` before restoring exact-block wire codes.
+    #[allow(clippy::too_many_arguments)]
     fn rewrite(
         &self,
         cfg: &LossyConfig,
@@ -703,7 +732,11 @@ impl Plan {
         units: &mut [StripeCoefs],
         band: &[u8],
         y0: usize,
+        open_lambda: &[f32],
+        closed_lambda: &[f32],
+        lambda_by0: usize,
         mut freqs: Option<&mut trellis::Freqs>,
+        closed_stream: Option<&mut adaptive_rdo::ClosedLoopLambdaStream>,
         stop: &dyn how_far::Stop,
     ) -> Result<(), Error> {
         let Some(set) = &self.trellis else {
@@ -721,7 +754,12 @@ impl Plan {
         }
         let last = passes.len().saturating_sub(1);
         for (k, pass) in passes.iter().enumerate() {
-            trellis::rewrite_stripe(
+            let lmap = if k == 0 || closed_lambda.is_empty() {
+                open_lambda
+            } else {
+                closed_lambda
+            };
+            trellis::rewrite_stripe_lambda(
                 pass,
                 units,
                 &rows,
@@ -732,6 +770,9 @@ impl Plan {
                 cfg,
                 set,
                 &[],
+                lmap,
+                lambda_by0,
+                self.plan.merged_trellis,
                 None,
                 k,
                 if k == last {
@@ -742,6 +783,18 @@ impl Plan {
                 stop,
             )?;
         }
+        if let Some(stream) = closed_stream {
+            let st = adaptive_rdo::closed_loop_stripe_errors(
+                stream.ctx(),
+                units,
+                &rows,
+                self.pw,
+                self.g.bw,
+                self.gcols / 8,
+                stop,
+            )?;
+            stream.push_stripe(st)?;
+        }
         for u in units.iter_mut() {
             for code in &mut u.aq {
                 *code = u8::from(*code == 0);
@@ -750,18 +803,20 @@ impl Plan {
         Ok(())
     }
 
-    /// Superblock merges of `stripes` (from `band`, rows `y0..`) under
-    /// `sel`'s prices, as `encode_lossy_frame` applies them after marking
-    /// exact blocks: exact parents take block code 0 (never merged) for the
-    /// choice and get their codes back after it.
-    fn merge(
+    /// Superblock merges of `stripes` leaving `sc.aq` in internal selector /
+    /// trellis form (`64 = ordinary, 0 = exact/keep`).
+    #[allow(clippy::too_many_arguments)]
+    fn merge_internal(
         &self,
         sel: &superblock::select::Selector,
         mut stripes: Vec<StripeCoefs>,
         band: &[u8],
         y0: usize,
+        open_lambda: &[f32],
+        lambda_by0: usize,
         threads: usize,
-    ) -> Vec<StripeCoefs> {
+        stop: &dyn how_far::Stop,
+    ) -> Result<Vec<StripeCoefs>, Error> {
         let rows = |by: usize, planes: &mut [f32], extremes: &mut Vec<(u64, bool)>| {
             self.fill_block_row(band, y0, by, planes, extremes)
         };
@@ -770,13 +825,45 @@ impl Plan {
                 *code = if *code == 0 { 64 } else { 0 };
             }
         }
-        let mut stripes = crate::par::par_map(stripes, threads, |_, sc| sel.stripe(sc, &rows));
+        crate::par::par_map(stripes, threads, |_, sc| {
+            sel.stripe_with_lambda(sc, &rows, open_lambda, lambda_by0, stop)
+        })
+        .into_iter()
+        .collect()
+    }
+
+    /// Superblock merges of `stripes` (from `band`, rows `y0..`) under
+    /// `sel`'s prices, as `encode_lossy_frame` applies them after marking
+    /// exact blocks: exact parents take block code 0 (never merged) for the
+    /// choice and get their codes back after it.
+    #[allow(clippy::too_many_arguments)]
+    fn merge(
+        &self,
+        sel: &superblock::select::Selector,
+        stripes: Vec<StripeCoefs>,
+        band: &[u8],
+        y0: usize,
+        open_lambda: &[f32],
+        lambda_by0: usize,
+        threads: usize,
+        stop: &dyn how_far::Stop,
+    ) -> Result<Vec<StripeCoefs>, Error> {
+        let mut stripes = self.merge_internal(
+            sel,
+            stripes,
+            band,
+            y0,
+            open_lambda,
+            lambda_by0,
+            threads,
+            stop,
+        )?;
         for sc in &mut stripes {
             for code in &mut sc.aq {
                 *code = u8::from(*code == 0);
             }
         }
-        stripes
+        Ok(stripes)
     }
 
     /// The full-width stripes of band `[by0, by1)` from `band` (rows `y0..`).
@@ -1115,6 +1202,11 @@ struct Prepared {
     /// Superblock merges or small transforms: the selector, and what it
     /// chose anywhere (then every AC record carries its unit's map).
     merges: Option<(superblock::select::Selector, Maps)>,
+    /// Compact streaming open-loop trellis-lambda AQ model (`n_bands * bw * 4 B`).
+    open_lambda: Option<adaptive_rdo::OpenLoopLambdaModel>,
+    /// Compact streaming closed-loop seam residual feedback model
+    /// (`<= 2 MiB` exact `f64` up to 16 MPx, `1 B/block` quantized `u8` above).
+    closed_lambda: Option<adaptive_rdo::ClosedLoopLambdaModel>,
 }
 
 /// What the selector chose anywhere in the image.
@@ -1307,25 +1399,124 @@ fn code_exact(
     Ok(())
 }
 
+/// Helper: fills `out` with the current band's open-loop lambda multipliers
+/// from `model`/`cursor` (no-op when `model` is `None`).
+#[allow(clippy::too_many_arguments)]
+fn fill_band_open_lambda(
+    p: &Plan,
+    model: Option<&adaptive_rdo::OpenLoopLambdaModel>,
+    cursor: &mut Option<adaptive_rdo::OpenLoopBandCursor>,
+    band: &[u8],
+    y0: usize,
+    by0: usize,
+    by1: usize,
+    out: &mut Vec<f32>,
+) -> Result<(), Error> {
+    out.clear();
+    if let (Some(m), Some(c)) = (model, cursor.as_mut()) {
+        let rows = |by: usize, planes: &mut [f32], extremes: &mut Vec<(u64, bool)>| {
+            p.fill_block_row(band, y0, by, planes, extremes)
+        };
+        m.fill_band(c, by0, by1, &rows, p.pw, &p.steps, out)?;
+    }
+    Ok(())
+}
+
+/// Pass 5 (when `p.merges.is_none()` and `p.needs_open_lambda()`): streams
+/// the 3-row sliding-window open-loop trellis-lambda AQ model in `O(width)` RAM.
+async fn measure_open_lambda<I: PassIo>(
+    p: &Plan,
+    io: &mut I,
+) -> Result<adaptive_rdo::OpenLoopLambdaModel, Error> {
+    let mut stream = adaptive_rdo::OpenLoopLambdaStream::new(
+        p.g.bw,
+        p.g.bh,
+        p.work,
+        &p.steps,
+        p.plan.lambda_aq_open,
+    )?;
+    let plane_len = NCH
+        .checked_mul(8)
+        .and_then(|v| v.checked_mul(p.pw))
+        .ok_or(Error::TooLarge)?;
+    let mut planes = adaptive_rdo::try_vec(plane_len, 0.0f32)?;
+    let mut extremes = adaptive_rdo::try_vec_cap(p.g.bw)?;
+    let mut band = Vec::new();
+    for (by0, by1) in p.bands() {
+        let y0 = io.rows(5, by0, by1, &mut band).await?;
+        for by in by0..by1 {
+            io.stop().check().map_err(|_| Error::Cancelled)?;
+            extremes.clear();
+            p.fill_block_row(&band, y0, by, &mut planes, &mut extremes);
+            stream.push_row(by, &planes, p.pw, &p.steps);
+        }
+    }
+    stream.finish()
+}
+
 /// Pass 4: the superblock selector's prices from the units' token counts
 /// before any merge (exact blocks marked), as `superblock::select::apply`
-/// derives them from the whole image's units.
+/// derives them from the whole image's units. When open-loop lambda AQ is
+/// planned, also streams `OpenLoopLambdaStream` in the same pass (zero extra
+/// source pass). When `p.plan.two_pass_pilot` is active, runs streaming pilot
+/// passes 5 (and 6 when trellis runs) to learn empirical partition-map, 4x4
+/// flag, and post-trellis token tables in fixed ~25 KiB RAM.
 async fn merge_prices<I: PassIo>(
     p: &Plan,
     cfg: &LossyConfig,
     opts: superblock::select::Opts,
     sel: &mut Option<Select>,
     io: &mut I,
-) -> Result<superblock::select::Selector, Error> {
+) -> Result<
+    (
+        superblock::select::Selector,
+        Option<adaptive_rdo::OpenLoopLambdaModel>,
+    ),
+    Error,
+> {
     let effort = crate::effort::Effort::new(cfg.effort)?;
-    let mut rl = vec![0u64; LossyEntropy::RunLevel.nraw() * coef::ALPHA];
+    let rl_len = LossyEntropy::RunLevel.nraw() * coef::ALPHA;
+    let mut rl = vec![0u64; rl_len];
     let mut freqs = trellis::freqs_new();
     let mut band = Vec::new();
+    let mut open_stream = if p.needs_open_lambda() {
+        Some(adaptive_rdo::OpenLoopLambdaStream::new(
+            p.g.bw,
+            p.g.bh,
+            p.work,
+            &p.steps,
+            p.plan.lambda_aq_open,
+        )?)
+    } else {
+        None
+    };
+    let mut open_planes = if open_stream.is_some() {
+        let plane_len = NCH
+            .checked_mul(8)
+            .and_then(|v| v.checked_mul(p.pw))
+            .ok_or(Error::TooLarge)?;
+        adaptive_rdo::try_vec(plane_len, 0.0f32)?
+    } else {
+        Vec::new()
+    };
+    let mut open_extremes = if open_stream.is_some() {
+        adaptive_rdo::try_vec_cap(p.g.bw)?
+    } else {
+        Vec::new()
+    };
     if let Some(sel) = sel {
         sel.begin();
     }
     for (by0, by1) in p.bands() {
         let y0 = io.rows(4, by0, by1, &mut band).await?;
+        if let Some(stream) = &mut open_stream {
+            for by in by0..by1 {
+                io.stop().check().map_err(|_| Error::Cancelled)?;
+                open_extremes.clear();
+                p.fill_block_row(&band, y0, by, &mut open_planes, &mut open_extremes);
+                stream.push_row(by, &open_planes, p.pw, &p.steps);
+            }
+        }
         let mut stripes = p.band_stripes(&band, y0, by0, by1);
         if let Some(sel) = sel {
             sel.band(p, &mut stripes, &band, y0, by0, by1, cfg.threads);
@@ -1351,7 +1542,33 @@ async fn merge_prices<I: PassIo>(
             }
         }
     }
-    Ok(superblock::select::Selector::from_counts(
+    let open_model = match open_stream {
+        Some(s) => Some(s.finish()?),
+        None => None,
+    };
+    if !p.plan.two_pass_pilot {
+        return Ok((
+            superblock::select::Selector::from_counts(
+                &rl,
+                &freqs,
+                p.pw,
+                p.gcols / 8,
+                &p.steps,
+                p.round,
+                cfg,
+                effort,
+                opts,
+            ),
+            open_model,
+        ));
+    }
+
+    // Streaming two-pass pilot (M3): Pass 5 gathers empirical map/flag tables
+    // and post-selection histograms; Pass 6 (when trellis runs) gathers
+    // post-1-pass-trellis token histograms; both hold only ~25 KiB retained state.
+    let mut pilot_opts = opts;
+    pilot_opts.rdo.trellis_select = false;
+    let pilot_sel = superblock::select::Selector::from_counts(
         &rl,
         &freqs,
         p.pw,
@@ -1360,7 +1577,195 @@ async fn merge_prices<I: PassIo>(
         p.round,
         cfg,
         effort,
-        opts,
+        pilot_opts,
+    );
+    let pilot_huf_model = opts.split_huf && trellis::huf_rate(cfg);
+    let want_pilot_huf = if p.trellis.is_some() {
+        pilot_huf_model
+    } else {
+        opts.split_huf
+    };
+    let mut map_stats = adaptive_rdo::MapBitStats::default();
+    let mut flag_stats = adaptive_rdo::FlagStats::default();
+    let mut pilot_rl = if want_pilot_huf {
+        Vec::new()
+    } else {
+        vec![0u64; rl_len]
+    };
+    let mut pilot_freqs = if want_pilot_huf {
+        trellis::freqs_new()
+    } else {
+        [Vec::new(), Vec::new(), Vec::new()]
+    };
+    let mut open_cursor = open_model.as_ref().map(|m| m.cursor(p.pw)).transpose()?;
+    let mut band_open_lambda = Vec::new();
+    if let Some(sel) = sel {
+        sel.begin();
+    }
+    for (by0, by1) in p.bands() {
+        let y0 = io.rows(5, by0, by1, &mut band).await?;
+        fill_band_open_lambda(
+            p,
+            open_model.as_ref(),
+            &mut open_cursor,
+            &band,
+            y0,
+            by0,
+            by1,
+            &mut band_open_lambda,
+        )?;
+        let mut stripes = p.band_stripes(&band, y0, by0, by1);
+        if let Some(sel) = sel {
+            sel.band(p, &mut stripes, &band, y0, by0, by1, cfg.threads);
+        }
+        let selected = p.merge_internal(
+            &pilot_sel,
+            stripes,
+            &band,
+            y0,
+            &band_open_lambda,
+            by0,
+            cfg.threads,
+            io.stop(),
+        )?;
+        for sc in selected {
+            map_stats.add_stripe(&sc, p.gcols / 8)?;
+            if opts.small.is_some() {
+                flag_stats.add_stripe(&sc);
+            }
+            for u in p.units(sc) {
+                if want_pilot_huf {
+                    let (counts, widths) = stripe_counts_widths(&u, u.bw);
+                    let syms = huf::stripe_syms(&counts, &widths, u.nby * u.bw);
+                    let [luma, chroma, wid] = &mut pilot_freqs;
+                    for (h, symbols) in
+                        [(luma, &syms.luma), (chroma, &syms.chroma), (wid, &syms.wid)]
+                    {
+                        for &(ctx, sym) in symbols {
+                            h[ctx as usize][sym as usize] += 1;
+                        }
+                    }
+                } else {
+                    stripe_tokens(&u, u.bw, Group::ALL, |_, ctx, tok, _, _| {
+                        pilot_rl[ctx * coef::ALPHA + tok as usize] += 1;
+                    });
+                }
+            }
+        }
+    }
+    let learned_map = map_stats.into_table();
+    let learned_flags = opts.small.is_some().then(|| flag_stats.into_flags());
+
+    let (final_rl, final_freqs) = if let Some(mut t_set) = p.trellis {
+        t_set.passes = 1;
+        let pilot_pass = if pilot_huf_model {
+            trellis::Pass::split_huf(&pilot_freqs, &t_set, cfg, effort)
+        } else {
+            trellis::Pass::run_level(&pilot_rl, &t_set, cfg, effort)
+        };
+        let mut learned_rl = if opts.split_huf {
+            Vec::new()
+        } else {
+            vec![0u64; rl_len]
+        };
+        let mut learned_freqs = if opts.split_huf {
+            trellis::freqs_new()
+        } else {
+            [Vec::new(), Vec::new(), Vec::new()]
+        };
+        if let Some(sel) = sel {
+            sel.begin();
+        }
+        for (by0, by1) in p.bands() {
+            let y0 = io.rows(6, by0, by1, &mut band).await?;
+            fill_band_open_lambda(
+                p,
+                open_model.as_ref(),
+                &mut open_cursor,
+                &band,
+                y0,
+                by0,
+                by1,
+                &mut band_open_lambda,
+            )?;
+            let mut stripes = p.band_stripes(&band, y0, by0, by1);
+            if let Some(sel) = sel {
+                sel.band(p, &mut stripes, &band, y0, by0, by1, cfg.threads);
+            }
+            let selected = p.merge_internal(
+                &pilot_sel,
+                stripes,
+                &band,
+                y0,
+                &band_open_lambda,
+                by0,
+                cfg.threads,
+                io.stop(),
+            )?;
+            let rows = |by: usize, planes: &mut [f32], extremes: &mut Vec<(u64, bool)>| {
+                p.fill_block_row(&band, y0, by, planes, extremes)
+            };
+            for sc in selected {
+                let mut units = p.units(sc);
+                trellis::rewrite_stripe_lambda(
+                    &pilot_pass,
+                    &mut units,
+                    &rows,
+                    p.pw,
+                    p.g.bw,
+                    p.gcols / 8,
+                    &p.steps,
+                    cfg,
+                    &t_set,
+                    &[],
+                    &band_open_lambda,
+                    by0,
+                    p.plan.merged_trellis,
+                    None,
+                    0,
+                    None,
+                    io.stop(),
+                )?;
+                for u in &units {
+                    if opts.split_huf {
+                        let (counts, widths) = stripe_counts_widths(u, u.bw);
+                        let syms = huf::stripe_syms(&counts, &widths, u.nby * u.bw);
+                        let [luma, chroma, wid] = &mut learned_freqs;
+                        for (h, symbols) in
+                            [(luma, &syms.luma), (chroma, &syms.chroma), (wid, &syms.wid)]
+                        {
+                            for &(ctx, sym) in symbols {
+                                h[ctx as usize][sym as usize] += 1;
+                            }
+                        }
+                    } else {
+                        stripe_tokens(u, u.bw, Group::ALL, |_, ctx, tok, _, _| {
+                            learned_rl[ctx * coef::ALPHA + tok as usize] += 1;
+                        });
+                    }
+                }
+            }
+        }
+        (learned_rl, learned_freqs)
+    } else {
+        (pilot_rl, pilot_freqs)
+    };
+
+    Ok((
+        superblock::select::Selector::from_counts_learned(
+            &final_rl,
+            &final_freqs,
+            p.pw,
+            p.gcols / 8,
+            &p.steps,
+            p.round,
+            cfg,
+            effort,
+            opts,
+            Some(learned_map),
+            learned_flags,
+        ),
+        open_model,
     ))
 }
 
@@ -1375,10 +1780,16 @@ async fn pass1<I: PassIo>(p: &Plan, cfg: &LossyConfig, io: &mut I) -> Result<Pre
         Some(pol) => Some(Select::measure(p, pol, cfg.threads, io).await?),
         None => None,
     };
-    let merge_sel = match p.merges {
-        Some(opts) => Some(merge_prices(p, cfg, opts, &mut sel, io).await?),
-        None => None,
+    let (merge_sel, open_lambda) = match p.merges {
+        Some(opts) => {
+            let (ms, ol) = merge_prices(p, cfg, opts, &mut sel, io).await?;
+            (Some(ms), ol)
+        }
+        None if p.needs_open_lambda() => (None, Some(measure_open_lambda(p, io).await?)),
+        None => (None, None),
     };
+    let mut open_cursor = open_lambda.as_ref().map(|m| m.cursor(p.pw)).transpose()?;
+    let mut band_open_lambda = Vec::new();
     let mut maps = Maps::default();
     if let Some(sel) = &mut sel {
         sel.begin();
@@ -1465,7 +1876,26 @@ async fn pass1<I: PassIo>(p: &Plan, cfg: &LossyConfig, io: &mut I) -> Result<Pre
             )?;
         }
         if let Some(ms) = &merge_sel {
-            stripes = p.merge(ms, stripes, &band, y0, cfg.threads);
+            fill_band_open_lambda(
+                p,
+                open_lambda.as_ref(),
+                &mut open_cursor,
+                &band,
+                y0,
+                by0,
+                by1,
+                &mut band_open_lambda,
+            )?;
+            stripes = p.merge(
+                ms,
+                stripes,
+                &band,
+                y0,
+                &band_open_lambda,
+                by0,
+                cfg.threads,
+                io.stop(),
+            )?;
             maps.merge |= p.merges.is_some_and(|o| o.merges)
                 && stripes.iter().any(|sc| sc.modes.iter().any(|&m| m != 0));
             maps.split |= stripes.iter().any(|sc| sc.splits.iter().any(|&v| v != 0));
@@ -1573,15 +2003,18 @@ async fn pass1<I: PassIo>(p: &Plan, cfg: &LossyConfig, io: &mut I) -> Result<Pre
             }
         }
     };
-    // The AC trellis (efforts 9 and 10, XYB): one source pass per rate-model
-    // pass, each recomputing the pass-1 units of every band and applying the
-    // passes so far, as `trellis::optimize` prices them; the last one also
-    // gathers the final tables' counts. The trellis keeps every DC.
+    // The AC trellis (efforts 9, 9.5, 10, XYB): one source pass per rate-model
+    // pass, each recomputing the pass-1 (and merged) units of every band and
+    // applying the passes so far, as `trellis::optimize` prices them; the last
+    // one also gathers the final tables' counts. Pass 0 also feeds the
+    // streaming closed-loop seam feedback collector when enabled.
     let mut passes: Vec<trellis::Pass> = Vec::new();
+    let mut closed_lambda: Option<adaptive_rdo::ClosedLoopLambdaModel> = None;
     let huf_model = entropy == LossyEntropy::SplitHuf;
     if let Some(set) = p.trellis.filter(|_| !huf_model || trellis::huf_rate(cfg)) {
         let n = set.passes as usize;
         let mut freqs: trellis::Freqs = [luma.clone(), chroma.clone(), wid.clone()];
+        let mut band_closed_lambda = Vec::new();
         for k in 0..n {
             passes.push(if huf_model {
                 trellis::Pass::split_huf(&freqs, &set, cfg, effort)
@@ -1590,6 +2023,16 @@ async fn pass1<I: PassIo>(p: &Plan, cfg: &LossyConfig, io: &mut I) -> Result<Pre
             });
             let last = k + 1 == n;
             let mut next = trellis::freqs_new();
+            let mut closed_stream = if k == 0 && !last && p.plan.lambda_aq_closed_loop != 0.0 {
+                Some(adaptive_rdo::ClosedLoopLambdaStream::new(
+                    p.g.bw,
+                    p.g.bh,
+                    &p.steps,
+                    p.plan.lambda_aq_closed_loop,
+                )?)
+            } else {
+                None
+            };
             rl.fill(0);
             if last {
                 for h in luma
@@ -1605,14 +2048,54 @@ async fn pass1<I: PassIo>(p: &Plan, cfg: &LossyConfig, io: &mut I) -> Result<Pre
             }
             for (by0, by1) in p.bands() {
                 let y0 = io.rows(10 + k as u8, by0, by1, &mut band).await?;
+                fill_band_open_lambda(
+                    p,
+                    open_lambda.as_ref(),
+                    &mut open_cursor,
+                    &band,
+                    y0,
+                    by0,
+                    by1,
+                    &mut band_open_lambda,
+                )?;
+                band_closed_lambda.clear();
+                if k > 0
+                    && let Some(cm) = &closed_lambda
+                {
+                    cm.fill_band(&band_open_lambda, by0, by1, &mut band_closed_lambda)?;
+                }
                 let mut stripes = p.band_stripes(&band, y0, by0, by1);
                 if let Some(sel) = &mut sel {
                     sel.band(p, &mut stripes, &band, y0, by0, by1, cfg.threads);
                 }
+                if let Some(ms) = &merge_sel {
+                    stripes = p.merge(
+                        ms,
+                        stripes,
+                        &band,
+                        y0,
+                        &band_open_lambda,
+                        by0,
+                        cfg.threads,
+                        io.stop(),
+                    )?;
+                }
                 for sc in stripes {
                     let mut units = p.units(sc);
                     let emit = (huf_model && !last).then_some(&mut next);
-                    p.rewrite(cfg, &passes, &mut units, &band, y0, emit, io.stop())?;
+                    p.rewrite(
+                        cfg,
+                        &passes,
+                        &mut units,
+                        &band,
+                        y0,
+                        &band_open_lambda,
+                        &band_closed_lambda,
+                        by0,
+                        emit,
+                        closed_stream.as_mut(),
+                        io.stop(),
+                    )?;
                     for u in &units {
                         stripe_tokens(u, u.bw, Group::ALL, |_, ctx, tok, _, _| {
                             rl[ctx * coef::ALPHA + tok as usize] += 1;
@@ -1632,6 +2115,9 @@ async fn pass1<I: PassIo>(p: &Plan, cfg: &LossyConfig, io: &mut I) -> Result<Pre
                         }
                     }
                 }
+            }
+            if let Some(stream) = closed_stream {
+                closed_lambda = Some(stream.finish());
             }
             freqs = next;
         }
@@ -1750,7 +2236,26 @@ async fn pass1<I: PassIo>(p: &Plan, cfg: &LossyConfig, io: &mut I) -> Result<Pre
                 continue;
             }
             if let Some(ms) = &merge_sel {
-                stripes = p.merge(ms, stripes, &band, y0, cfg.threads);
+                fill_band_open_lambda(
+                    p,
+                    open_lambda.as_ref(),
+                    &mut open_cursor,
+                    &band,
+                    y0,
+                    by0,
+                    by1,
+                    &mut band_open_lambda,
+                )?;
+                stripes = p.merge(
+                    ms,
+                    stripes,
+                    &band,
+                    y0,
+                    &band_open_lambda,
+                    by0,
+                    cfg.threads,
+                    io.stop(),
+                )?;
             }
             dc_band(p, &stripes, by0, by1, fits16, codes, &mut dcb);
             acc.extend_from_slice(&dcb);
@@ -1818,6 +2323,8 @@ async fn pass1<I: PassIo>(p: &Plan, cfg: &LossyConfig, io: &mut I) -> Result<Pre
         #[cfg(feature = "lab")]
         first_band: None,
         merges: merge_sel.map(|s| (s, maps)),
+        open_lambda,
+        closed_lambda,
         exact,
         passes,
         alpha,
@@ -1876,6 +2383,13 @@ async fn pass2<I: PassIo>(
         Ac::Huf(t) => Some(t.encoder()),
         Ac::Rl(_) => None,
     };
+    let mut open_cursor = prep
+        .open_lambda
+        .as_ref()
+        .map(|m| m.cursor(p.pw))
+        .transpose()?;
+    let mut band_open_lambda = Vec::new();
+    let mut band_closed_lambda = Vec::new();
     for (by0, by1) in p.bands() {
         #[cfg(feature = "lab")]
         let prefetched = prep.first_band.take();
@@ -1888,13 +2402,36 @@ async fn pass2<I: PassIo>(
         } else {
             io.rows(2, by0, by1, &mut band).await?
         };
+        fill_band_open_lambda(
+            p,
+            prep.open_lambda.as_ref(),
+            &mut open_cursor,
+            &band,
+            y0,
+            by0,
+            by1,
+            &mut band_open_lambda,
+        )?;
+        band_closed_lambda.clear();
+        if let Some(cm) = &prep.closed_lambda {
+            cm.fill_band(&band_open_lambda, by0, by1, &mut band_closed_lambda)?;
+        }
         let mut stripes = p.band_stripes(&band, y0, by0, by1);
         if let Some(e) = &mut prep.exact {
             e.sel
                 .band(p, &mut stripes, &band, y0, by0, by1, cfg.threads);
         }
         if let Some((ms, _)) = &prep.merges {
-            stripes = p.merge(ms, stripes, &band, y0, cfg.threads);
+            stripes = p.merge(
+                ms,
+                stripes,
+                &band,
+                y0,
+                &band_open_lambda,
+                by0,
+                cfg.threads,
+                io.stop(),
+            )?;
         }
         // DC records: coded here when the band is the DC stripe, else stored
         // by the nested pass.
@@ -1940,7 +2477,19 @@ async fn pass2<I: PassIo>(
                 }
             }
             let mut units = p.units(sc);
-            p.rewrite(cfg, &prep.passes, &mut units, &band, y0, None, io.stop())?;
+            p.rewrite(
+                cfg,
+                &prep.passes,
+                &mut units,
+                &band,
+                y0,
+                &band_open_lambda,
+                &band_closed_lambda,
+                by0,
+                None,
+                None,
+                io.stop(),
+            )?;
             for (gi, u) in units.into_iter().enumerate() {
                 if si.is_multiple_of(k) {
                     if cfg.model_references {
@@ -2203,8 +2752,38 @@ fn plan_working_bytes(p: &Plan) -> Result<u64, Error> {
         0
     };
     let defaults = if p.coding_defaults { blocks * 32 } else { 0 };
-    u64::try_from(2 * raster + 3 * coefs + dc + select + trellis + local + defaults + (8 << 20))
-        .map_err(|_| Error::TooLarge)
+    let open_lambda = if p.needs_open_lambda() {
+        let n_bands = p.g.bh.div_ceil(p.work.max(1)) as u128;
+        // Boundary first-row cache + 3-row stream buffers + band cursor (`min_q`,
+        // `mean_q`, `sat_smooth`, `open_band`, `closed_band`, row planes).
+        n_bands * p.g.bw as u128 * 4 + blocks * 20 + p.g.bw as u128 * (32 + NCH as u128 * 32 * 8)
+    } else {
+        0
+    };
+    let closed_lambda = if p.needs_closed_lambda() {
+        let nb = p.g.bw as u128 * p.g.bh as u128;
+        let store = if nb <= adaptive_rdo::CLOSED_LOOP_EXACT_MAX_BLOCKS as u128 {
+            nb * 8
+        } else {
+            nb
+        };
+        store + blocks * 24 + p.g.bw as u128 * (NCH as u128 * 32 * 12)
+    } else {
+        0
+    };
+    u64::try_from(
+        2 * raster
+            + 3 * coefs
+            + dc
+            + select
+            + trellis
+            + local
+            + defaults
+            + open_lambda
+            + closed_lambda
+            + (8 << 20),
+    )
+    .map_err(|_| Error::TooLarge)
 }
 
 #[cfg(all(test, feature = "encode"))]
@@ -5599,7 +6178,7 @@ mod tests {
             let (file, calls) = bounded(&info, &px, &cfg).unwrap();
             let (wp, bp) = (parse_lossy(&whole).unwrap(), parse_lossy(&file).unwrap());
             assert_eq!(bp.sb.is_some(), wp.sb.is_some(), "case {i}: superblocks");
-            assert_eq!(wp.sb.is_some(), effort < 9.0, "case {i}: merges expected");
+            assert!(wp.sb.is_some(), "case {i}: Compact merges at all efforts");
             assert_eq!(
                 bp.exact.as_ref().map(|e| e.ranges.clone()),
                 wp.exact.map(|e| e.ranges),
@@ -5612,11 +6191,7 @@ mod tests {
             );
             let reads =
                 |pass: u8| -> usize { calls.iter().filter(|c| c.0 == pass).map(|c| c.2).sum() };
-            assert_eq!(
-                reads(4),
-                if effort < 9.0 { h as usize } else { 0 },
-                "case {i}"
-            );
+            assert_eq!(reads(4), h as usize, "case {i}");
             // Compact's DC stripes span many work bands (here one covers the
             // image); every read is still one work band of whole stripes.
             assert!(calls.iter().all(|c| c.2 <= 64), "case {i}: band rows");

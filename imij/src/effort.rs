@@ -12,10 +12,94 @@ use crate::Error;
 /// CVVDP 8 / 3.9% at SSIMULACRA2 10-50 on the imazen-26 test split.
 #[cfg(feature = "encode")]
 pub(crate) const TRELLIS_ONE_PASS: f32 = 9.0;
+/// Lossy effort from which adaptive-partition encodes (`adaptive_partitions`
+/// or `DecodeSpeed::Compact`) run the fast two-pass empirical pilot and
+/// closed-loop perceptual seam feedback with two trellis passes, without the
+/// slower per-candidate `trellis_select` search enabled at [`TRELLIS_TWO_PASSES`].
+#[cfg(feature = "encode")]
+pub(crate) const ADAPTIVE_PILOT: f32 = 9.5;
 /// Lossy effort from which the trellis runs two rate-model passes
-/// (3.3-7.6x the effort-7.5 encode; 3.6% / 4.6%).
+/// (3.3-7.6x the effort-7.5 encode; 3.6% / 4.6%), and adaptive-partition
+/// encodes add per-candidate `trellis_select`.
 #[cfg(feature = "encode")]
 pub(crate) const TRELLIS_TWO_PASSES: f32 = 10.0;
+/// Default 4x4 split distortion weight below trellis efforts (`SMALL_KAPPA`).
+#[cfg(feature = "encode")]
+pub(crate) const SMALL_KAPPA_DEFAULT: f32 = 1.5;
+/// Balanced 4x4 split distortion weight used by adaptive partitions at trellis
+/// efforts: reduces low/mid-quality photo over-splitting while preserving
+/// crisp screen/text edges.
+#[cfg(feature = "encode")]
+pub(crate) const SMALL_KAPPA_ADAPTIVE_TRELLIS: f32 = 1.2;
+
+/// Adaptive-partition mode of a lossy encode.
+#[cfg(feature = "encode")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdaptiveMode {
+    /// Default / `Fast` / `Fastest` / `Balanced`: fixed 8x8 blocks.
+    Off,
+    /// `DecodeSpeed::Compact`: retains classic fast superblocks below
+    /// [`TRELLIS_ONE_PASS`] (`9.0`) and enables the full adaptive-partition RDO
+    /// ladder (`9.0`, `9.5`, `10.0`) from `9.0` onward.
+    Compact,
+    /// Explicit `adaptive_partitions = true`: enables 9-context partition-map
+    /// DP (`map_dp`) even below `9.0`, plus the full adaptive-partition RDO
+    /// ladder from `9.0` onward.
+    Explicit,
+}
+
+/// Centralized lossy encoder search policy derived once from [`Effort`] and
+/// [`AdaptiveMode`].
+///
+/// Every lossy stage (`lossy/mod.rs`, `lossy/superblock/select.rs`,
+/// `lossy/trellis.rs`, `lossy/bounded.rs`) consumes this plan directly instead
+/// of duplicating effort threshold checks.
+#[cfg(feature = "encode")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LossyEffortPlan {
+    /// AC trellis rate-model passes (0, 1, or 2).
+    pub trellis_passes: u8,
+    /// Whether lossy entropy-table counts are searched by coded size (`>= 7.5`).
+    pub table_count_search: bool,
+    /// Run the AC trellis on merged superblock parent units using the merged
+    /// block's whole-block mean AC energy norm.
+    pub merged_trellis: bool,
+    /// Trellis-price both solo and merged candidates during layout selection
+    /// when the AC trellis is active.
+    pub trellis_select: bool,
+    /// Exact 8-state row-strip Viterbi DP coupling the 9-context partition-map
+    /// model across each column group row, with exact unit-level V4 partition
+    /// map merge pruning.
+    pub map_dp: bool,
+    /// Two-pass pilot -> freeze learned post-trellis token prices, empirical
+    /// 9-context partition-map costs, and empirical 4x4 flag probabilities.
+    pub two_pass_pilot: bool,
+    /// Zero-decode-overhead open-loop surrounding-block perceptual
+    /// trellis-lambda AQ strength (`0.0` = off).
+    pub lambda_aq_open: f32,
+    /// Closed-loop residual & unfiltered-seam feedback weight for
+    /// trellis-lambda AQ (`0.0` = off).
+    pub lambda_aq_closed_loop: f32,
+    /// Base 4x4 split distortion weight.
+    pub small_kappa: f32,
+}
+
+#[cfg(feature = "encode")]
+impl Default for LossyEffortPlan {
+    fn default() -> Self {
+        Self {
+            trellis_passes: 0,
+            table_count_search: false,
+            merged_trellis: false,
+            trellis_select: false,
+            map_dp: false,
+            two_pass_pilot: false,
+            lambda_aq_open: 0.0,
+            lambda_aq_closed_loop: 0.0,
+            small_kappa: SMALL_KAPPA_DEFAULT,
+        }
+    }
+}
 /// Lossy effort from which the encoder chooses its entropy-table counts by
 /// coded size where the tables weigh (run-level EOB/AC and split-Huffman
 /// count/width tables; `lossy/coef.rs` `KSearch`) instead of always filling
@@ -56,6 +140,79 @@ impl Effort {
             1
         } else {
             0
+        }
+    }
+
+    /// Centralized lossy encoder search policy for this effort and
+    /// [`AdaptiveMode`].
+    ///
+    /// Monotonic lossy ladder for adaptive encodes:
+    /// - `< 9.0` (incl. default `7.5`): `trellis_passes = 0`; `map_dp` on for
+    ///   [`AdaptiveMode::Explicit`], classic fast superblocks for
+    ///   [`AdaptiveMode::Compact`].
+    /// - `9.0..<9.5`: 1-pass merged AC trellis + `map_dp` + open-loop lambda AQ.
+    /// - `9.5..<10.0`: 2-pass merged AC trellis + two-pass empirical pilot +
+    ///   open-loop & closed-loop seam lambda AQ (fast mid-tier Pareto rung
+    ///   without per-candidate `trellis_select`).
+    /// - `10.0`: adds per-candidate `trellis_select` (maximum compression).
+    #[cfg(feature = "encode")]
+    pub(crate) fn lossy_plan(self, mode: AdaptiveMode) -> LossyEffortPlan {
+        let table_count_search = self.table_count_search();
+        if mode == AdaptiveMode::Off {
+            return LossyEffortPlan {
+                trellis_passes: self.trellis_passes(),
+                table_count_search,
+                ..LossyEffortPlan::default()
+            };
+        }
+        if self.0 >= TRELLIS_TWO_PASSES {
+            LossyEffortPlan {
+                trellis_passes: 2,
+                table_count_search,
+                merged_trellis: true,
+                trellis_select: true,
+                map_dp: true,
+                two_pass_pilot: true,
+                lambda_aq_open: 0.30,
+                lambda_aq_closed_loop: 0.18,
+                small_kappa: SMALL_KAPPA_ADAPTIVE_TRELLIS,
+            }
+        } else if self.0 >= ADAPTIVE_PILOT {
+            LossyEffortPlan {
+                trellis_passes: 2,
+                table_count_search,
+                merged_trellis: true,
+                trellis_select: false,
+                map_dp: true,
+                two_pass_pilot: true,
+                lambda_aq_open: 0.30,
+                lambda_aq_closed_loop: 0.18,
+                small_kappa: SMALL_KAPPA_ADAPTIVE_TRELLIS,
+            }
+        } else if self.0 >= TRELLIS_ONE_PASS {
+            LossyEffortPlan {
+                trellis_passes: 1,
+                table_count_search,
+                merged_trellis: true,
+                trellis_select: false,
+                map_dp: true,
+                two_pass_pilot: false,
+                lambda_aq_open: 0.30,
+                lambda_aq_closed_loop: 0.0,
+                small_kappa: SMALL_KAPPA_ADAPTIVE_TRELLIS,
+            }
+        } else {
+            LossyEffortPlan {
+                trellis_passes: 0,
+                table_count_search,
+                merged_trellis: false,
+                trellis_select: false,
+                map_dp: mode == AdaptiveMode::Explicit,
+                two_pass_pilot: false,
+                lambda_aq_open: 0.0,
+                lambda_aq_closed_loop: 0.0,
+                small_kappa: SMALL_KAPPA_DEFAULT,
+            }
         }
     }
 
@@ -130,5 +287,81 @@ impl Effort {
             remaining &= !bit;
         }
         selected
+    }
+}
+
+#[cfg(all(test, feature = "encode"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lossy_plan_is_monotonic_across_rungs() {
+        let rungs = [0.0f32, 2.5, 5.0, 7.5, 8.99, 9.0, 9.49, 9.5, 9.99, 10.0];
+        for mode in [
+            AdaptiveMode::Off,
+            AdaptiveMode::Compact,
+            AdaptiveMode::Explicit,
+        ] {
+            let mut prev = Effort::new(rungs[0]).unwrap().lossy_plan(mode);
+            for &e in &rungs[1..] {
+                let cur = Effort::new(e).unwrap().lossy_plan(mode);
+                assert!(cur.trellis_passes >= prev.trellis_passes, "{mode:?} e={e}");
+                assert!(
+                    cur.table_count_search >= prev.table_count_search,
+                    "{mode:?} e={e}"
+                );
+                assert!(cur.merged_trellis >= prev.merged_trellis, "{mode:?} e={e}");
+                assert!(cur.trellis_select >= prev.trellis_select, "{mode:?} e={e}");
+                assert!(cur.map_dp >= prev.map_dp, "{mode:?} e={e}");
+                assert!(cur.two_pass_pilot >= prev.two_pass_pilot, "{mode:?} e={e}");
+                assert!(cur.lambda_aq_open >= prev.lambda_aq_open, "{mode:?} e={e}");
+                assert!(
+                    cur.lambda_aq_closed_loop >= prev.lambda_aq_closed_loop,
+                    "{mode:?} e={e}"
+                );
+                prev = cur;
+            }
+        }
+        // Compact preserves fast classic superblocks below 9.0 and matches Explicit from 9.0+.
+        let c75 = Effort::new(7.5).unwrap().lossy_plan(AdaptiveMode::Compact);
+        assert_eq!(c75.trellis_passes, 0);
+        assert!(!c75.map_dp && !c75.merged_trellis && !c75.two_pass_pilot);
+        for e in [9.0f32, 9.5, 10.0] {
+            assert_eq!(
+                Effort::new(e).unwrap().lossy_plan(AdaptiveMode::Compact),
+                Effort::new(e).unwrap().lossy_plan(AdaptiveMode::Explicit),
+                "Compact and Explicit must match at e={e}"
+            );
+        }
+        // Adaptive ladder separates fast pilot (9.5) from full trellis_select (10.0).
+        let p75 = Effort::new(7.5).unwrap().lossy_plan(AdaptiveMode::Explicit);
+        let p90 = Effort::new(9.0).unwrap().lossy_plan(AdaptiveMode::Explicit);
+        let p95 = Effort::new(9.5).unwrap().lossy_plan(AdaptiveMode::Explicit);
+        let p10 = Effort::new(10.0)
+            .unwrap()
+            .lossy_plan(AdaptiveMode::Explicit);
+        assert_eq!(p75.trellis_passes, 0);
+        assert!(p75.map_dp && !p75.merged_trellis && !p75.two_pass_pilot);
+        assert_eq!(p90.trellis_passes, 1);
+        assert!(p90.merged_trellis && !p90.two_pass_pilot && p90.lambda_aq_open > 0.0);
+        assert_eq!(p95.trellis_passes, 2);
+        assert!(p95.two_pass_pilot && p95.lambda_aq_closed_loop > 0.0 && !p95.trellis_select);
+        assert_eq!(p10.trellis_passes, 2);
+        assert!(p10.two_pass_pilot && p10.trellis_select);
+        // Plain ladder stays strictly invariant with historical thresholds.
+        assert_eq!(
+            Effort::new(9.5)
+                .unwrap()
+                .lossy_plan(AdaptiveMode::Off)
+                .trellis_passes,
+            1
+        );
+        assert_eq!(
+            Effort::new(10.0)
+                .unwrap()
+                .lossy_plan(AdaptiveMode::Off)
+                .trellis_passes,
+            2
+        );
     }
 }

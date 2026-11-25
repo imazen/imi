@@ -59,14 +59,41 @@ Discrete work uses `1 + floor((maximum - 1) * effort / 10)`. Plateaus are
 expected; fractional values can cross boundaries between integers. This mapping
 is encoder policy, not stream syntax, and allows future finer work controls.
 
-| Effort | Lossless predictors | RGB decorrelation candidates | Clustering passes | ANS AC table cap | Lossy table counts | Lossy AC trellis passes |
-|---:|---:|---:|---:|---:|---|---:|
-| 0 | 1 | 1 | 1 | 1 | the budget | 0 |
-| 2.5 | 2 | 1 | 2 | 4 | the budget | 0 |
-| 5 | 4 | 2 | 4 | 8 | the budget | 0 |
-| 7.5 | 5 | 3 | 6 | 12 | by coded size, up to the budget | 0 |
-| 9 | 6 | 3 | 7 | 14 | by coded size, up to the budget | 1 (XYB run-level) |
-| 10 | 7 | 4 | 8 | 16 | by coded size, up to the budget | 2 (XYB run-level) |
+| Effort | Lossless predictors | RGB decorrelation candidates | Clustering passes | ANS AC table cap | Lossy table counts | Lossy AC trellis passes | Adaptive-partition RDO (`Compact` / `adaptive_partitions`) |
+|---:|---:|---:|---:|---:|---|---:|---|
+| 0 | 1 | 1 | 1 | 1 | the budget | 0 | `Compact`: classic superblocks (`>= 128 px`); `adaptive_partitions`: + 4×4 + `map_dp` |
+| 2.5 | 2 | 1 | 2 | 4 | the budget | 0 | same as 0 |
+| 5 | 4 | 2 | 4 | 8 | the budget | 0 | same as 0 |
+| 7.5 | 5 | 3 | 6 | 12 | by coded size, up to the budget | 0 | same as 0 |
+| 9 | 6 | 3 | 7 | 14 | by coded size, up to the budget | 1 (XYB RL / SH) | 1-pass merged-block trellis + 4×4 + `map_dp` + open-loop lambda AQ |
+| 9.5 | 6 | 3 | 7 | 15 | by coded size, up to the budget | 1 plain / 2 adaptive | 2-pass merged-block trellis + two-pass empirical pilot + open & closed-loop seam AQ (no `trellis_select`) |
+| 10 | 7 | 4 | 8 | 16 | by coded size, up to the budget | 2 (XYB RL / SH) | adds per-candidate `trellis_select` (maximum compression) |
+
+### Centralized lossy policy & `DecodeSpeed::Compact`
+
+Lossy effort thresholds are centralized in `imij/src/effort.rs` (`LossyEffortPlan`, derived once from `Effort::lossy_plan(AdaptiveMode)`). All lossy stages (`lossy/mod.rs`, `lossy/superblock/select.rs`, `lossy/trellis.rs`, and `lossy/bounded.rs`) consume this plan directly:
+
+- **`AdaptiveMode::Off`** (default, `Fast`, `Fastest`, `Balanced`): keeps fixed 8×8 blocks and the historical trellis thresholds (`9.0` = 1 pass, `10.0` = 2 passes). Pixels remain unchanged below effort `9.0`.
+- **`AdaptiveMode::Compact`** (`DecodeSpeed::Compact`): retains fast classic superblocks (no 4×4 splits or DP overhead) below effort `9.0`, and enables full adaptive partitions (superblocks + 4×4 splits on 8-bit images with longer side `>= 128 px`) together with the adaptive RDO ladder consistently across efforts `9.0`, `9.5`, and `10.0`.
+- **`AdaptiveMode::Explicit`** (`adaptive_partitions = true`): enables 9-context partition-map Viterbi DP (`map_dp`) with exact unit-level V4 partition-map merge pruning even below effort `9.0`, and shares the identical `9.0` / `9.5` / `10.0` adaptive RDO rungs with `Compact`.
+
+Measured on a 30-image × 15-quality (`q5–q98`) unseen held-out set (CID22 validation, GB82 photos + screenshots, CLIC2025 1 MPx photos; BD-rate via monotone PCHIP log-rate integration, `enc` ratio vs plain `effort 10.0` on 1 thread, `dec1` single-thread decode ratio):
+
+| Mode & Effort | vs Plain e10 (Zensim) | vs Plain e10 (SSIM2) | vs Plain e10 (BA p3) | vs Plain e10 (BA max) | 1T Enc vs Plain e10 | 1T Dec | 8T Speedup (4.19 MPx) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `Compact` e7.5 | −2.66% | −2.68% | −3.79% | −2.64% | 0.67× | 0.88× | 4.53× |
+| `Compact` e9.0 | −4.13% | −4.69% | −6.61% | −5.36% | 1.24× | 0.86× | 4.35× |
+| `Compact` e9.5 | −5.22% | −5.72% | −7.26% | −6.96% | 2.63× | 0.87× | 4.95× |
+| `Compact` e10.0 | −5.78% | −6.49% | −7.57% | −7.08% | 4.03× | 0.86× | 5.52× |
+| `adaptive_partitions` RL e7.5 | −2.21% | −2.65% | −4.02% | −4.48% | 0.64× | 0.86× | 3.59× |
+| `adaptive_partitions` RL e9.0 | −3.43% | −4.12% | −5.46% | −4.07% | 1.07× | 0.89× | 4.51× |
+| `adaptive_partitions` RL e9.5 | −4.64% | −5.23% | −6.34% | −5.78% | 2.67× | 0.87× | 5.28× |
+| `adaptive_partitions` RL e10.0 | −5.18% | −6.02% | −6.50% | −5.51% | 4.16× | 0.88× | 5.99× |
+| `adaptive_partitions` SH e9.0 (vs SH e10) | −5.46% | −6.18% | −7.04% | −5.53% | 1.76× | 0.84× | — |
+| `adaptive_partitions` SH e9.5 (vs SH e10) | −6.13% | −6.71% | −7.37% | −6.15% | 4.25× | 0.88× | 5.49× |
+| `adaptive_partitions` SH e10.0 (vs SH e10) | −6.44% | −7.01% | −7.51% | −6.61% | 5.24× | 0.88× | 6.13× |
+
+All adaptive RDO stages parallelize deterministically across `threads` (byte-identical output for `1T == 4T == 8T`) and stream in `imij/src/lossy/bounded.rs` using the exact same open-loop and closed-loop AQ models as the whole-image encoder (0-bit identical across all image sizes; closed-loop residual storage switches from exact `f64` to compact `1 B/block` quantized log-error above `262,144` blocks / `16 MPx` on both paths). On an `8192×8192` (67.1 MPx) RGB8 image (`192 MiB` raw input), bounded `Compact` peak process RSS is `24.3 MiB` at `e7.5`, `35.4 MiB` at `e9.0`, `36.8 MiB` at `e9.5`, and `37.1 MiB` at `e10.0`.
 
 Counts assume default masks/table limits. Below effort 5, lossless prioritizes
 allowed predictors as W, median, N, average W/N, gradient, Paeth, average W/NE;

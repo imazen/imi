@@ -52,7 +52,7 @@ const SYM_NONE_BITS: f64 = 0.25;
 const SYM_MERGE_BITS: f64 = 3.0;
 
 /// Token prices of the file's entropy coder under frozen tables.
-enum Coder {
+pub(in crate::lossy) enum Coder {
     RunLevel(alloc::boxed::Box<Prices>),
     SplitHuf(alloc::boxed::Box<HufPrices>),
 }
@@ -61,7 +61,7 @@ impl Coder {
     /// Prices from run-level token counts `hist` (`nraw * ALPHA`,
     /// context-major) or split-Huffman frequencies `freqs` of the units: what
     /// [`Self::of`] derives from the units themselves.
-    fn of_counts(
+    pub(in crate::lossy) fn of_counts(
         hist: &[u64],
         freqs: &crate::lossy::trellis::Freqs,
         cfg: &LossyConfig,
@@ -101,9 +101,95 @@ impl Coder {
         )))
     }
 
+    /// Prices tallied directly from full-width `stripes` without cloning the
+    /// whole image's coefficient buffer (`group_bw == 0` reads in place;
+    /// `group_bw > 0` splits at most one stripe per active worker).
+    pub(in crate::lossy) fn of_stripes(
+        stripes: &[StripeCoefs],
+        group_bw: usize,
+        cfg: &LossyConfig,
+        effort: crate::effort::Effort,
+        split: bool,
+    ) -> Self {
+        if split {
+            let parts = crate::par::par_fold(
+                stripes,
+                cfg.threads,
+                crate::lossy::trellis::freqs_new,
+                |freqs, sc| {
+                    let mut tally = |u: &StripeCoefs| {
+                        let (counts, widths) = stripe_counts_widths(u, u.bw);
+                        let syms = huf::stripe_syms(&counts, &widths, u.nby * u.bw);
+                        let [luma, chroma, wid] = freqs;
+                        for (h, symbols) in
+                            [(luma, &syms.luma), (chroma, &syms.chroma), (wid, &syms.wid)]
+                        {
+                            for &(ctx, sym) in symbols {
+                                h[ctx as usize][sym as usize] += 1;
+                            }
+                        }
+                    };
+                    if group_bw == 0 {
+                        tally(sc);
+                    } else {
+                        for u in split_units(sc.clone(), group_bw) {
+                            tally(&u);
+                        }
+                    }
+                },
+            );
+            let mut total = crate::lossy::trellis::freqs_new();
+            for p in parts {
+                for (dst, src) in total.iter_mut().zip(p) {
+                    for (drow, srow) in dst.iter_mut().zip(src) {
+                        for (d, s) in drow.iter_mut().zip(srow) {
+                            *d += s;
+                        }
+                    }
+                }
+            }
+            Self::of_counts(&[], &total, cfg, effort, true)
+        } else {
+            let n = LossyEntropy::RunLevel.nraw() * coef::ALPHA;
+            let parts = crate::par::par_fold(
+                stripes,
+                cfg.threads,
+                || vec![0u64; n],
+                |hist, sc| {
+                    let mut tally = |u: &StripeCoefs| {
+                        stripe_tokens(u, u.bw, Group::ALL, |_, ctx, tok, _, _| {
+                            hist[ctx * coef::ALPHA + tok as usize] += 1;
+                        });
+                    };
+                    if group_bw == 0 {
+                        tally(sc);
+                    } else {
+                        for u in split_units(sc.clone(), group_bw) {
+                            tally(&u);
+                        }
+                    }
+                },
+            );
+            let mut total = vec![0u64; n];
+            for p in parts {
+                for (d, s) in total.iter_mut().zip(p) {
+                    *d += s;
+                }
+            }
+            Self::of_counts(
+                &total,
+                &crate::lossy::trellis::freqs_new(),
+                cfg,
+                effort,
+                false,
+            )
+        }
+    }
+
     /// Prices from `units`' own statistics: split-Huffman when the file is
     /// coded with it, else run-level.
-    fn of(
+    #[allow(dead_code)]
+    pub(in crate::lossy) fn of(
         units: &[StripeCoefs],
         cfg: &LossyConfig,
         effort: crate::effort::Effort,
@@ -358,20 +444,28 @@ struct Bases {
 /// The candidate spectra of one plane of a 2x2 group, `v * 16 + u`: the
 /// 16x16 block, the 16x8 blocks by parent row and the 8x16 blocks by parent
 /// column.
-struct Spectra {
+pub(in crate::lossy) struct Spectra {
     s16: [f32; 256],
     s16x8: [[f32; 256]; 2],
     s8x16: [[f32; 256]; 2],
 }
 
 impl Spectra {
-    fn get(&self, s: Shape, py0: usize, px0: usize) -> &[f32; 256] {
+    pub(in crate::lossy) fn get(&self, s: Shape, py0: usize, px0: usize) -> &[f32; 256] {
         match s {
             Shape::S16x16 => &self.s16,
             Shape::S16x8 => &self.s16x8[py0],
             Shape::S8x16 => &self.s8x16[px0],
         }
     }
+}
+
+pub(in crate::lossy) fn new_spectra() -> [Spectra; NCH] {
+    core::array::from_fn(|_| Spectra {
+        s16: [0.0; 256],
+        s16x8: [[0.0; 256]; 2],
+        s8x16: [[0.0; 256]; 2],
+    })
 }
 
 /// Every candidate spectrum of one plane of a group from its 16 x 16 pixels
@@ -608,15 +702,15 @@ fn cand4_impl(
 }
 
 /// Encoder tables of one image.
-struct Enc {
+pub(in crate::lossy) struct Enc {
     b: Bases,
     /// Per shape: for unit slot `p * 64 + z`, the spectrum index whose
     /// quantized value it carries (0, which quantizes to zero, for the DC
     /// slots).
-    gather: [[u8; 256]; 3],
+    pub(in crate::lossy) gather: [[u8; 256]; 3],
     /// Per plane, per shape: the step of coefficient `v * 16 + u` and its
     /// reciprocal (0 in the LLF corner).
-    steps: [[[f32; 256]; 3]; NCH],
+    pub(in crate::lossy) steps: [[[f32; 256]; 3]; NCH],
     inv: [[[f32; 256]; 3]; NCH],
     /// Per shape: the kernel's input scale of every coefficient (0 in the
     /// LLF corner).
@@ -637,7 +731,7 @@ struct Enc {
 }
 
 impl Enc {
-    fn new(steps8: &[[f32; 64]; NCH]) -> Self {
+    pub(in crate::lossy) fn new(steps8: &[[f32; 64]; NCH]) -> Self {
         let m8 = dct::dct_matrix();
         let m16 = dct16_matrix();
         let steps: [[[f32; 256]; 3]; NCH] = core::array::from_fn(|c| {
@@ -713,12 +807,26 @@ impl Enc {
     /// The candidate spectra of every plane of group `g` (pixels from the
     /// encoder's planes, `pw` wide).
     fn spectra(&self, planes: &[Vec<f32>; 2], pw: usize, g: &Group2, out: &mut [Spectra; NCH]) {
+        self.spectra_at(planes, pw, g.rows, g.cols, g.bx, out);
+    }
+
+    /// The candidate spectra of every plane of a `(rows x cols)` parent group
+    /// at global block column `bx` (pixels from `planes`, `pw` wide).
+    pub(in crate::lossy) fn spectra_at(
+        &self,
+        planes: &[Vec<f32>; 2],
+        pw: usize,
+        rows: usize,
+        cols: usize,
+        bx: usize,
+        out: &mut [Spectra; NCH],
+    ) {
         for (ch, sp) in out.iter_mut().enumerate() {
             let mut x = [[0.0f32; 16]; 16];
-            let n = 8 * g.cols;
-            for (py, pl) in planes.iter().enumerate().take(g.rows) {
+            let n = 8 * cols;
+            for (py, pl) in planes.iter().enumerate().take(rows) {
                 for y in 0..8 {
-                    let row = &pl[ch * 8 * pw + y * pw + g.bx * 8..][..n];
+                    let row = &pl[ch * 8 * pw + y * pw + bx * 8..][..n];
                     x[py * 8 + y][..n].copy_from_slice(row);
                 }
             }
@@ -791,6 +899,8 @@ pub(in crate::lossy) struct Opts {
     /// `small_edge`; 0 = none): the reconstruction error's jump across the
     /// block's middle row and column, in squared first AC steps.
     pub edge: f32,
+    /// Centralized lossy effort plan governing adaptive RDO mechanisms.
+    pub rdo: crate::effort::LossyEffortPlan,
 }
 
 /// Chooses the partitions of every stripe (`stripes`: pass 1's coefficients,
@@ -800,7 +910,7 @@ pub(in crate::lossy) struct Opts {
 /// `opts.small`) its 4x4 plane bits. `rows` is the encoder's row pipeline
 /// (planes `pw` wide); `group_bw` the column group width in blocks (0 =
 /// none).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(in crate::lossy) fn apply(
     stripes: Vec<StripeCoefs>,
     rows: RowPlanes,
@@ -811,28 +921,95 @@ pub(in crate::lossy) fn apply(
     cfg: &LossyConfig,
     effort: crate::effort::Effort,
     opts: Opts,
-) -> Vec<StripeCoefs> {
-    let units: Vec<StripeCoefs> = if group_bw == 0 {
-        stripes.clone()
-    } else {
-        stripes
-            .iter()
-            .flat_map(|sc| split_units(sc.clone(), group_bw))
-            .collect()
-    };
-    let coder = Coder::of(&units, cfg, price_effort(effort, opts), opts.split_huf);
-    drop(units);
-    let sel = Selector::new(coder, pw, group_bw, steps, round, opts);
+    stop: &dyn how_far::Stop,
+) -> Result<Vec<StripeCoefs>, crate::Error> {
+    apply_with_lambda(
+        stripes,
+        rows,
+        pw,
+        group_bw,
+        steps,
+        round,
+        cfg,
+        effort,
+        &[],
+        opts,
+        stop,
+    )
+}
+
+/// [`apply`] with an open-loop per-block trellis-lambda multiplier map.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::lossy) fn apply_with_lambda(
+    stripes: Vec<StripeCoefs>,
+    rows: RowPlanes,
+    pw: usize,
+    group_bw: usize,
+    steps: &[[f32; 64]; NCH],
+    round: f32,
+    cfg: &LossyConfig,
+    effort: crate::effort::Effort,
+    lambda_map: &[f32],
+    opts: Opts,
+    stop: &dyn how_far::Stop,
+) -> Result<Vec<StripeCoefs>, crate::Error> {
+    stop.check().map_err(|_| crate::Error::Cancelled)?;
+    let coder = Coder::of_stripes(
+        &stripes,
+        group_bw,
+        cfg,
+        price_effort(effort, opts),
+        opts.split_huf,
+    );
+    apply_with_learned(
+        stripes, rows, pw, group_bw, steps, round, cfg, coder, None, None, lambda_map, opts, stop,
+    )
+}
+
+/// [`apply`] using caller-supplied frozen token prices and optional empirical
+/// partition-map / 4x4-flag tables from a pilot pass.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::lossy) fn apply_with_learned(
+    stripes: Vec<StripeCoefs>,
+    rows: RowPlanes,
+    pw: usize,
+    group_bw: usize,
+    steps: &[[f32; 64]; NCH],
+    round: f32,
+    cfg: &LossyConfig,
+    coder: Coder,
+    learned_map: Option<crate::lossy::adaptive_rdo::MapBitTable>,
+    learned_flags: Option<crate::lossy::adaptive_rdo::LearnedFlags>,
+    lambda_map: &[f32],
+    opts: Opts,
+    stop: &dyn how_far::Stop,
+) -> Result<Vec<StripeCoefs>, crate::Error> {
+    stop.check().map_err(|_| crate::Error::Cancelled)?;
+    let sel = Selector::new_learned(
+        coder,
+        pw,
+        group_bw,
+        steps,
+        round,
+        opts,
+        learned_map,
+        learned_flags,
+    );
     crate::par::par_map(stripes, cfg.threads, |_, sc: StripeCoefs| {
-        sel.stripe(sc, rows)
+        sel.stripe_with_lambda(sc, rows, lambda_map, 0, stop)
     })
+    .into_iter()
+    .collect()
 }
 
 /// Without merges and without the trellis, the 4x4 choice prices with the
 /// tables effort 7.5 builds whatever the encode's effort, so its decisions,
 /// and the pixels, are the same at every effort (`LossyConfig::effort`).
 /// Merges (Compact) and trellis encodes price with the encode's own effort.
-fn price_effort(effort: crate::effort::Effort, opts: Opts) -> crate::effort::Effort {
+pub(in crate::lossy) fn price_effort(
+    effort: crate::effort::Effort,
+    opts: Opts,
+) -> crate::effort::Effort {
     if opts.merges || opts.trellis {
         effort
     } else {
@@ -850,16 +1027,21 @@ pub(in crate::lossy) struct Selector {
     group_bw: usize,
     round: f32,
     opts: Opts,
+    learned_map: Option<crate::lossy::adaptive_rdo::MapBitTable>,
+    learned_flags: Option<crate::lossy::adaptive_rdo::LearnedFlags>,
 }
 
 impl Selector {
-    fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::lossy) fn new_learned(
         coder: Coder,
         pw: usize,
         group_bw: usize,
         steps: &[[f32; 64]; NCH],
         round: f32,
         opts: Opts,
+        learned_map: Option<crate::lossy::adaptive_rdo::MapBitTable>,
+        learned_flags: Option<crate::lossy::adaptive_rdo::LearnedFlags>,
     ) -> Self {
         Self {
             coder,
@@ -869,6 +1051,8 @@ impl Selector {
             group_bw,
             round,
             opts,
+            learned_map,
+            learned_flags,
         }
     }
 
@@ -888,27 +1072,94 @@ impl Selector {
         effort: crate::effort::Effort,
         opts: Opts,
     ) -> Self {
-        let coder = Coder::of_counts(hist, freqs, cfg, price_effort(effort, opts), opts.split_huf);
-        Self::new(coder, pw, group_bw, steps, round, opts)
+        Self::from_counts_learned(
+            hist, freqs, pw, group_bw, steps, round, cfg, effort, opts, None, None,
+        )
     }
 
-    /// One stripe's choice ([`apply`]); `rows` recomputes its block rows.
-    pub(in crate::lossy) fn stripe(&self, mut sc: StripeCoefs, rows: RowPlanes) -> StripeCoefs {
+    /// [`Self::from_counts`] with empirical partition-map and 4x4-flag tables
+    /// learned from a streaming or parallel pilot pass.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::lossy) fn from_counts_learned(
+        hist: &[u64],
+        freqs: &crate::lossy::trellis::Freqs,
+        pw: usize,
+        group_bw: usize,
+        steps: &[[f32; 64]; NCH],
+        round: f32,
+        cfg: &LossyConfig,
+        effort: crate::effort::Effort,
+        opts: Opts,
+        learned_map: Option<crate::lossy::adaptive_rdo::MapBitTable>,
+        learned_flags: Option<crate::lossy::adaptive_rdo::LearnedFlags>,
+    ) -> Self {
+        let coder = Coder::of_counts(hist, freqs, cfg, price_effort(effort, opts), opts.split_huf);
+        Self::new_learned(
+            coder,
+            pw,
+            group_bw,
+            steps,
+            round,
+            opts,
+            learned_map,
+            learned_flags,
+        )
+    }
+
+    /// One stripe's choice with cooperative cancellation polling and an
+    /// optional per-block trellis-lambda multiplier map starting at block row
+    /// `lambda_by0` (`0` for whole-image maps, band `by0` for bounded passes).
+    pub(in crate::lossy) fn stripe_with_lambda(
+        &self,
+        mut sc: StripeCoefs,
+        rows: RowPlanes,
+        lambda_map: &[f32],
+        lambda_by0: usize,
+        stop: &dyn how_far::Stop,
+    ) -> Result<StripeCoefs, crate::Error> {
+        stop.check().map_err(|_| crate::Error::Cancelled)?;
+        let rdo = self.opts.rdo;
+        if rdo.trellis_select
+            || rdo.map_dp
+            || self.learned_map.is_some()
+            || self.learned_flags.is_some()
+            || !lambda_map.is_empty()
+        {
+            return self.stripe_rdo(sc, rows, lambda_map, lambda_by0, stop);
+        }
         let (pw, group_bw, round, opts) = (self.pw, self.group_bw, self.round, self.opts);
         let (coder, enc, lam) = (&self.coder, &self.enc, &self.lam);
         let cm = enc.b.m8;
         let (bw, nby) = (sc.bw, sc.nby);
-        sc.modes = vec![0u8; nby * bw];
+        sc.modes = crate::lossy::adaptive_rdo::try_vec(nby * bw, 0u8)?;
         if opts.small.is_some() {
-            sc.splits = vec![0u8; nby * bw];
+            sc.splits = crate::lossy::adaptive_rdo::try_vec(nby * bw, 0u8)?;
         }
-        let mut planes = [vec![0.0f32; NCH * 8 * pw], vec![0.0f32; NCH * 8 * pw]];
-        let mut ext: [Vec<(u64, bool)>; 2] = [Vec::new(), Vec::new()];
-        let mut coefs = [vec![0.0f32; NCH * bw * 64], vec![0.0f32; NCH * bw * 64]];
+        let plane_len = NCH
+            .checked_mul(8)
+            .and_then(|v| v.checked_mul(pw))
+            .ok_or(crate::Error::TooLarge)?;
+        let coef_len = NCH
+            .checked_mul(bw)
+            .and_then(|v| v.checked_mul(64))
+            .ok_or(crate::Error::TooLarge)?;
+        let mut planes = [
+            crate::lossy::adaptive_rdo::try_vec(plane_len, 0.0f32)?,
+            crate::lossy::adaptive_rdo::try_vec(plane_len, 0.0f32)?,
+        ];
+        let mut ext: [Vec<(u64, bool)>; 2] = [
+            crate::lossy::adaptive_rdo::try_vec_cap(bw)?,
+            crate::lossy::adaptive_rdo::try_vec_cap(bw)?,
+        ];
+        let mut coefs = [
+            crate::lossy::adaptive_rdo::try_vec(coef_len, 0.0f32)?,
+            crate::lossy::adaptive_rdo::try_vec(coef_len, 0.0f32)?,
+        ];
         let mut work = Work::new();
         let mut flags = FlagCost::new();
         let mut written = Vec::new();
         for r in (0..nby).step_by(2) {
+            stop.check().map_err(|_| crate::Error::Cancelled)?;
             let rr = if r + 1 < nby { 2 } else { 1 };
             for k in 0..rr {
                 ext[k].clear();
@@ -955,7 +1206,7 @@ impl Selector {
                         &mut work,
                         &mut flags,
                         &mut written,
-                    );
+                    )?;
                 }
                 bx += cols;
             }
@@ -963,7 +1214,991 @@ impl Selector {
         if opts.small.is_some_and(|f| f.is_none()) {
             prune_units(&mut sc, group_bw, &written);
         }
-        sc
+        Ok(sc)
+    }
+
+    /// Surrounding-block adaptive RDO stripe selector: trellis-priced solo and
+    /// merged candidates, exact 8-state row-strip Viterbi DP over the 9-context
+    /// partition-map model, exact unit-level V4 partition-map merge pruning,
+    /// empirical pilot-pass map/flag tables, and unified open-loop lambda AQ.
+    fn stripe_rdo(
+        &self,
+        mut sc: StripeCoefs,
+        rows: RowPlanes,
+        lambda_map: &[f32],
+        lambda_by0: usize,
+        stop: &dyn how_far::Stop,
+    ) -> Result<StripeCoefs, crate::Error> {
+        use crate::lossy::adaptive_rdo::{
+            MapBitTable, solve_row_strip_dp, sym_class, try_push, try_vec, try_vec_cap,
+        };
+        let (pw, group_bw, round, opts) = (self.pw, self.group_bw, self.round, self.opts);
+        let rdo = opts.rdo;
+        let (coder, enc, lam) = (&self.coder, &self.enc, &self.lam);
+        let cm = enc.b.m8;
+        let (bw, nby) = (sc.bw, sc.nby);
+        let snb = nby.checked_mul(bw).ok_or(crate::Error::TooLarge)?;
+        sc.modes = try_vec(snb, 0u8)?;
+        if opts.small.is_some() {
+            sc.splits = try_vec(snb, 0u8)?;
+        }
+        let map_bits = if let Some(m) = self.learned_map {
+            m
+        } else if rdo.map_dp {
+            MapBitTable::prior()
+        } else {
+            MapBitTable::flat()
+        };
+        let mut flags = match self.learned_flags {
+            Some(lf) => FlagCost { n: lf.n },
+            None => FlagCost::new(),
+        };
+        let plane_len = NCH
+            .checked_mul(8)
+            .and_then(|v| v.checked_mul(pw))
+            .ok_or(crate::Error::TooLarge)?;
+        let coef_len = NCH
+            .checked_mul(bw)
+            .and_then(|v| v.checked_mul(64))
+            .ok_or(crate::Error::TooLarge)?;
+        let mut planes = [try_vec(plane_len, 0.0f32)?, try_vec(plane_len, 0.0f32)?];
+        let mut ext: [Vec<(u64, bool)>; 2] = [try_vec_cap(bw)?, try_vec_cap(bw)?];
+        let mut coefs = [try_vec(coef_len, 0.0f32)?, try_vec(coef_len, 0.0f32)?];
+        let mut work = Work::new();
+        let mut tcands: alloc::boxed::Box<crate::lossy::trellis::Cands> =
+            alloc::boxed::Box::default();
+        let mut written = Vec::new();
+
+        let gw = if group_bw == 0 { bw } else { group_bw };
+        let n_cg = bw.div_ceil(gw);
+        let mut prev_sym_cg: Vec<Vec<u8>> = try_vec_cap(n_cg)?;
+        for ci in 0..n_cg {
+            let gs = ci * gw;
+            let ge = (gs + gw).min(bw);
+            prev_sym_cg.push(try_vec((ge - gs).div_ceil(2), 0u8)?);
+        }
+
+        // Unit-level merge pruning: record exact partition symbols, pre-merge
+        // solo backups, and merge gain per column group so marginal merges that
+        // do not pay for the actual V4 partition map bytes are reverted cleanly.
+        struct MergedBackup {
+            b: usize,
+            q8: [[i32; 64]; NCH],
+            nz8: [u64; NCH],
+            aq8: Option<u8>,
+            ok: bool,
+            solo: Solo,
+        }
+        let grows = nby.div_ceil(2);
+        let mut cg_syms: Vec<Vec<u8>> = try_vec_cap(n_cg)?;
+        for ci in 0..n_cg {
+            let gs = ci * gw;
+            let ge = (gs + gw).min(bw);
+            let sym_len = grows
+                .checked_mul((ge - gs).div_ceil(2))
+                .ok_or(crate::Error::TooLarge)?;
+            cg_syms.push(try_vec(sym_len, 0u8)?);
+        }
+        let mut cg_merge_gain: Vec<f64> = try_vec(n_cg, 0.0)?;
+        let mut cg_backups: Vec<Vec<MergedBackup>> = try_vec_cap(n_cg)?;
+        for _ in 0..n_cg {
+            cg_backups.push(Vec::new());
+        }
+        let mut has_prev_row = false;
+
+        let prev_refs = |sc: &StripeCoefs, b: usize| -> Refs {
+            Refs {
+                eob: lane_neighbors(b, bw, nby)
+                    .0
+                    .map_or(0, |p| support(sc.nz[p * NCH] & !1)),
+                count: if b > 0 {
+                    support(sc.nz[(b - 1) * NCH] & !1).div_ceil(4)
+                } else {
+                    0
+                },
+            }
+        };
+        let ac_of = |sc: &StripeCoefs, b: usize| {
+            (0..NCH).fold(0u8, |m, ch| {
+                let u = &sc.q[(b * NCH + ch) * 64..][..64];
+                m | (u[1..].iter().any(|&v| v != 0) as u8) << ch
+            })
+        };
+
+        struct GroupEval {
+            bx: usize,
+            cols: usize,
+            ok: [[bool; 2]; 2],
+            solo: [[Solo; 2]; 2],
+            cands: [MCand; 5],
+            cand_ix: [[Option<usize>; 4]; 3],
+        }
+
+        let dummy_cand = MCand {
+            shape: Shape::S16x16,
+            j: 0.0,
+            units: [[[0; 64]; 4]; NCH],
+            dcs: [[[0; 2]; 2]; NCH],
+            aq: 64,
+        };
+        let dummy_solo = Solo {
+            j: 0.0,
+            split: 0,
+            q4: [[0; 64]; NCH],
+            gain: [0.0; NCH],
+        };
+
+        for r in (0..nby).step_by(2) {
+            stop.check().map_err(|_| crate::Error::Cancelled)?;
+            let rr = if r + 1 < nby { 2 } else { 1 };
+            for k in 0..rr {
+                ext[k].clear();
+                rows(sc.by0 + r + k, &mut planes[k], &mut ext[k]);
+                for ch in 0..NCH {
+                    enc_simd::fdct_row(
+                        &planes[k][ch * 8 * pw..][..8 * pw],
+                        pw,
+                        bw,
+                        &cm,
+                        &mut coefs[k][ch * bw * 64..][..bw * 64],
+                    );
+                }
+            }
+
+            for ci in 0..n_cg {
+                let gs = ci * gw;
+                let ge = (gs + gw).min(bw);
+                let ng = (ge - gs).div_ceil(2);
+                let mut evals: Vec<GroupEval> = try_vec_cap(ng)?;
+                let mut unary: Vec<[f64; 8]> = try_vec_cap(ng)?;
+                let mut up_class: Vec<u8> = try_vec_cap(ng)?;
+
+                for gc in 0..ng {
+                    stop.check().map_err(|_| crate::Error::Cancelled)?;
+                    let bx = gs + gc * 2;
+                    let cols = (ge - bx).min(2);
+                    let g = Group2 {
+                        r,
+                        rows: rr,
+                        bx,
+                        cols,
+                    };
+                    let b_of = |py: usize, px: usize| (g.r + py) * bw + g.bx + px;
+                    let code = |b: usize| sc.aq.get(b).copied().unwrap_or(64);
+                    let mut ok = [[false; 2]; 2];
+                    for py in 0..g.rows {
+                        for px in 0..g.cols {
+                            let extreme = ext[py]
+                                .get(g.bx + px)
+                                .is_some_and(|&(white, black)| white == u64::MAX || black);
+                            ok[py][px] = code(b_of(py, px)) != 0 && !extreme;
+                        }
+                    }
+                    let all_ok = (0..g.rows).all(|py| (0..g.cols).all(|px| ok[py][px]));
+                    let merges = opts.merges && all_ok && g.rows * g.cols > 1;
+
+                    let mut cand = [[0u8; 2]; 2];
+                    if opts.small.is_some() {
+                        for py in 0..g.rows {
+                            for px in 0..g.cols {
+                                if !ok[py][px] {
+                                    continue;
+                                }
+                                let aq = code(b_of(py, px)) as f32 / 64.0;
+                                for ch in 0..NCH {
+                                    let c = &coefs[py][(ch * bw + g.bx + px) * 64..][..64];
+                                    let ac_energy: f32 = c[1..].iter().map(|&v| v * v).sum();
+                                    let thr = enc.min4[ch] * aq * (1.0 - round.abs());
+                                    cand[py][px] |= ((ac_energy >= thr * thr) as u8) << ch;
+                                }
+                            }
+                        }
+                    }
+
+                    let mut w = [0.0f64; NCH];
+                    let mut group_norm = [0.0f64; NCH];
+                    let mut wt = [[[0.0f32; 2]; 2]; NCH];
+                    let mut lmul_max = 0.0f64;
+                    if !lambda_map.is_empty() {
+                        for py in 0..g.rows {
+                            let rel_by = (sc.by0 + g.r + py).saturating_sub(lambda_by0);
+                            for px in 0..g.cols {
+                                let gi = rel_by * bw + g.bx + px;
+                                let m = lambda_map.get(gi).copied().unwrap_or(1.0) as f64;
+                                if m > lmul_max {
+                                    lmul_max = m;
+                                }
+                            }
+                        }
+                    }
+                    let lmul_g = if lmul_max > 0.0 { lmul_max } else { 1.0 };
+                    let n_par = (g.rows * g.cols) as f64;
+                    for ch in 0..NCH {
+                        let mut sum = 0.0f64;
+                        for py in 0..g.rows {
+                            for px in 0..g.cols {
+                                let c = &coefs[py][(ch * bw + g.bx + px) * 64..][..64];
+                                let e: f64 = c[1..].iter().map(|&v| (v as f64) * (v as f64)).sum();
+                                sum += e;
+                                let aq = code(b_of(py, px)) as f32 / 64.0;
+                                let d = enc.steps8[ch][1] * aq;
+                                let ms = (e / 63.0) as f32 / (d * d);
+                                wt[ch][py][px] = FLAT_A0 / (FLAT_A0 + ms);
+                            }
+                        }
+                        group_norm[ch] = sum / n_par;
+                        w[ch] = 64.0 * lam.lambda(group_norm[ch] * 64.0 / 63.0) * lmul_g;
+                    }
+
+                    let mut solo = [[dummy_solo; 2]; 2];
+                    for py in 0..g.rows {
+                        for px in 0..g.cols {
+                            let small = opts.small.filter(|_| ok[py][px]);
+                            solo[py][px] = solo_parent_rdo(
+                                &sc,
+                                enc,
+                                &planes,
+                                &coefs,
+                                pw,
+                                &g,
+                                (py, px),
+                                &w,
+                                &group_norm,
+                                lmul_g,
+                                &wt,
+                                round,
+                                coder,
+                                lam,
+                                small.map(|f| (f, cand[py][px])),
+                                &opts,
+                                &flags,
+                                &prev_refs,
+                                &mut tcands,
+                            );
+                        }
+                    }
+
+                    let Work { sp, cands, err } = &mut *work;
+                    let mut cand_ix = [[None::<usize>; 4]; 3];
+                    if merges {
+                        enc.spectra(&planes, pw, &g, sp);
+                        let mut n = 0;
+                        for blocks in BLOCKS.iter().skip(1) {
+                            for &(s, py0, px0) in *blocks {
+                                if py0 + s.ph() > g.rows
+                                    || px0 + s.pw() > g.cols
+                                    || opts.shapes >> s as u8 & 1 == 0
+                                {
+                                    continue;
+                                }
+                                if cand_ix[s as usize][py0 * 2 + px0].is_none() {
+                                    cand_ix[s as usize][py0 * 2 + px0] = Some(n);
+                                    let c = &mut cands[n];
+                                    let pr = |b: usize| prev_refs(&sc, b);
+                                    merged_rdo(
+                                        &sc,
+                                        enc,
+                                        sp,
+                                        &g,
+                                        (s, py0, px0),
+                                        &w,
+                                        &group_norm,
+                                        lmul_g,
+                                        &wt,
+                                        round,
+                                        coder,
+                                        lam,
+                                        &opts,
+                                        &pr,
+                                        &mut tcands,
+                                        c,
+                                        err,
+                                    );
+                                    n += 1;
+                                }
+                            }
+                        }
+                    }
+
+                    let mut u_row = [f64::INFINITY; 8];
+                    let has = [true, g.cols == 2, g.rows == 2, g.cols == 2 && g.rows == 2];
+
+                    for (sym, roles) in PARTITIONS.iter().enumerate() {
+                        if sym != 0 && !merges {
+                            continue;
+                        }
+                        if (0..4).any(|i| roles[i] != 0 && !has[i]) {
+                            continue;
+                        }
+                        let mut j = 0.0f64;
+                        let mut covered = [false; 4];
+                        let mut allowed = true;
+                        for &(s, py0, px0) in BLOCKS[sym] {
+                            let Some(ci) = cand_ix[s as usize][py0 * 2 + px0] else {
+                                allowed = false;
+                                break;
+                            };
+                            j += cands[ci].j + DC_KAPPA * (s.ph() * s.pw()) as f64;
+                            for py in 0..s.ph() {
+                                for px in 0..s.pw() {
+                                    covered[(py0 + py) * 2 + px0 + px] = true;
+                                }
+                            }
+                        }
+                        if !allowed {
+                            continue;
+                        }
+                        for py in 0..g.rows {
+                            for px in 0..g.cols {
+                                if !covered[py * 2 + px] {
+                                    j += solo[py][px].j;
+                                }
+                            }
+                        }
+                        u_row[sym] = j;
+                    }
+
+                    unary.push(u_row);
+                    up_class.push(if has_prev_row {
+                        sym_class(prev_sym_cg[ci][gc]) as u8
+                    } else {
+                        0
+                    });
+                    let mut saved_cands: [MCand; 5] = core::array::from_fn(|_| dummy_cand.clone());
+                    if merges {
+                        saved_cands.clone_from_slice(cands);
+                    }
+                    evals.push(GroupEval {
+                        bx,
+                        cols,
+                        ok,
+                        solo,
+                        cands: saved_cands,
+                        cand_ix,
+                    });
+                }
+
+                // Exact 8-state row-strip Viterbi DP across the column group's row.
+                // Exclude a trailing 1x1 corner (odd unit rows AND odd unit cols),
+                // which `superblock::map_groups` omits and emits zero map bits for.
+                let trailing_1x1 = rr == 1 && !(ge - gs).is_multiple_of(2);
+                let dp_ng = if trailing_1x1 { ng - 1 } else { ng };
+                let mut path = if dp_ng > 0 {
+                    solve_row_strip_dp(
+                        &unary[..dp_ng],
+                        &up_class[..dp_ng],
+                        &map_bits,
+                        |_, _, _| 0.0,
+                    )?
+                    .1
+                } else {
+                    Vec::new()
+                };
+                if trailing_1x1 {
+                    try_push(&mut path, 0)?;
+                }
+
+                // Commit winning partition symbols to `sc`.
+                let gr = r / 2;
+                let gcols_cg = (ge - gs).div_ceil(2);
+                for gc in 0..ng {
+                    let sym = path[gc] as usize;
+                    let ev = &evals[gc];
+                    let sym_out = if rr == 1 && ev.cols == 1 {
+                        0
+                    } else {
+                        sym as u8
+                    };
+                    cg_syms[ci][gr * gcols_cg + gc] = sym_out;
+                    if sym != 0 {
+                        cg_merge_gain[ci] += unary[gc][0] - unary[gc][sym];
+                    }
+                    let mut covered = [false; 4];
+                    for &(s, py0, px0) in BLOCKS[sym] {
+                        for py in 0..s.ph() {
+                            for px in 0..s.pw() {
+                                let b = (r + py0 + py) * bw + ev.bx + px0 + px;
+                                let q8: [[i32; 64]; NCH] = core::array::from_fn(|ch| {
+                                    sc.q[(b * NCH + ch) * 64..][..64].try_into().unwrap()
+                                });
+                                let nz8: [u64; NCH] =
+                                    core::array::from_fn(|ch| sc.nz[b * NCH + ch]);
+                                let aq8 = sc.aq.get(b).copied();
+                                try_push(
+                                    &mut cg_backups[ci],
+                                    MergedBackup {
+                                        b,
+                                        q8,
+                                        nz8,
+                                        aq8,
+                                        ok: ev.ok[py0 + py][px0 + px],
+                                        solo: ev.solo[py0 + py][px0 + px],
+                                    },
+                                )?;
+                            }
+                        }
+                        let ci_c = ev.cand_ix[s as usize][py0 * 2 + px0].expect("candidate");
+                        write_merged(&mut sc, s, r + py0, ev.bx + px0, &ev.cands[ci_c]);
+                        for py in 0..s.ph() {
+                            for px in 0..s.pw() {
+                                covered[(py0 + py) * 2 + px0 + px] = true;
+                            }
+                        }
+                    }
+                    if opts.small.is_some() {
+                        for py in 0..rr {
+                            for px in 0..ev.cols {
+                                if covered[py * 2 + px] || !ev.ok[py][px] {
+                                    continue;
+                                }
+                                let so = &ev.solo[py][px];
+                                let b = (r + py) * bw + ev.bx + px;
+                                for ch in 0..NCH {
+                                    if so.split >> ch & 1 != 0 {
+                                        try_push(
+                                            &mut written,
+                                            Written {
+                                                b,
+                                                ch,
+                                                q8: sc.q[(b * NCH + ch) * 64..][..64]
+                                                    .try_into()
+                                                    .unwrap(),
+                                                nz8: sc.nz[b * NCH + ch],
+                                                gain: so.gain[ch],
+                                            },
+                                        )?;
+                                    }
+                                }
+                                write_split(&mut sc, b, so);
+                                if self.learned_flags.is_none() {
+                                    flags.add(so.split, ac_of(&sc, b));
+                                }
+                            }
+                        }
+                    }
+                    prev_sym_cg[ci][gc] = sym_out;
+                }
+            }
+            has_prev_row = true;
+        }
+        // Unit-level merge pruning: revert column groups whose merges do not
+        // repay the exact V4 range-coded partition map overhead.
+        if opts.merges {
+            for ci in 0..n_cg {
+                if cg_backups[ci].is_empty() {
+                    continue;
+                }
+                let gs = ci * gw;
+                let ge = (gs + gw).min(bw);
+                let syms = &cg_syms[ci];
+                let map_bits = super::map::encode_v4_partitions(nby, ge - gs, |i| syms[i])
+                    .map_or(f64::INFINITY, |m| (m.len() as f64 + 2.0) * 8.0);
+                if cg_merge_gain[ci] < map_bits {
+                    for bk in &cg_backups[ci] {
+                        sc.modes[bk.b] = 0;
+                        if let Some(a) = bk.aq8 {
+                            sc.aq[bk.b] = a;
+                        }
+                        for ch in 0..NCH {
+                            sc.q[(bk.b * NCH + ch) * 64..][..64].copy_from_slice(&bk.q8[ch]);
+                            sc.nz[bk.b * NCH + ch] = bk.nz8[ch];
+                        }
+                        if opts.small.is_some() && bk.ok {
+                            for ch in 0..NCH {
+                                if bk.solo.split >> ch & 1 != 0 {
+                                    try_push(
+                                        &mut written,
+                                        Written {
+                                            b: bk.b,
+                                            ch,
+                                            q8: bk.q8[ch],
+                                            nz8: bk.nz8[ch],
+                                            gain: bk.solo.gain[ch],
+                                        },
+                                    )?;
+                                }
+                            }
+                            write_split(&mut sc, bk.b, &bk.solo);
+                        }
+                    }
+                }
+            }
+        }
+        if opts.small.is_some_and(|f| f.is_none()) {
+            prune_units(&mut sc, group_bw, &written);
+        }
+        stop.check().map_err(|_| crate::Error::Cancelled)?;
+        Ok(sc)
+    }
+}
+
+/// Trellis-quantize a single 64-slot candidate AC unit under `coder`.
+#[allow(clippy::too_many_arguments)]
+fn trellis_unit(
+    coder: &Coder,
+    src: &[f32; 64],
+    steps_aq: &[f32; 64],
+    ch: usize,
+    r: Refs,
+    lam: &LossyTrellis,
+    norm_override: Option<f64>,
+    lambda_mul: f64,
+    cands: &mut crate::lossy::trellis::Cands,
+    q: &mut [i32; 64],
+    nz: &mut u64,
+) {
+    match coder {
+        Coder::RunLevel(p) => {
+            crate::lossy::trellis::trellis_unit_rl(
+                src,
+                steps_aq,
+                ch,
+                r.eob,
+                p,
+                lam,
+                norm_override,
+                lambda_mul,
+                cands,
+                q,
+                nz,
+            );
+        }
+        Coder::SplitHuf(h) => {
+            crate::lossy::trellis::trellis_unit_sh(
+                src,
+                steps_aq,
+                ch,
+                r.count,
+                h,
+                lam,
+                norm_override,
+                lambda_mul,
+                q,
+                nz,
+            );
+        }
+    }
+}
+
+/// Surrounding-block adaptive RDO version of [`solo_parent`]: supports
+/// trellis-priced solo 8x8/4x4 candidates under unified group lambda.
+#[allow(clippy::too_many_arguments)]
+fn solo_parent_rdo(
+    sc: &StripeCoefs,
+    enc: &Enc,
+    planes: &[Vec<f32>; 2],
+    coefs: &[Vec<f32>; 2],
+    pw: usize,
+    g: &Group2,
+    (py, px): (usize, usize),
+    w: &[f64; NCH],
+    group_norm: &[f64; NCH],
+    lambda_mul: f64,
+    wt: &[[[f32; 2]; 2]; NCH],
+    round: f32,
+    coder: &Coder,
+    lam: &LossyTrellis,
+    small: Option<(Option<u8>, u8)>,
+    opts: &Opts,
+    flags: &FlagCost,
+    prev_refs: &dyn Fn(&StripeCoefs, usize) -> Refs,
+    tcands: &mut crate::lossy::trellis::Cands,
+) -> Solo {
+    let tr_on = opts.rdo.trellis_select && opts.trellis;
+    let bw = sc.bw;
+    let b = (g.r + py) * bw + g.bx + px;
+    let aq = sc.aq.get(b).copied().unwrap_or(64) as f32 / 64.0;
+    let r0 = prev_refs(sc, b);
+
+    let mut q8: [[i32; 64]; NCH] =
+        core::array::from_fn(|ch| sc.q[(b * NCH + ch) * 64..][..64].try_into().unwrap());
+    let mut m8 = q8.map(|q| nonzero(&q));
+    if tr_on && sc.aq.get(b) != Some(&0) {
+        let mut lref = r0;
+        for ch in 0..NCH {
+            let c: &[f32; 64] = coefs[py][(ch * bw + g.bx + px) * 64..][..64]
+                .try_into()
+                .unwrap();
+            let steps_aq: [f32; 64] = core::array::from_fn(|i| {
+                if i == 0 {
+                    enc.steps8[ch][0]
+                } else {
+                    enc.steps8[ch][i] * aq
+                }
+            });
+            let mut nz = m8[ch] | u64::from(q8[ch][0] != 0);
+            let rf = if ch == 0 { r0 } else { lref };
+            trellis_unit(
+                coder,
+                c,
+                &steps_aq,
+                ch,
+                rf,
+                lam,
+                Some(group_norm[ch]),
+                lambda_mul,
+                tcands,
+                &mut q8[ch],
+                &mut nz,
+            );
+            m8[ch] = nz & !1;
+            if ch == 0 {
+                lref = Refs::of_mask(m8[0]);
+            }
+        }
+    }
+
+    let (mut d8, mut x8) = ([0.0f64; NCH], [0.0f64; NCH]);
+    let mut q4 = [[0i32; 64]; NCH];
+    let (mut m4, mut d4, mut x4) = ([0u64; NCH], [0.0f64; NCH], [0.0f64; NCH]);
+    let kx = (opts.kappa - 1.0) as f64;
+    let mut lref4 = Refs::of_mask(m8[0]);
+
+    for ch in 0..NCH {
+        let c: &[f32; 64] = coefs[py][(ch * bw + g.bx + px) * 64..][..64]
+            .try_into()
+            .unwrap();
+        let st = &enc.steps8[ch];
+        let first = st[1] * aq;
+        let (d, en) = incant!(
+            terms_impl(c, &q8[ch], (&enc.inv8[ch], st), aq),
+            [v3, neon, wasm128, scalar]
+        );
+        let ring8 = RING * ring_unit(first, wt[ch][py][px], en);
+        (d8[ch], x8[ch]) = (w[ch] * (d + ring8), w[ch] * kx * (d + ring8));
+
+        if small.is_some_and(|(_, cand)| cand >> ch & 1 != 0) {
+            let mut pix = [0.0f32; 64];
+            for (y, row) in pix.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                row.copy_from_slice(&planes[py][ch * 8 * pw + y * pw + (g.bx + px) * 8..][..8]);
+            }
+            let cf = (opts.forward)(&pix);
+            let (mut d_c4, mut en_c4) = incant!(
+                cand4_impl(
+                    &cf,
+                    (&enc.inv4[ch], &enc.steps4[ch]),
+                    (aq, round),
+                    &mut q4[ch]
+                ),
+                [v3, neon, wasm128, scalar]
+            );
+            q4[ch][0] = q8[ch][0];
+            m4[ch] = nonzero(&q4[ch]);
+            if tr_on && sc.aq.get(b) != Some(&0) {
+                let steps4_aq: [f32; 64] = core::array::from_fn(|i| {
+                    if i == 0 {
+                        enc.steps4[ch][0]
+                    } else {
+                        enc.steps4[ch][i] * aq
+                    }
+                });
+                let mut nz = m4[ch] | u64::from(q4[ch][0] != 0);
+                let rf = if ch == 0 { r0 } else { lref4 };
+                trellis_unit(
+                    coder,
+                    &cf,
+                    &steps4_aq,
+                    ch,
+                    rf,
+                    lam,
+                    Some(group_norm[ch]),
+                    lambda_mul,
+                    tcands,
+                    &mut q4[ch],
+                    &mut nz,
+                );
+                m4[ch] = nz & !1;
+                if ch == 0 && m4[0] != 0 {
+                    lref4 = Refs::of_mask(m4[0]);
+                }
+                let (dt, et) = incant!(
+                    terms_impl(&cf, &q4[ch], (&enc.inv4[ch], &enc.steps4[ch]), aq),
+                    [v3, neon, wasm128, scalar]
+                );
+                d_c4 = dt;
+                en_c4 = et;
+            }
+            let ring4 = RING * ring_unit(first, wt[ch][py][px], en_c4);
+            (d4[ch], x4[ch]) = (w[ch] * (d_c4 + ring4), w[ch] * kx * (d_c4 + ring4));
+            if opts.edge > 0.0 {
+                let first64 = first as f64;
+                let k = w[ch] * (opts.kappa * opts.edge) as f64 / (first64 * first64);
+                x8[ch] += k * inner_edge(&pix, &recon(&q8[ch], &enc.dq8[ch], aq, false));
+                x4[ch] += k * inner_edge(&pix, &recon(&q4[ch], &enc.dq4[ch], aq, true));
+            }
+        }
+    }
+
+    let unit = |ch: usize, s: usize| -> (&[i32; 64], u64) {
+        if s == 0 {
+            (&q8[ch], m8[ch])
+        } else {
+            (&q4[ch], m4[ch])
+        }
+    };
+    let lref = [Refs::of_mask(m8[0]), Refs::of_mask(m4[0])];
+    let mut lmemo = [None::<f64>; 2];
+    let mut lbits = |s: usize| {
+        *lmemo[s].get_or_insert_with(|| {
+            let (q, m) = unit(0, s);
+            unit_bits_m(coder, 0, q, m, r0)
+        })
+    };
+    let mut cmemo = [[[None::<f64>; 2]; 2]; NCH];
+    let mut cbits = |ch: usize, ls: usize, s: usize| {
+        *cmemo[ch][ls][s].get_or_insert_with(|| {
+            let (q, m) = unit(ch, s);
+            unit_bits_m(coder, ch, q, m, lref[ls])
+        })
+    };
+    let Some((force, _)) = small else {
+        let mut j = 0.0;
+        for ch in 0..NCH {
+            j += d8[ch] + if ch == 0 { lbits(0) } else { cbits(ch, 0, 0) };
+        }
+        return Solo {
+            j,
+            split: 0,
+            q4: [[0; 64]; NCH],
+            gain: [0.0; NCH],
+        };
+    };
+    let ac4 = m4.map(|m| m != 0);
+    let mut best = (f64::MAX, 0u8, 0.0f64);
+    for lsplit in 0..2u8 {
+        if force.is_some_and(|m| (m & 1) != lsplit) || (lsplit == 1 && !ac4[0]) {
+            continue;
+        }
+        let ls = lsplit as usize;
+        let (lc, lx, lm) = if ls == 0 {
+            (d8[0], x8[0], m8[0])
+        } else {
+            (d4[0], x4[0], m4[0])
+        };
+        let fl = if lm != 0 { flags.bits(0, 0, ls) } else { 0.0 };
+        let mut j = lc + lbits(ls) + fl;
+        let mut x = lx;
+        let mut sp = lsplit;
+        for ch in 1..NCH {
+            let mut bj = (f64::MAX, 0u8, 0.0f64);
+            for csplit in 0..2u8 {
+                if force.is_some_and(|m| (m >> ch & 1) != csplit) || (csplit == 1 && !ac4[ch]) {
+                    continue;
+                }
+                let cs = csplit as usize;
+                let (cc, cx, cm) = if cs == 0 {
+                    (d8[ch], x8[ch], m8[ch])
+                } else {
+                    (d4[ch], x4[ch], m4[ch])
+                };
+                let fl = if cm != 0 { flags.bits(ch, ls, cs) } else { 0.0 };
+                let jj = cc + cbits(ch, ls, cs) + fl;
+                if jj + cx < bj.0 + bj.2 {
+                    bj = (jj, csplit, cx);
+                }
+            }
+            if bj.0 == f64::MAX {
+                bj = (d8[ch] + cbits(ch, ls, 0), 0, 0.0);
+            }
+            j += bj.0;
+            x += bj.2;
+            sp |= bj.1 << ch;
+        }
+        if j + x < best.0 + best.2 {
+            best = (j, sp, x);
+        }
+    }
+    if best.0 == f64::MAX {
+        let mut j = 0.0;
+        for ch in 0..NCH {
+            j += d8[ch] + if ch == 0 { lbits(0) } else { cbits(ch, 0, 0) };
+        }
+        best = (j, 0, 0.0);
+    }
+    let mut out = [[0i32; 64]; NCH];
+    let mut gain = [0.0f64; NCH];
+    let ls = (best.1 & 1) as usize;
+    for ch in 0..NCH {
+        if best.1 >> ch & 1 != 0 {
+            out[ch] = q4[ch];
+            let (b8, b4) = if ch == 0 {
+                (lbits(0), lbits(1))
+            } else {
+                (cbits(ch, ls, 0), cbits(ch, ls, 1))
+            };
+            gain[ch] = (d8[ch] + x8[ch] + b8) - (d4[ch] + x4[ch] + b4);
+        }
+    }
+    Solo {
+        j: best.0,
+        split: best.1,
+        q4: out,
+        gain,
+    }
+}
+
+/// Surrounding-block adaptive RDO version of [`merged`]: supports
+/// trellis-priced merged superblock units under unified group lambda.
+#[allow(clippy::too_many_arguments)]
+fn merged_rdo(
+    sc: &StripeCoefs,
+    enc: &Enc,
+    sp: &[Spectra; NCH],
+    g: &Group2,
+    (s, py0, px0): (Shape, usize, usize),
+    w: &[f64; NCH],
+    group_norm: &[f64; NCH],
+    lambda_mul: f64,
+    wt: &[[[f32; 2]; 2]; NCH],
+    round: f32,
+    coder: &Coder,
+    lam: &LossyTrellis,
+    opts: &Opts,
+    prev_refs: &dyn Fn(usize) -> Refs,
+    tcands: &mut crate::lossy::trellis::Cands,
+    out: &mut MCand,
+    spec_err: &mut [[f32; 256]; NCH],
+) {
+    let tr_on = opts.rdo.trellis_select && opts.trellis;
+    let bw = sc.bw;
+    let b_of = |py: usize, px: usize| (g.r + py0 + py) * bw + g.bx + px0 + px;
+    let aqc = (0..s.ph())
+        .flat_map(|py| (0..s.pw()).map(move |px| (py, px)))
+        .map(|(py, px)| sc.aq.get(b_of(py, px)).copied().unwrap_or(64))
+        .min()
+        .unwrap();
+    let aq = aqc as f32 / 64.0;
+    out.shape = s;
+    out.j = 0.0;
+    out.aq = aqc;
+    let si = s as usize;
+    let gather = &enc.gather[si];
+    let n_p = s.ph() * s.pw();
+
+    if tr_on {
+        let mut lrefs = [Refs { eob: 0, count: 0 }; 4];
+        for ch in 0..NCH {
+            let c = sp[ch].get(s, py0, px0);
+            let dd = llf_to_dcs(s, [[c[0], c[1]], [c[16], c[17]]]);
+            for py in 0..s.ph() {
+                for px in 0..s.pw() {
+                    let v = dd[py][px] / enc.steps8[ch][0];
+                    let r = crate::mathx::round_pos(v.abs() as f64).min(4_194_303.0) as i32;
+                    out.dcs[ch][py][px] = if v < 0.0 { -r } else { r };
+                }
+            }
+            let st = &enc.steps[ch][si];
+            let inv = &enc.inv[ch][si];
+            let sc_k = &enc.sc[si];
+            let mut qs = [0i32; 256];
+            for p in 0..n_p {
+                let mut usrc = [0.0f32; 64];
+                let mut usteps = [1.0f32; 64];
+                for z in 1..64 {
+                    let idx = gather[p * 64 + z] as usize;
+                    usrc[z] = c[idx];
+                    usteps[z] = st[idx] * aq;
+                }
+                let b = b_of(p / s.pw(), p % s.pw());
+                let rf = if ch == 0 { prev_refs(b) } else { lrefs[p] };
+                out.units[ch][p] = [0i32; 64];
+                let mut nz = 0u64;
+                trellis_unit(
+                    coder,
+                    &usrc,
+                    &usteps,
+                    ch,
+                    rf,
+                    lam,
+                    Some(group_norm[ch]),
+                    lambda_mul,
+                    tcands,
+                    &mut out.units[ch][p],
+                    &mut nz,
+                );
+                if ch == 0 {
+                    lrefs[p] = Refs::of_mask(nz & !1);
+                }
+                for z in 1..64 {
+                    qs[gather[p * 64 + z] as usize] = out.units[ch][p][z];
+                }
+            }
+            spec_err[ch].fill(0.0);
+            let inv_aq = 1.0 / aq;
+            let mut d = 0.0f64;
+            for v in 0..s.h() {
+                for u in 0..s.w() {
+                    if v < s.ph() && u < s.pw() {
+                        continue;
+                    }
+                    let idx = v * 16 + u;
+                    let cv = c[idx];
+                    let qv = qs[idx] as f32;
+                    let e_step = cv * inv[idx] * inv_aq - qv;
+                    d += (e_step as f64) * (e_step as f64);
+                    spec_err[ch][idx] = (cv - qv * st[idx] * aq) * sc_k[idx];
+                }
+            }
+            out.j += w[ch] * d;
+        }
+    } else {
+        let mut qs = [0i32; 256];
+        for ch in 0..NCH {
+            let c = sp[ch].get(s, py0, px0);
+            let tabs = (&enc.inv[ch][si], &enc.steps[ch][si], &enc.sc[si]);
+            let d = incant!(
+                quant_impl(
+                    (s.h(), s.w() / 8),
+                    c,
+                    tabs,
+                    (aq, round),
+                    &mut qs,
+                    &mut spec_err[ch]
+                ),
+                [v3, neon, wasm128, scalar]
+            );
+            for (p, unit) in out.units[ch].iter_mut().enumerate().take(n_p) {
+                for (z, v) in unit.iter_mut().enumerate() {
+                    *v = qs[gather[p * 64 + z] as usize];
+                }
+            }
+            out.j += w[ch] * d as f64;
+            let dd = llf_to_dcs(s, [[c[0], c[1]], [c[16], c[17]]]);
+            for py in 0..s.ph() {
+                for px in 0..s.pw() {
+                    let v = dd[py][px] / enc.steps8[ch][0];
+                    let r = crate::mathx::round_pos(v.abs() as f64).min(4_194_303.0) as i32;
+                    out.dcs[ch][py][px] = if v < 0.0 { -r } else { r };
+                }
+            }
+        }
+    }
+
+    for (ch, px_err) in spec_err.iter_mut().enumerate() {
+        kernel::inverse_full(s, px_err);
+        let first = enc.steps8[ch][1] * aq;
+        for py in 0..s.ph() {
+            for px in 0..s.pw() {
+                let mut acc = [0.0f32; 8];
+                for y in 0..8 {
+                    let row = &px_err[(py * 8 + y) * 16 + px * 8..][..8];
+                    for (a, &v) in acc.iter_mut().zip(row) {
+                        *a += v * v;
+                    }
+                }
+                let e: f64 = acc.iter().map(|&a| a as f64).sum();
+                out.j += w[ch] * RING * ring_unit(first, wt[ch][py0 + py][px0 + px], e);
+            }
+        }
+    }
+
+    for p in 0..n_p {
+        let b = b_of(p / s.pw(), p % s.pw());
+        out.j += unit_bits(coder, 0, &out.units[0][p], prev_refs(b));
+        let lref = Refs::of_luma(&out.units[0][p]);
+        for ch in 1..NCH {
+            out.j += unit_bits(coder, ch, &out.units[ch][p], lref);
+        }
     }
 }
 
@@ -1111,7 +2346,7 @@ fn decide(
     work: &mut Work,
     flags: &mut FlagCost,
     written: &mut Vec<Written>,
-) {
+) -> Result<(), crate::Error> {
     let (bw, nby) = (sc.bw, sc.nby);
     let b_of = |py: usize, px: usize| (g.r + py) * bw + g.bx + px;
     // Parents that may merge or split: not kept or exact (code 0 here),
@@ -1130,7 +2365,7 @@ fn decide(
     let all_ok = (0..g.rows).all(|py| (0..g.cols).all(|px| ok[py][px]));
     let merges = opts.merges && all_ok && g.rows * g.cols > 1;
     if !merges && opts.small.is_none() {
-        return;
+        return Ok(());
     }
     // 4x4 candidates per parent, bit `1 << ch`: a plane whose AC energy is
     // below the smallest 4x4 AC threshold quantizes every 4x4 AC slot to
@@ -1168,7 +2403,7 @@ fn decide(
                 }
             }
         }
-        return;
+        return Ok(());
     }
     // Per plane: zenjpeg's trellis lambda on the group's mean AC energy
     // (libjpeg units), and each parent's flatness weight.
@@ -1336,13 +2571,16 @@ fn decide(
                 let b = b_of(py, px);
                 for ch in 0..NCH {
                     if so.split >> ch & 1 != 0 {
-                        written.push(Written {
-                            b,
-                            ch,
-                            q8: sc.q[(b * NCH + ch) * 64..][..64].try_into().unwrap(),
-                            nz8: sc.nz[b * NCH + ch],
-                            gain: so.gain[ch],
-                        });
+                        crate::lossy::adaptive_rdo::try_push(
+                            written,
+                            Written {
+                                b,
+                                ch,
+                                q8: sc.q[(b * NCH + ch) * 64..][..64].try_into().unwrap(),
+                                nz8: sc.nz[b * NCH + ch],
+                                gain: so.gain[ch],
+                            },
+                        )?;
                     }
                 }
                 write_split(sc, b, so);
@@ -1350,6 +2588,7 @@ fn decide(
             }
         }
     }
+    Ok(())
 }
 
 /// The cost of parent (`py`, `px`) of group `g` coded alone and, with

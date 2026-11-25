@@ -736,3 +736,66 @@ fn bounded_v4_xyb_power_matches_exact_frozen_pixels() {
         );
     }
 }
+
+#[test]
+fn bounded_v4_adaptive_partitions_and_compact_match_whole_and_regions() {
+    // > 64 Ki pixels so bounded trellis efforts 9.0, 9.5, 10.0 run; odd width
+    // (293 -> 37 blocks) exercises trailing partial superblocks too.
+    let info = ImageInfo::new(293, 244, Channels::Rgb, SampleType::U8);
+    let stride = info.row_bytes() + 19;
+    let source = raster(&info, stride);
+    let packed: Vec<u8> = (0..info.height as usize)
+        .flat_map(|y| source[y * stride..][..info.row_bytes()].iter().copied())
+        .collect();
+
+    for &(label, compact, adaptive, coder) in &[
+        ("compact", true, false, LossyEntropy::RunLevel),
+        ("adaptive-rl", false, true, LossyEntropy::RunLevel),
+        ("adaptive-sh", false, true, LossyEntropy::SplitHuf),
+    ] {
+        for effort in [7.5f32, 9.0, 9.5, 10.0] {
+            let mut config = ImiEncoderConfig::lossy(60.0)
+                .with_effort(effort)
+                .with_column_groups(Some(128))
+                .with_checksum(true)
+                .tune_lossy(|t| {
+                    t.entropy = coder;
+                    t.adaptive_partitions = adaptive;
+                });
+            if compact {
+                config = config.with_decode_speed(DecodeSpeed::Compact);
+            }
+            // Checks V4 vs bit-exact upgraded V3 power oracle + 1/2/4/8T decode parity.
+            let v4_file = check_source(&info, &config, &source, stride);
+
+            // V4 bounded must match whole-image V4 `encode_samples` 0-bit exact.
+            let whole = config
+                .encode_samples(
+                    imij::ImageRef::new(&packed, info.row_bytes(), &info),
+                    &Metadata::default(),
+                )
+                .unwrap();
+            let expected_v4 = imij::decode(&v4_file).unwrap().1;
+            assert_eq!(
+                expected_v4,
+                imij::decode(&whole).unwrap().1,
+                "{label} e{effort}: V4 bounded vs whole-image V4 pixel mismatch"
+            );
+
+            // Region decode parity on the V4 file.
+            let rect = imij::planes::Rect::new(11, 13, 47, 39);
+            let rstride = rect.width() as usize * info.bytes_per_pixel() + 11;
+            let mut out = vec![0x5au8; rstride * rect.height() as usize];
+            imij::region::decode_region(&v4_file, rect, &mut out, rstride).unwrap();
+            for y in 0..rect.height() as usize {
+                let at = (rect.y() as usize + y) * info.row_bytes()
+                    + rect.x() as usize * info.bytes_per_pixel();
+                assert_eq!(
+                    &out[y * rstride..][..rect.width() as usize * info.bytes_per_pixel()],
+                    &expected_v4[at..][..rect.width() as usize * info.bytes_per_pixel()],
+                    "{label} e{effort}: V4 region decode mismatch at row {y}"
+                );
+            }
+        }
+    }
+}
