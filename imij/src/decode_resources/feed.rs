@@ -183,6 +183,7 @@ impl Admission for Budget {
     forward! { native(header: &crate::jpeg::NativeHeader, rows: u16); native_buffer(bytes: usize); }
     forward! {
         check();
+        coding_profile(header: &crate::Header);
 
         chunk_start();
 

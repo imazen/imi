@@ -154,6 +154,21 @@ impl ImiEncoderConfig {
         Self::default().with_quality(quality)
     }
 
+    /// Restricted writer preset for [`crate::v4::CodingProfile::Fixed8x8Photo`].
+    /// Supply an RGB8 still. Keep ordinary 8×8 transforms and turn off
+    /// exact overlays and activity AQ in the DC raster. Uniform AC scale
+    /// and either entropy coder remain available. Changing transform or
+    /// coding controls can take the output outside the profile.
+    pub fn lossy_fixed_8x8_photo(quality: impl Into<LossyQuality>) -> Self {
+        Self::lossy(quality).tune_lossy(|tuning| {
+            tuning.channel_layouts = [crate::LossyChannelLayout::default(); 3];
+            tuning.exact_blocks = Some(0.0);
+            tuning.adaptive_partitions = false;
+            tuning.small_transforms = false;
+            tuning.aq_gamma = 0.0;
+        })
+    }
+
     /// The low-analysis lossless coder without bit analysis.
     pub fn quick() -> Self {
         Self::default().with_coder(Coder::Quick(QuickBitSmarts::Off))

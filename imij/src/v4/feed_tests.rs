@@ -37,7 +37,20 @@ fn fixture(sample: SampleType, channels: Channels, quick: bool) -> (Vec<u8>, Vec
 }
 
 pub(crate) fn feed(file: &[u8], capacity: usize) -> Result<(Vec<u8>, u64), crate::Error> {
+    feed_with_policy(
+        file,
+        capacity,
+        crate::decode_resources::DecodePolicy::default(),
+    )
+}
+
+pub(super) fn feed_with_policy(
+    file: &[u8],
+    capacity: usize,
+    policy: crate::decode_resources::DecodePolicy,
+) -> Result<(Vec<u8>, u64), crate::Error> {
     let mut decoder = DecodeConfig::default()
+        .with_admission(policy)
         .job()
         .feed_decoder(capacity)
         .unwrap();

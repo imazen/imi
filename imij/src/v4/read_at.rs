@@ -339,6 +339,7 @@ impl<R: ReadAt> IndexedFile<R> {
         )?;
         session.v4_setup_admitted(parsed.len)?;
         crate::parse::header::check_decodable(&parsed.header, parsed.declared)?;
+        session.check_coding_profile(&parsed.header)?;
         let verify = session.v4_verify_mode() != crate::checksum::Verify::Off;
         let announced = parsed.checksum.map(|c| c.announced);
         if let Some(a) = announced.filter(|_| verify) {
@@ -411,6 +412,9 @@ impl<R: ReadAt> IndexedFile<R> {
                 }
             }
             if kind == chunks::Kind::Anim {
+                if let Some(profile) = session.v4_profile() {
+                    profile.check_sequence()?;
+                }
                 unified_sequence = bytes.first() == Some(&4);
             }
             if kind == chunks::Kind::Frame {

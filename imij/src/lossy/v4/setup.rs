@@ -613,6 +613,10 @@ impl LossySetup {
         let remaining = r.remaining();
         let checks = crate::v4::OwnedChecks::read_tail(r.bytes(remaining)?, session)?;
         let parameters = parameters(&info, color, quantizer, records, declared, session)?;
+        if let Some(profile) = session.v4_profile() {
+            profile.check_image(&info, crate::Coding::Lossy)?;
+            profile.check_lossy_control(control, storage)?;
+        }
         Ok(Self {
             info,
             color,

@@ -622,6 +622,7 @@ fn parse_checked_version<'a, const V4: bool>(
     } else {
         announced.map(|a| a.announced)
     };
+    admission.coding_profile(&header)?;
     admission.header(&header.info, header_bytes)?;
     // The checksum record is read with the header: a malformed one is
     // corrupt whatever follows (SPEC 1.4).

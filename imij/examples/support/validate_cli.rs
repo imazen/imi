@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions};
 
 pub const HELP: &str = "validate INPUT.imi NEW-SCRATCH-FILE [OPTIONS]
 
-Fully decode a v3 file and every recognized nested image. Verify all declared
+Fully decode an IMI file and every recognized nested image. Verify all declared
 file, pixel and reference checksums. There is no structure-only mode.
 Native JPEG/components are retired from v3 and cannot be upgraded.
 
@@ -15,7 +15,9 @@ animation composition require raster scratch. Retained references remain until
 the call ends. Failure can leave partial scratch; success prints JSON counters.
 Unknown ancillary extensions remain opaque. Missing checksums remain absent.
 
-Options (unsigned decimal byte/pixel counts; zero is allowed):
+Options (byte/pixel counts are unsigned decimal integers):
+  --v4-profile NAME       Require narrow-still, fixed-8x8-photo, exact-numeric,
+                          or complete-v4 for the file and its nested images
   --max-file-bytes N       Maximum bytes per encoded image (default 1099511627776)
   --max-scratch-bytes N    Maximum appended scratch bytes (default 1099511627776)
   --max-decoded-pixels N   Maximum total decoded pixels (default 1099511627776)
@@ -45,7 +47,8 @@ fn parse(args: &[String]) -> Result<Option<Options<'_>>, String> {
         seen.push(flag.as_str());
         if !matches!(
             flag.as_str(),
-            "--max-file-bytes"
+            "--v4-profile"
+                | "--max-file-bytes"
                 | "--max-scratch-bytes"
                 | "--max-decoded-pixels"
                 | "--max-working-bytes"
@@ -55,6 +58,11 @@ fn parse(args: &[String]) -> Result<Option<Options<'_>>, String> {
         let value = rest
             .next()
             .ok_or_else(|| format!("missing value for {flag}"))?;
+        if flag == "--v4-profile" {
+            let profile = value.parse().map_err(|e| format!("{flag}: {e}"))?;
+            limits.decode = limits.decode.with_v4_profile(profile);
+            continue;
+        }
         let n = value
             .parse::<u64>()
             .map_err(|_| format!("{flag} requires an unsigned decimal integer"))?;
@@ -85,7 +93,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .create_new(true)
         .open(options.scratch)
         .map_err(|e| format!("new scratch file: {e}"))?;
-    let r = imij::validation::validate_v3(&mut source, &mut scratch, &options.limits)
+    let r = imij::validation::validate(&mut source, &mut scratch, &options.limits)
         .map_err(|e| format!("validation: {e}"))?;
     println!(
         "{{\"images\":{},\"decoded_pixels\":{},\"file_checksums\":{},\"pixel_checksums\":{},\"reference_checksums\":{},\"opaque_chunks\":{},\"scratch_bytes\":{}}}",
@@ -116,6 +124,8 @@ mod tests {
             "0",
             "--max-decoded-pixels",
             "123",
+            "--v4-profile",
+            "narrow-still",
         ]);
         let parsed = parse(&values).unwrap().unwrap();
         assert_eq!(parsed.limits.max_scratch_bytes, 0);
@@ -127,6 +137,7 @@ mod tests {
             vec![],
             vec!["image.imi"],
             vec!["image.imi", "scratch", "--structure-only"],
+            vec!["image.imi", "scratch", "--v4-profile", "invalid-profile"],
             vec!["image.imi", "scratch", "--max-file-bytes"],
             vec!["image.imi", "scratch", "--max-file-bytes", "-1"],
             vec![

@@ -1,4 +1,4 @@
-//! Fully decode and validate v3 files; `validate --help` describes resource limits.
+//! Fully decode and validate IMI files; `validate --help` describes profiles and limits.
 #[path = "support/validate_cli.rs"]
 mod validate_cli;
 fn main() -> std::process::ExitCode {

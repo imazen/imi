@@ -20,6 +20,33 @@ the unchanged sample, transform, quantizer and entropy arithmetic cited below.
 The [independent design review](docs/V4_DESIGN_REVIEW.md) records alternatives,
 access costs and corrections to the review; it adopts no grammar change.
 
+### V4 coding profiles
+
+A coding profile constrains an independently addressed V4 image or native
+view. Profiles share V4 framing, tile extents, group identities, directories,
+forward publication and integrity rules. A profile adds no wire field.
+
+| Profile | Admitted coding |
+|---|---|
+| `narrow-still` | U8 and U16 Gray/GrayAlpha/RGB/RGBA exact numeric or DCT, and exact F16 in those layouts. Every numeric model, including DC and alpha, uses at most 16-bit slots and exact arithmetic. DCT may use adaptive settings and exact overlays. Keep/reference controls are outside the profile. |
+| `fixed-8x8-photo` | RGB8 DCT with exact biased-U16 three-component DC (constant components can omit a slot), control 0, and ordinary 8×8 plans and partition zero after resolving settings. AC scale may come from the quantizer, inherited settings or a per-parent override. Both AC coders are available. |
+| `exact-numeric` | Exact numeric coding, including Quick and supported signed, wide and floating-point samples. Typed metadata and plane crop access are available. |
+| `complete-v4` | All V4 coding, including bounded numeric arithmetic and sequences. A reader's available feature and integrity implementation still applies. |
+
+The three restricted contracts apply to still payloads. Sequence containers
+use Complete V4. Independent images extracted from them can be checked
+under the restricted contracts. A profile applies to the payloads actually
+read. An outer header or a directory open alone cannot establish conformance
+of an unread tile or model. A reader checks the selected sample layout, each
+resolved model and any required group constraints before delivering its
+pixels. A violation on an otherwise supported payload is an unsupported
+profile. Ordinary structural checks remain mandatory.
+
+A publication catalog can record a checked `codingProfile` for a view
+bound to its content identity and view ID. Publishers should check every
+backing tile for that view. Decoder verification still covers the data
+selected by each request.
+
 **Pre-freeze additions, 2026-11-17:** section 6.2 specifies counted integrity
 lists and independent group/tile raster checks. XXH3-64/128 and optional
 BLAKE3 generation and verification are implemented. Keyed and public-key

@@ -28,6 +28,7 @@ pub(crate) const DEFAULT_METADATA_BYTES: usize = 16 << 20;
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct DecodePolicy {
+    v4_profile: Option<crate::v4::CodingProfile>,
     structure_only: bool,
     group_pixels: bool,
     tile_pixels: bool,
@@ -44,6 +45,7 @@ pub struct DecodePolicy {
 impl Default for DecodePolicy {
     fn default() -> Self {
         Self {
+            v4_profile: None,
             structure_only: false,
             group_pixels: true,
             tile_pixels: true,
@@ -60,6 +62,20 @@ impl Default for DecodePolicy {
 }
 
 impl DecodePolicy {
+    /// Enforce a V4 coding profile on the images this session reads.
+    /// The default accepts every supported version and coding.
+    pub fn with_v4_profile(mut self, profile: crate::v4::CodingProfile) -> Self {
+        self.v4_profile = Some(profile);
+        self
+    }
+
+    pub(crate) fn with_optional_v4_profile(
+        mut self,
+        profile: Option<crate::v4::CodingProfile>,
+    ) -> Self {
+        self.v4_profile = profile;
+        self
+    }
     /// Select independent V4 pixel-check scopes. Both default to enabled.
     /// Disabling a scope keeps its framing/bounds checks, but does not establish
     /// pixel integrity for that scope. Encoded-object checks remain enabled.
@@ -236,6 +252,15 @@ impl DecodeSession {
 }
 
 impl<C: Fn() -> bool + Sync> DecodeSession<C> {
+    pub(crate) fn v4_profile(&self) -> Option<crate::v4::CodingProfile> {
+        self.policy.v4_profile
+    }
+
+    pub(crate) fn check_coding_profile(&self, header: &crate::Header) -> Result<(), Error> {
+        self.policy
+            .v4_profile
+            .map_or(Ok(()), |p| p.check_header(header))
+    }
     pub(crate) fn resume(policy: DecodePolicy, usage: DecodeUsage, cancel: C) -> Self {
         let session = Self::with_cancel(policy, cancel);
         session.usage.set(usage);
@@ -918,9 +943,10 @@ impl V4Resume {
     /// shares capacity still owned by retained tables and index state.
     pub(crate) fn request<C: Fn() -> bool + Sync>(
         &self,
-        policy: DecodePolicy,
+        mut policy: DecodePolicy,
         cancel: C,
     ) -> DecodeSession<C> {
+        policy.v4_profile = self.policy.v4_profile;
         let session = DecodeSession::with_cancel(policy, cancel);
         session.working.set(self.working);
         *session.retained.borrow_mut() = self.retained.clone();
@@ -1069,6 +1095,10 @@ impl<C: Fn() -> bool + Sync> Admission for RequestAdmission<'_, C> {
         self.session.memory(16 * 1024)
     }
 
+    fn coding_profile(&self, header: &crate::Header) -> Result<(), Error> {
+        self.session.check_coding_profile(header)
+    }
+
     fn chunk_start(&self) -> Result<(), Error> {
         self.check()?;
         let mut usage = self.session.usage.get();
@@ -1080,6 +1110,11 @@ impl<C: Fn() -> bool + Sync> Admission for RequestAdmission<'_, C> {
 
     fn chunk(&self, tag: [u8; 4], payload: &[u8]) -> Result<(), Error> {
         self.check()?;
+        if tag == *b"aNIM"
+            && let Some(profile) = self.session.v4_profile()
+        {
+            profile.check_sequence()?;
+        }
         let retained = match &tag {
             b"DATA" | b"uIDX" | b"pRVW" | b"aNIM" | b"fRAM" | b"pDAT" | b"pIDX" | b"sLOC"
             | b"cSUM" | b"pSUM" => 0,

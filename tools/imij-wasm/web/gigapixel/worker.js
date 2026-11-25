@@ -354,6 +354,7 @@ function startNativeWarmup(rep){
 function decodeNativeRegion(rep,record,rectangle,base,ranges,stale){
   const opening=record.planner.openingRanges;
   return pool.region({...base,kind:'native',key:sourceKey(rep),viewId:rep.viewId,length:record.source.length,
+    codingProfile:rep.codingProfile,
     x:rectangle.lx,y:rectangle.ly,width:rectangle.lw,height:rectangle.lh,ranges,
     openingRanges:()=>copyRanges(record.source,opening)},{stale});
 }

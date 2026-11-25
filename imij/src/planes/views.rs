@@ -485,8 +485,12 @@ impl<R: ReadAt> PlaneSetReader<R> {
             verify_checksum: false,
         };
         let verify = self.limits.verify_scoped_pixels;
-        let mut reader =
-            crate::region::RegionReader::open_with_limits(PrimarySource { reader: self }, &limits)?;
+        let profile = self.limits.v4_profile;
+        let mut reader = crate::region::RegionReader::open_profiled(
+            PrimarySource { reader: self },
+            &limits,
+            profile,
+        )?;
         reader.set_scoped_pixel_verification(verify);
         Ok(reader)
     }

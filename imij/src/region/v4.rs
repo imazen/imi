@@ -56,8 +56,14 @@ impl<R: ReadAt> Reader<R> {
         self.request.update(&session);
         result
     }
-    pub fn open(inner: R, window: Window, stats: ReadStats, limits: Limits) -> Result<Self, Error> {
-        let session = DecodeSession::new(policy(limits));
+    pub fn open(
+        inner: R,
+        window: Window,
+        stats: ReadStats,
+        limits: Limits,
+        profile: Option<crate::v4::CodingProfile>,
+    ) -> Result<Self, Error> {
+        let session = DecodeSession::new(policy(limits).with_optional_v4_profile(profile));
         let memory = session
             .v4_working(window.buf.capacity() as u128)?
             .retain()?;

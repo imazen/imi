@@ -1,4 +1,8 @@
-export function representationKey(rep){return rep.kind==='native'?`${rep.contentId}:${rep.viewId}`:rep.contentId??rep.sha256;}
+export function representationKey(rep){
+  if(rep.kind!=='native')return rep.contentId??rep.sha256;
+  const key=`${rep.contentId}:${rep.viewId}`;
+  return rep.codingProfile===undefined?key:`${key}:${rep.codingProfile}`;
+}
 export function imageFromFragment(hash) {
   return new URLSearchParams(hash.slice(1)).get('image');
 }

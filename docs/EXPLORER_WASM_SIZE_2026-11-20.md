@@ -1092,6 +1092,35 @@ exclude when a viewer requests packed RGB8 from a V4 pyramid.
 Preserve read and scratch budgets, byte-range plans, pixel checks
 and exact output in both backing routes.
 
+#### Matched bounded-arithmetic attribution
+
+A fresh comparison at `660f072c6cd0` toggled only `near-lossless` in the
+standalone relaxed-SIMD Explorer. Both arms used the pinned nightly,
+Binaryen 132 at `-O3`, V4-only tiles and the narrow sample build.
+
+| Feature | Stripped Wasm | Code section | Data section | Brotli q11 |
+|---|---:|---:|---:|---:|
+| Exact models | 1,174,273 B | 1,070,084 B | 100,810 B | 363,556 B |
+| Bounded models enabled | 1,263,152 B | 1,158,737 B | 101,013 B | 376,571 B |
+| Increase | 88,879 B | 88,653 B | 203 B | 13,015 B |
+
+Twiggy attributes 83,570 B, 94.0% of the total increase, to the four new
+`go16::<NS, true>` bodies for 1–4 coded slots. The four exact bodies total
+67,585 B in both builds. Each bounded body carries its own first-row
+path and predictor specializations, including the full-width Paeth path.
+For each affected slot it scales and clamps signed residuals. Bounds may
+differ by slot, so the same specialization also includes exact arithmetic
+for unbounded slots. The decoder already uses common entropy and output
+packing code. The 203 B change in the data section is small compared with
+the duplicated reconstruction code.
+
+The strongest size hypothesis is to share bounded reconstruction across
+slot counts while leaving the four exact hot paths specialized. Check
+bounded RGB, one-slot science and mixed zero/nonzero bounds against the
+existing bit-exact oracle. Compare first-use and warm decoding before
+adopting a shared loop in those kernels. The current Explorer avoids the
+cost through the existing compile-time feature.
+
 Final modules, raw accounting, codegen signatures, source witnesses
 and test and ablation logs are in `~/tmp/imi-wide-stripes-20261122/`
 on dev.

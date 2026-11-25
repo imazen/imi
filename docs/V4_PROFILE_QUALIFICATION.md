@@ -1,5 +1,47 @@
 # V4 decoder profile qualification
 
+## Selecting an implemented profile
+
+Use [the V4 profile contracts](../SPEC_V4.md#v4-coding-profiles) on an
+existing stream. Native callers select `CodingProfile` with
+`DecodePolicy::with_v4_profile`, `RegionReader::open_v4_profile` or
+`PlaneSetLimits::with_v4_profile`. Slice, streamed row and caller-fed
+decoding use the same numeric and transform checks. Region and pyramid
+readers qualify the groups and models they use.
+
+For a fixed photo publication, begin with
+`ImiEncoderConfig::lossy_fixed_8x8_photo` and an RGB8 still. Qualify output
+after applying any custom tuning. Exact numeric writers use normal lossless
+or Quick presets. The validator can check a file and its nested images
+against a single profile.
+
+```sh
+cargo run --locked --release -p imij --example validate -- \
+  image.imi fresh.scratch --v4-profile narrow-still
+```
+
+For a selected pyramid view in a mixed-profile file, validate its stored tiles
+under the intended profile before setting `codingProfile` on its native
+catalog representation. The Explorer enforces it in decode workers and
+keeps checked pixels separate in its decoded cache. Its compressed-byte
+cache can still be shared with another view of the same object. A caller
+using the binding directly can select the profile with
+`RangePyramid.openProfile`. Explorer's output remains RGB8.
+
+These entry points enforce runtime conformance. Compile features still
+determine the linked kernels. The ordinary Explorer build excludes
+bounded and extended arithmetic. A narrower package needs its own
+reachable dispatch and build measurement.
+
+The profiled exact Explorer in the matched relaxed-SIMD build is
+1,178,751 raw bytes and 365,578 B at Brotli q11. The unprofiled control
+is 1,174,273 raw bytes. The exact build retains the narrow exact row
+kernels and excludes bounded and wide row bodies. The implementation
+was verified with both AC coders through native whole-image, ROI and
+caller-fed decode. Chromium's real worker switched between profiles for
+the same cached compressed source and checked its output against native
+pixels. [Bounded arithmetic size breakdown](EXPLORER_WASM_SIZE_2026-11-20.md#matched-bounded-arithmetic-attribution)
+
 **Completion condition.** Select the smallest set of supported V4 reader
 profiles that serves the product uses below. Publish a measured decision
 table and a compatibility contract before freezing the wire. Record every

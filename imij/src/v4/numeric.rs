@@ -75,6 +75,10 @@ impl NumericModel {
         let mut input = ByteReader::new(head);
         let parsed =
             crate::v1::parse_head_checked(info, &mut input, &session.v4_models(), declared)?;
+        if let Some(profile) = session.v4_profile() {
+            profile.check_image(&parsed.info, crate::Coding::Lossless)?;
+            profile.check_numeric(&parsed)?;
+        }
         let checks = super::OwnedChecks::read_tail(&head[input.pos..], session)?;
         if parsed.hint.is_some() || parsed.reserve.is_some() || parsed.unit_ordinals {
             return Err(Error::Corrupt("legacy numeric index record in V4 setup"));
@@ -148,6 +152,9 @@ impl NumericModel {
             crate::v1::parse_head_nested(geometry.info, &mut input, &admission, bank, declared)?;
         if input.remaining() != 0 {
             return Err(Error::Corrupt("V4 numeric definition trailing bytes"));
+        }
+        if let Some(profile) = session.v4_profile() {
+            profile.check_numeric(&parsed)?;
         }
         let output_map = crate::v1::OutMap::new(&parsed.info, &parsed.layout);
         drop(head);

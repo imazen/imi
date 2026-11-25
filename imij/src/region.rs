@@ -442,7 +442,26 @@ impl<R: ReadAt> RegionReader<R> {
     /// be [`Error::TooLarge`] (its units' state or records exceed it).
     /// [`Limits::verify_checksum`] off reads the file as a decoder without
     /// checksums does.
-    pub fn open_with_limits(mut src: R, limits: &Limits) -> Result<Self, Error> {
+    pub fn open_with_limits(src: R, limits: &Limits) -> Result<Self, Error> {
+        Self::open_profiled(src, limits, None)
+    }
+
+    /// Open an indexed V4 primary image with a coding profile. Each decoded
+    /// region validates its selected groups and models under that profile.
+    /// Opening does not certify unread regions.
+    pub fn open_v4_profile(
+        src: R,
+        limits: &Limits,
+        profile: crate::v4::CodingProfile,
+    ) -> Result<Self, Error> {
+        Self::open_profiled(src, limits, Some(profile))
+    }
+
+    pub(crate) fn open_profiled(
+        mut src: R,
+        limits: &Limits,
+        profile: Option<crate::v4::CodingProfile>,
+    ) -> Result<Self, Error> {
         let mut stats = ReadStats::default();
         let file_len = src.len()?;
         let mut win = Window::default();
@@ -461,9 +480,12 @@ impl<R: ReadAt> RegionReader<R> {
             if header_end > WINDOW {
                 return Err(Error::TooLarge);
             }
-            return v4::Reader::open(src, win, stats, *limits).map(|reader| Self {
+            return v4::Reader::open(src, win, stats, *limits, profile).map(|reader| Self {
                 backend: Backend::V4(reader),
             });
+        }
+        if profile.is_some() {
+            return Err(Error::Unsupported("V4 coding profile requires version 4"));
         }
 
         #[cfg(feature = "v3")]
