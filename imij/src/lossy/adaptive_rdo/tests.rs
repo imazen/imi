@@ -558,3 +558,188 @@ fn closed_loop_stream_matches_whole_image_exact_and_compact() {
     let big = ClosedLoopLambdaStream::new(big_bw, big_bh, &steps, 0.38).unwrap();
     assert!(matches!(big.store, ClosedLoopStore::Compact(_)));
 }
+
+/// Verifies `optimize_dc_stripe` skips UI/palette-dominated stripes, locks
+/// constant (zero-AC) blocks, and remains deterministic across column-group
+/// boundaries.
+#[test]
+fn dc_rdo_skips_palette_stripes_and_locks_flat_blocks() {
+    let (bw, nr) = (16usize, 8usize);
+    let n = bw * nr;
+
+    // 1. UI/palette-dominated stripe (>=25% zero-AC blocks) must stay untouched.
+    let mut q_ui: [Vec<i32>; NCH] = core::array::from_fn(|ch| {
+        (0..n)
+            .map(|i| ((i * 7 + ch * 13) % 97) as i32 - 48)
+            .collect()
+    });
+    let q_ui_orig = q_ui.clone();
+    let rc_ui: [Vec<f32>; NCH] =
+        core::array::from_fn(|ch| q_ui[ch].iter().map(|&v| v as f32 + 0.45).collect());
+    let ac_ui: [Vec<f32>; NCH] = core::array::from_fn(|_| {
+        (0..n)
+            .map(|i| if i % 4 == 0 { 0.0f32 } else { 50.0f32 })
+            .collect()
+    });
+    let locks = vec![false; n];
+    dc_rdo::optimize_dc_stripe(
+        &mut q_ui,
+        &[&rc_ui[0], &rc_ui[1], &rc_ui[2]],
+        &[&ac_ui[0], &ac_ui[1], &ac_ui[2]],
+        &locks,
+        &locks,
+        &[],
+        bw,
+        nr,
+        8,
+        DcRdoConfig::PRODUCTION,
+        &how_far::NoPulse,
+    )
+    .unwrap();
+    assert_eq!(q_ui, q_ui_orig, "palette/UI stripe must be skipped intact");
+
+    // 2. Photo-like stripe with isolated flat blocks must lock flat blocks
+    //    while allowing perturbed textured blocks near rounding ties.
+    let mut q_ph: [Vec<i32>; NCH] = core::array::from_fn(|ch| {
+        (0..n)
+            .map(|i| ((i * 11 + (i / bw) * 5 + ch * 19) % 120) as i32 - 60)
+            .collect()
+    });
+    let q_ph_orig = q_ph.clone();
+    let rc_ph: [Vec<f32>; NCH] =
+        core::array::from_fn(|ch| q_ph[ch].iter().map(|&v| v as f32 + 0.48).collect());
+    let ac_ph: [Vec<f32>; NCH] = core::array::from_fn(|_| {
+        (0..n)
+            .map(|i| if i == 5 || i == 37 { 0.0f32 } else { 80.0f32 })
+            .collect()
+    });
+    dc_rdo::optimize_dc_stripe(
+        &mut q_ph,
+        &[&rc_ph[0], &rc_ph[1], &rc_ph[2]],
+        &[&ac_ph[0], &ac_ph[1], &ac_ph[2]],
+        &locks,
+        &locks,
+        &[],
+        bw,
+        nr,
+        8,
+        DcRdoConfig::PRODUCTION,
+        &how_far::NoPulse,
+    )
+    .unwrap();
+    for ch in 0..NCH {
+        assert_eq!(
+            q_ph[ch][5], q_ph_orig[ch][5],
+            "flat block 5 must stay locked"
+        );
+        assert_eq!(
+            q_ph[ch][37], q_ph_orig[ch][37],
+            "flat block 37 must stay locked"
+        );
+    }
+
+    // 3. `DcStripeRdoAcc::reserve_stripe` must allocate exact capacity without
+    //    geometric doubling on non-power-of-two DC stripes.
+    let mut acc = DcStripeRdoAcc::new();
+    acc.reserve_stripe(3, 17, 17 * 8).unwrap();
+    assert_eq!(acc.block_capacity(), 51);
+}
+
+/// Verifies 0-bit identical output between whole-image `encode_lossy` and
+/// bounded streaming `encode_lossy_bounded` across fixed-8x8 and adaptive
+/// tiers at efforts 9.0, 9.5, and 10.0 (covering both `!split_dc()` and
+/// `split_dc()` DC stripe geometries, plus `q=25` and `q=75`).
+#[test]
+fn bounded_and_whole_image_parity_with_dc_rdo_and_lambda_aq() {
+    use crate::DecodeSpeed as D;
+    let (w, h) = (272u32, 256u32); // 69,632 px (> SMALL_IMAGE)
+    let px = synthetic_multi_region(w, h);
+    let info = ImageInfo::new(w, h, Channels::Rgb, SampleType::U8);
+    let rb = info.row_bytes();
+
+    let cases: &[(&str, Option<D>, f32, f32, u32)] = &[
+        ("plain_e9_q25", None, 9.0, 25.0, 0),
+        ("plain_e10_q25", None, 10.0, 25.0, 0),
+        ("plain_e10_q25_splitdc", None, 10.0, 25.0, 2),
+        ("balanced_e10_q75", Some(D::Balanced), 10.0, 75.0, 0),
+        ("fast_e10_q25", Some(D::Fast), 10.0, 25.0, 0),
+        ("compact_e9_q25", Some(D::Compact), 9.0, 25.0, 0),
+        ("compact_e95_q75", Some(D::Compact), 9.5, 75.0, 0),
+        ("compact_e10_q25", Some(D::Compact), 10.0, 25.0, 0),
+        ("compact_e10_q75_splitdc", Some(D::Compact), 10.0, 75.0, 2),
+    ];
+
+    for &(name, speed, effort, q, sb) in cases {
+        let mut cfg = LossyConfig::new(q).with_effort(effort).with_threads(1);
+        cfg.decode_speed = speed;
+        cfg.stripe_block_rows = sb;
+        let whole = encode_lossy(&px, rb, &info, &Metadata::default(), &cfg).unwrap();
+        let bounded = crate::lossy::bounded::encode_lossy_bounded(
+            &info,
+            &Metadata::default(),
+            &cfg,
+            &mut |_pass, y0, out| {
+                out.copy_from_slice(&px[y0 * rb..y0 * rb + out.len()]);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let dec_whole = crate::decode(&whole).unwrap().1;
+        let dec_bounded = crate::decode(&bounded).unwrap().1;
+        assert_eq!(
+            dec_whole, dec_bounded,
+            "{name}: bounded streaming decoded pixels diverged from whole-image encode"
+        );
+        #[cfg(feature = "std")]
+        {
+            let cfg4 = cfg.clone().with_threads(4);
+            let whole4 = encode_lossy(&px, rb, &info, &Metadata::default(), &cfg4).unwrap();
+            assert_eq!(whole, whole4, "{name}: 1T vs 4T mismatch");
+        }
+    }
+}
+
+/// Verifies whole-image == bounded decoded-pixel parity under `lab`
+/// `trellis_huf_rate = Some(false)` above 64K pixels across `Compact`,
+/// `Balanced`, and `Fast` tiers (both `!split_dc()` and `split_dc()`).
+#[cfg(feature = "lab")]
+#[test]
+fn bounded_and_whole_image_parity_lab_trellis_huf_rate_false() {
+    use crate::DecodeSpeed as D;
+    let (w, h) = (272u32, 256u32); // 69,632 px (> SMALL_IMAGE)
+    let px = synthetic_multi_region(w, h);
+    let info = ImageInfo::new(w, h, Channels::Rgb, SampleType::U8);
+    let rb = info.row_bytes();
+
+    let cases: &[(&str, D, f32, f32, u32)] = &[
+        ("compact_e10_q25_nohuf", D::Compact, 10.0, 25.0, 0),
+        ("compact_e10_q75_splitdc_nohuf", D::Compact, 10.0, 75.0, 2),
+        ("balanced_e10_q75_nohuf", D::Balanced, 10.0, 75.0, 0),
+        ("balanced_e10_q75_splitdc_nohuf", D::Balanced, 10.0, 75.0, 2),
+        ("fast_e10_q25_nohuf", D::Fast, 10.0, 25.0, 0),
+    ];
+
+    for &(name, speed, effort, q, sb) in cases {
+        let mut cfg = LossyConfig::new(q).with_effort(effort).with_threads(1);
+        cfg.decode_speed = Some(speed);
+        cfg.stripe_block_rows = sb;
+        cfg.lab.trellis_huf_rate = Some(false);
+        let whole = encode_lossy(&px, rb, &info, &Metadata::default(), &cfg).unwrap();
+        let bounded = crate::lossy::bounded::encode_lossy_bounded(
+            &info,
+            &Metadata::default(),
+            &cfg,
+            &mut |_pass, y0, out| {
+                out.copy_from_slice(&px[y0 * rb..y0 * rb + out.len()]);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let dec_whole = crate::decode(&whole).unwrap().1;
+        let dec_bounded = crate::decode(&bounded).unwrap().1;
+        assert_eq!(
+            dec_whole, dec_bounded,
+            "{name}: bounded decoded pixels diverged from whole-image encode under trellis_huf_rate=false"
+        );
+    }
+}

@@ -326,6 +326,9 @@ pub(super) struct Prepared {
     /// Compact streaming closed-loop seam residual feedback model
     /// (`<= 2 MiB` exact `f64` up to 16 MPx, `1 B/block` quantized `u8` above).
     pub(super) closed_lambda: Option<adaptive_rdo::ClosedLoopLambdaModel>,
+    /// Whether DC RDO runs when emitting DC stripes (matches whole-image
+    /// `encode/mod.rs` `resolved.trellis.is_some()` after `entropy` settles).
+    pub(super) dc_rdo: bool,
 }
 
 /// What the selector chose anywhere in the image.
@@ -866,6 +869,15 @@ pub(super) async fn pass1<I: PassIo>(
     };
     let mut alpha_hists = alpha_measure.as_ref().map(|m| m.empty_histograms());
     let mut plane = Vec::new();
+    let dc_rdo_pass1 = p.plan.dc_rdo
+        && p.trellis.is_some()
+        && (trellis::huf_rate(cfg)
+            || matches!(cfg.decode_speed, Some(crate::DecodeSpeed::Compact))
+            || (cfg.decode_speed.is_none() && cfg.entropy == LossyEntropy::RunLevel));
+    let mut dc_rdo_acc = adaptive_rdo::DcStripeRdoAcc::new();
+    if dc_rdo_pass1 {
+        dc_rdo_acc.reserve_stripe(p.dc_rows.min(p.g.bh), p.g.bw, p.pw)?;
+    }
     for (by0, by1) in p.bands() {
         let y0 = io.rows(1, by0, by1, &mut band).await?;
         let mut stripes = p.band_stripes(&band, y0, by0, by1);
@@ -889,7 +901,7 @@ pub(super) async fn pass1<I: PassIo>(
                 },
             )?;
         }
-        if let Some(ms) = &merge_sel {
+        if open_lambda.is_some() {
             fill_band_open_lambda(
                 p,
                 open_lambda.as_ref(),
@@ -900,6 +912,8 @@ pub(super) async fn pass1<I: PassIo>(
                 by1,
                 &mut band_open_lambda,
             )?;
+        }
+        if let Some(ms) = &merge_sel {
             stripes = p.merge(
                 ms,
                 stripes,
@@ -914,41 +928,87 @@ pub(super) async fn pass1<I: PassIo>(
                 && stripes.iter().any(|sc| sc.modes.iter().any(|&m| m != 0));
             maps.split |= stripes.iter().any(|sc| sc.splits.iter().any(|&v| v != 0));
         }
-        let band_fits = stripes.iter().all(|sc| {
-            sc.q.as_chunks::<64>()
-                .0
-                .iter()
-                .all(|b| (-32768..=32767).contains(&b[0]))
-        });
-        stripe_fits &= band_fits;
-        if fits16 && stripe_fits {
-            dc_band(p, &stripes, by0, by1, true, false, &mut dc);
-            dc3_acc.extend_from_slice(&dc);
-            if dc4_measure.is_some() {
-                dc_band(p, &stripes, by0, by1, true, true, &mut dc);
-                dc4_acc.extend_from_slice(&dc);
-            }
-        }
-        if p.ends_dc_stripe(by1) {
-            if fits16 && stripe_fits {
-                let cols = dc_cfg.columns as usize;
-                for (acc, dch, m, h) in [
-                    (&dc3_acc, NCH, Some(&dc_measure), Some(&mut dc_hists)),
-                    (&dc4_acc, 4, dc4_measure.as_ref(), dc4_hists.as_mut()),
-                ] {
-                    let (Some(m), Some(h)) = (m, h) else { continue };
-                    let stride = p.g.bw * dch * 2;
-                    let rows = acc.len() / stride;
-                    for x0 in (0..p.g.bw).step_by(cols) {
-                        let w = cols.min(p.g.bw - x0);
-                        m.group_histograms(w, rows, &acc[x0 * dch * 2..], stride, h);
+        if dc_rdo_pass1 {
+            let rows = |by: usize, planes: &mut [f32], extremes: &mut Vec<(u64, bool)>| {
+                p.fill_block_row(&band, y0, by, planes, extremes)
+            };
+            dc_rdo_acc.push_band(
+                &stripes,
+                &rows,
+                p.pw,
+                p.g.bw,
+                by0,
+                by1,
+                &p.steps,
+                &band_open_lambda,
+                sel.is_some(),
+                false,
+                io.stop(),
+            )?;
+            if p.ends_dc_stripe(by1) {
+                stripe_fits = dc_rdo_acc.finish_stripe(p.g.bw, p.gcols / 8, io.stop())?;
+                if fits16 && stripe_fits {
+                    dc_rdo_acc.pack_dc(p.g.bw, true, false, &mut dc3_acc)?;
+                    if dc4_measure.is_some() {
+                        dc_rdo_acc.pack_dc(p.g.bw, true, true, &mut dc4_acc)?;
+                    }
+                    let cols = dc_cfg.columns as usize;
+                    for (acc, dch, m, h) in [
+                        (&dc3_acc, NCH, Some(&dc_measure), Some(&mut dc_hists)),
+                        (&dc4_acc, 4, dc4_measure.as_ref(), dc4_hists.as_mut()),
+                    ] {
+                        let (Some(m), Some(h)) = (m, h) else { continue };
+                        let stride = p.g.bw * dch * 2;
+                        let rows = acc.len() / stride;
+                        for x0 in (0..p.g.bw).step_by(cols) {
+                            let w = cols.min(p.g.bw - x0);
+                            m.group_histograms(w, rows, &acc[x0 * dch * 2..], stride, h);
+                        }
                     }
                 }
+                fits16 &= stripe_fits;
+                stripe_fits = true;
+                dc3_acc.clear();
+                dc4_acc.clear();
+                dc_rdo_acc.clear();
             }
-            fits16 &= stripe_fits;
-            stripe_fits = true;
-            dc3_acc.clear();
-            dc4_acc.clear();
+        } else {
+            let band_fits = stripes.iter().all(|sc| {
+                sc.q.as_chunks::<64>()
+                    .0
+                    .iter()
+                    .all(|b| (-32768..=32767).contains(&b[0]))
+            });
+            stripe_fits &= band_fits;
+            if fits16 && stripe_fits {
+                dc_band(p, &stripes, by0, by1, true, false, &mut dc);
+                dc3_acc.extend_from_slice(&dc);
+                if dc4_measure.is_some() {
+                    dc_band(p, &stripes, by0, by1, true, true, &mut dc);
+                    dc4_acc.extend_from_slice(&dc);
+                }
+            }
+            if p.ends_dc_stripe(by1) {
+                if fits16 && stripe_fits {
+                    let cols = dc_cfg.columns as usize;
+                    for (acc, dch, m, h) in [
+                        (&dc3_acc, NCH, Some(&dc_measure), Some(&mut dc_hists)),
+                        (&dc4_acc, 4, dc4_measure.as_ref(), dc4_hists.as_mut()),
+                    ] {
+                        let (Some(m), Some(h)) = (m, h) else { continue };
+                        let stride = p.g.bw * dch * 2;
+                        let rows = acc.len() / stride;
+                        for x0 in (0..p.g.bw).step_by(cols) {
+                            let w = cols.min(p.g.bw - x0);
+                            m.group_histograms(w, rows, &acc[x0 * dch * 2..], stride, h);
+                        }
+                    }
+                }
+                fits16 &= stripe_fits;
+                stripe_fits = true;
+                dc3_acc.clear();
+                dc4_acc.clear();
+            }
         }
         if let (Some(m), Some(h)) = (&alpha_measure, &mut alpha_hists) {
             let cols = p.alpha_cfg().columns as usize;
@@ -1012,6 +1072,8 @@ pub(super) async fn pass1<I: PassIo>(
     let mut passes: Vec<trellis::Pass> = Vec::new();
     let mut closed_lambda: Option<adaptive_rdo::ClosedLoopLambdaModel> = None;
     let huf_model = entropy == LossyEntropy::SplitHuf;
+    let dc_rdo_emit =
+        p.plan.dc_rdo && p.trellis.is_some() && (!huf_model || trellis::huf_rate(cfg));
     if let Some(set) = p.trellis.filter(|_| !huf_model || trellis::huf_rate(cfg)) {
         let n = set.passes as usize;
         let mut freqs: trellis::Freqs = ac_hist.freqs.clone();
@@ -1195,6 +1257,9 @@ pub(super) async fn pass1<I: PassIo>(
         let mut again = Vec::new();
         let mut coded: Vec<Vec<u8>> = Vec::new();
         let (mut acc, mut dcb) = (Vec::new(), Vec::new());
+        if dc_rdo_emit && split {
+            dc_rdo_acc.reserve_stripe(p.dc_rows.min(p.g.bh), p.g.bw, p.pw)?;
+        }
         if let Some((sel, ..)) = &mut ex {
             sel.begin();
         }
@@ -1214,7 +1279,7 @@ pub(super) async fn pass1<I: PassIo>(
             if !split {
                 continue;
             }
-            if let Some(ms) = &merge_sel {
+            if open_lambda.is_some() {
                 fill_band_open_lambda(
                     p,
                     open_lambda.as_ref(),
@@ -1225,6 +1290,8 @@ pub(super) async fn pass1<I: PassIo>(
                     by1,
                     &mut band_open_lambda,
                 )?;
+            }
+            if let Some(ms) = &merge_sel {
                 stripes = p.merge(
                     ms,
                     stripes,
@@ -1236,9 +1303,33 @@ pub(super) async fn pass1<I: PassIo>(
                     io.stop(),
                 )?;
             }
-            dc_band(p, &stripes, by0, by1, fits16, codes, &mut dcb);
-            acc.extend_from_slice(&dcb);
+            if dc_rdo_emit {
+                let rows = |by: usize, planes: &mut [f32], extremes: &mut Vec<(u64, bool)>| {
+                    p.fill_block_row(&band, y0, by, planes, extremes)
+                };
+                dc_rdo_acc.push_band(
+                    &stripes,
+                    &rows,
+                    p.pw,
+                    p.g.bw,
+                    by0,
+                    by1,
+                    &p.steps,
+                    &band_open_lambda,
+                    codes,
+                    false,
+                    io.stop(),
+                )?;
+            } else {
+                dc_band(p, &stripes, by0, by1, fits16, codes, &mut dcb);
+                acc.extend_from_slice(&dcb);
+            }
             if p.ends_dc_stripe(by1) {
+                if dc_rdo_emit {
+                    dc_rdo_acc.finish_stripe(p.g.bw, p.gcols / 8, io.stop())?;
+                    dc_rdo_acc.pack_dc(p.g.bw, fits16, codes, &mut acc)?;
+                    dc_rdo_acc.clear();
+                }
                 let first = by0 / p.dc_rows * p.dc_rows;
                 for _ in 0..p.ng {
                     let rect = dc_session
@@ -1304,6 +1395,7 @@ pub(super) async fn pass1<I: PassIo>(
         merges: merge_sel.map(|s| (s, maps)),
         open_lambda,
         closed_lambda,
+        dc_rdo: dc_rdo_emit,
         exact,
         passes,
         alpha,
@@ -1369,6 +1461,11 @@ pub(super) async fn pass2<I: PassIo>(
         .transpose()?;
     let mut band_open_lambda = Vec::new();
     let mut band_closed_lambda = Vec::new();
+    let dc_rdo_on = prep.dc_rdo;
+    let mut dc_rdo_acc = adaptive_rdo::DcStripeRdoAcc::new();
+    if dc_rdo_on && !p.split_dc() {
+        dc_rdo_acc.reserve_stripe(p.dc_rows.min(p.g.bh), p.g.bw, p.pw)?;
+    }
     for (by0, by1) in p.bands() {
         #[cfg(feature = "lab")]
         let prefetched = prep.first_band.take();
@@ -1417,7 +1514,29 @@ pub(super) async fn pass2<I: PassIo>(
         let mut dc_records = Vec::with_capacity(p.ng);
         let dc_stride = p.g.bw * dch * dcs;
         if !split {
-            dc_band(p, &stripes, by0, by1, prep.fits16, codes, &mut dc);
+            if dc_rdo_on {
+                let rows = |by: usize, planes: &mut [f32], extremes: &mut Vec<(u64, bool)>| {
+                    p.fill_block_row(&band, y0, by, planes, extremes)
+                };
+                dc_rdo_acc.push_band(
+                    &stripes,
+                    &rows,
+                    p.pw,
+                    p.g.bw,
+                    by0,
+                    by1,
+                    &p.steps,
+                    &band_open_lambda,
+                    codes,
+                    false,
+                    io.stop(),
+                )?;
+                dc_rdo_acc.finish_stripe(p.g.bw, p.gcols / 8, io.stop())?;
+                dc_rdo_acc.pack_dc(p.g.bw, prep.fits16, codes, &mut dc)?;
+                dc_rdo_acc.clear();
+            } else {
+                dc_band(p, &stripes, by0, by1, prep.fits16, codes, &mut dc);
+            }
         }
         for _ in 0..if split { 0 } else { p.ng } {
             let rect = prep

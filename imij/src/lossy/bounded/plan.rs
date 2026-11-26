@@ -948,10 +948,23 @@ pub(super) fn plan_working_bytes(p: &Plan) -> Result<u64, Error> {
     } else {
         0
     };
+    let dc_rdo = if p.plan.dc_rdo && p.trellis.is_some() {
+        // Exact single-DC-stripe accumulator (`q`/`raw_c`/`ac_norm` 36 B +
+        // `base_lock`/`ext_lock`/`lambda`/`aq_code` 10 B = 46 B/block) plus
+        // `optimize_dc_stripe` live `orig` buffer (4 B/block) = 50 B/block
+        // (budgeted at 52 B/block), plus row-width scratch (`planes` 768 B/col
+        // + `extremes` 16 B/col + Viterbi/rate-model row buffers 19 B/col =
+        // 803 B/col, budgeted at 832 B/col).
+        let stripe_blocks = p.dc_rows.min(p.g.bh) as u128 * p.g.bw as u128;
+        stripe_blocks * 52 + p.g.bw as u128 * 832
+    } else {
+        0
+    };
     u64::try_from(
         2 * raster
             + 3 * coefs
             + dc
+            + dc_rdo
             + select
             + trellis
             + local

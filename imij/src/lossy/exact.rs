@@ -623,7 +623,19 @@ pub(crate) fn policy(
     let ratio = match cfg.exact_blocks {
         Some(k) if k > 0.0 && k.is_finite() => k,
         Some(_) => return None,
-        None if compact => RATIO,
+        None if compact => {
+            // At trellis efforts (9+), auto exact blocks add a 4th DC channel
+            // and inhibit superblock merges; below scale 60 they consistently
+            // regress low/mid-quality BD-rate while winning strongly at q60+.
+            // Explicit `cfg.exact_blocks = Some(r)` and efforts < 9 keep
+            // existing behavior unchanged.
+            if cfg.effort >= crate::effort::TRELLIS_ONE_PASS
+                && cfg.scale_for(cfg.color, info.width, info.height) < 60.0
+            {
+                return None;
+            }
+            RATIO
+        }
         None => return None,
     };
     Some(Policy { ratio, stripe_rows })

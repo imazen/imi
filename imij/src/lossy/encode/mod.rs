@@ -253,7 +253,87 @@ pub(in crate::lossy) fn finish_lossy_frame(
     let gcols = lossy_group_cols(cfg, g.w);
     let ng = if gcols == 0 { 1 } else { g.w.div_ceil(gcols) };
 
-    let dc = nested::encode_dc_image(
+    pulse.check().map_err(|_| Error::Cancelled)?;
+    let resolved = trellis_stage::resolve_trellis_mode(&stripes, cfg, g, xyb, trellis);
+
+    let mut stripes = stripes;
+    let plan = effort.lossy_plan(super::adaptive_mode(cfg));
+    // Build the open-loop lambda map once when fixed-8x8 encodes did not build
+    // it during partition selection, so both DC RDO and AC trellis share the
+    // exact same multipliers as the bounded streaming path.
+    let owned_open_lambda = if open_lambda_map.is_empty()
+        && plan.lambda_aq_open != 0.0
+        && resolved.trellis.is_some()
+        && let Some(row_fn) = rows
+    {
+        super::adaptive_rdo::build_open_loop_lambda_map(
+            row_fn,
+            g.bw * 8,
+            g.bw,
+            g.bh,
+            &steps,
+            plan.lambda_aq_open,
+            cfg.threads,
+            pulse,
+        )?
+    } else {
+        Vec::new()
+    };
+    let open_lambda_map = if open_lambda_map.is_empty() {
+        owned_open_lambda.as_slice()
+    } else {
+        open_lambda_map
+    };
+
+    let dc_rdo_active = plan.dc_rdo
+        && xyb
+        && layouts == [LossyChannelLayout::default(); 3]
+        && cfg.dc_coverage.is_none()
+        && resolved.trellis.is_some()
+        && rows.is_some();
+    // Preserve pass-1 / merged DC values so closed-loop trellis feedback sees
+    // the exact same pre-DC-RDO coefficients as bounded streaming (and so the
+    // lab `set_trellis_huf_rate(false)` small-tier fallback can re-encode DC).
+    let orig_dcs = if dc_rdo_active {
+        let mut all = Vec::new();
+        all.try_reserve_exact(stripes.len())
+            .map_err(|_| Error::TooLarge)?;
+        for sc in &stripes {
+            let chunks = sc.q.as_chunks::<64>().0;
+            let mut dcs = Vec::new();
+            dcs.try_reserve_exact(chunks.len())
+                .map_err(|_| Error::TooLarge)?;
+            for b in chunks {
+                dcs.push(b[0]);
+            }
+            all.push(dcs);
+        }
+        Some(all)
+    } else {
+        None
+    };
+    if dc_rdo_active && let Some(row_fn) = rows {
+        let dc_rows = super::dc_stripe_rows(cfg, sb, info.width, info.height);
+        super::adaptive_rdo::optimize_dc(
+            &mut stripes,
+            row_fn,
+            g.bw * 8,
+            g.bw,
+            g.bh,
+            dc_rows,
+            gcols / 8,
+            &steps,
+            open_lambda_map,
+            exact.is_some(),
+            skip_on,
+            super::adaptive_rdo::DcRdoConfig::PRODUCTION,
+            cfg.threads,
+            pulse,
+        )?;
+    }
+
+    #[cfg_attr(not(feature = "lab"), allow(unused_mut))]
+    let mut dc = nested::encode_dc_image(
         &stripes,
         info,
         cfg,
@@ -266,6 +346,24 @@ pub(in crate::lossy) fn finish_lossy_frame(
         &nested,
         pulse,
     )?;
+    if let Some(orig) = &orig_dcs {
+        for (sc, dcs) in stripes.iter_mut().zip(orig.iter()) {
+            for (i, (blk, &v)) in
+                sc.q.as_chunks_mut::<64>()
+                    .0
+                    .iter_mut()
+                    .zip(dcs.iter())
+                    .enumerate()
+            {
+                blk[0] = v;
+                sc.nz[i] = (sc.nz[i] & !1) | u64::from(v != 0);
+            }
+        }
+    }
+    #[cfg(feature = "lab")]
+    let dc_orig_stripes =
+        (dc_rdo_active && resolved.separate_tier_coefficients && !trellis::huf_rate(cfg))
+            .then(|| stripes.clone());
     // Features the nested heads use (a 32-bit DC image's offset maps): the
     // file declares them (SPEC 2.8).
     let mut nested_features = crate::v1::head_features(&dc.dc_info, &dc.head);
@@ -282,7 +380,6 @@ pub(in crate::lossy) fn finish_lossy_frame(
     }
 
     pulse.check().map_err(|_| Error::Cancelled)?;
-    let resolved = trellis_stage::resolve_trellis_mode(&stripes, cfg, g, xyb, trellis);
 
     // A small automatic-tier encode can compare two different reconstructions.
     // For a lab request with a different bank, preserve the mode the normal
@@ -354,6 +451,35 @@ pub(in crate::lossy) fn finish_lossy_frame(
         reference_entropy,
         pulse,
     )?;
+
+    #[cfg(feature = "lab")]
+    if let Some(orig_stripes) = dc_orig_stripes
+        && codings[pick].entropy == super::LossyEntropy::SplitHuf
+    {
+        dc = nested::encode_dc_image(
+            &orig_stripes,
+            info,
+            cfg,
+            g,
+            sb,
+            gcols,
+            ng,
+            skip_on,
+            exact.is_some(),
+            &nested,
+            pulse,
+        )?;
+        nested_features = crate::v1::head_features(&dc.dc_info, &dc.head);
+        if let Some(e) = &dc.explicit {
+            nested_features = nested_features.union(crate::v1::head_features(&dc.dc_info, &e.0));
+        }
+        if let Some((ai, ah, _, ae)) = &alpha {
+            nested_features = nested_features.union(crate::v1::head_features(ai, ah));
+            if let Some(e) = ae {
+                nested_features = nested_features.union(crate::v1::head_features(ai, &e.0));
+            }
+        }
+    }
 
     let pmaps =
         assemble::build_partition_maps(&stripes, cfg, layouts, sb_on, exact.is_some(), skip_on)?;

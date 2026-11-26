@@ -281,6 +281,7 @@ pub(super) async fn prepare<I: PassIo>(
         merges: None,
         open_lambda: None,
         closed_lambda: None,
+        dc_rdo: false,
     };
     if cfg.local_ans_contexts && !aq {
         train_first_band_dc(p, &mut prepared)?;
