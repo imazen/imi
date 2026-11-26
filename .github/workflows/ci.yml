@@ -74,11 +74,14 @@ jobs:
           curl -sSfL -o sde.tar.xz https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
           mkdir sde && tar xf sde.tar.xz -C sde --strip-components=1
       - name: Build tests
-        run: cargo test --release -p imij --no-run
+        run: cargo test --release -p imij --test v1_roundtrip --test ext32 --no-run
       - name: Run tests on an emulated Sapphire Rapids CPU
         run: |
           for t in v1_roundtrip ext32; do
-            bin=$(ls -t target/release/deps/$t-* | grep -v '\.d$' | head -1)
+            bin=$(cargo test --release -p imij --test "$t" --no-run --message-format=json \
+              | jq -r 'select(.target.name == "'"$t"'" and .executable != null) | .executable' \
+              | tail -n 1)
+            test -x "$bin"
             ./sde/sde64 -spr -- "$bin" report_tier --nocapture
             ./sde/sde64 -spr -- "$bin"
           done
