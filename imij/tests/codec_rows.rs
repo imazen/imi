@@ -817,31 +817,37 @@ fn drained_group_limits_are_cumulative_and_failures_are_sticky() {
             Err(Error::TooLarge)
         ));
     }
-    // Canvas size does not require a full row/raster/output allocation.
-    // One gigapixel is representable even on 32-bit; retain the larger witness
-    // with the native writer's existing pointer-width admission expectation.
+    // Canvas size does not require a full row/raster/output allocation:
+    // bounded group headers check total byte length against `u64`, so both
+    // 1 GPx and 1 TPx canvases admit within bounded memory even on 32-bit.
     for height in [1_000, 1_000_000] {
-        let result = cfg
+        let mut huge = cfg
             .clone()
             .job()
             .with_input_descriptor(desc)
             .with_canvas_size(1_000_000, height)
             .with_limits(ResourceLimits::none().with_max_memory((WORKING + 4096) as u64))
-            .group_encoder();
-        if u64::from(height) * 3_000_000 > usize::MAX as u64 {
-            assert!(matches!(result, Err(Error::TooLarge)));
-        } else {
-            let mut huge = result.unwrap();
-            let header = huge.output().unwrap().len();
-            huge.consume_output(header).unwrap();
-            let rect = huge.next_group().unwrap();
-            assert_eq!((rect.width, rect.height), (5, 1));
-            huge.push_group(PixelSlice::new(&[0; 15], 5, 1, 15, desc).unwrap())
-                .unwrap();
-            assert!(huge.output().unwrap().len() < 4096);
-            assert!(matches!(huge.finish(), Err(Error::InvalidInput(_))));
-        }
+            .group_encoder()
+            .unwrap();
+        let header = huge.output().unwrap().len();
+        huge.consume_output(header).unwrap();
+        let rect = huge.next_group().unwrap();
+        assert_eq!((rect.width, rect.height), (5, 1));
+        huge.push_group(PixelSlice::new(&[0; 15], 5, 1, 15, desc).unwrap())
+            .unwrap();
+        assert!(huge.output().unwrap().len() < 4096);
+        assert!(matches!(huge.finish(), Err(Error::InvalidInput(_))));
     }
+    // A canvas whose total byte count genuinely overflows `u64::MAX` is still
+    // rejected up front on every pointer width (`u32::MAX^2 * 3 > u64::MAX`).
+    let overflow = cfg
+        .clone()
+        .job()
+        .with_input_descriptor(desc)
+        .with_canvas_size(u32::MAX, u32::MAX)
+        .with_limits(ResourceLimits::none().with_max_memory((WORKING + 4096) as u64))
+        .group_encoder();
+    assert!(matches!(overflow, Err(Error::TooLarge)));
 }
 
 #[test]

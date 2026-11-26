@@ -71,7 +71,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Fetch Intel SDE
         run: |
-          curl -sSfL -o sde.tar.xz https://downloadmirror.intel.com/843185/sde-external-9.48.0-2024-11-25-lin.tar.xz
+          curl -sSfL -o sde.tar.xz https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
           mkdir sde && tar xf sde.tar.xz -C sde --strip-components=1
       - name: Build tests
         run: cargo test --release -p imij --no-run

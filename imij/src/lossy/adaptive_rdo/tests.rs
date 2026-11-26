@@ -310,13 +310,13 @@ fn synthetic_multi_region(w: u32, h: u32) -> Vec<u8> {
 }
 
 /// Verifies bit-exact encoder determinism across 1T/4T/8T encoder thread
-/// counts, SIMD dispatch permutations (`for_each_token_permutation`), odd
-/// block-grid dimensions (exercising the trailing 1x1 corner omitted by V4
-/// partition maps), odd column-group widths, and ungrouped encodes.
+/// counts, odd block-grid dimensions (exercising the trailing 1x1 corner
+/// omitted by V4 partition maps), odd column-group widths, and ungrouped
+/// encodes. Cross-ISA `for_each_token_permutation` parity runs in the
+/// isolated `tests/trellis.rs` integration test binary so process-wide token
+/// disabling never races with parallel `--lib` SIMD unit tests.
 #[test]
 fn adaptive_partitions_encoder_determinism_and_odd_geometry() {
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
-
     // 133x117 => 17x15 blocks (odd bw & odd bh => trailing 1x1 corner).
     // 133x109 => 17x14 blocks (odd bw & even bh).
     for &(w, h) in &[(133u32, 117u32), (133u32, 109u32)] {
@@ -358,44 +358,6 @@ fn adaptive_partitions_encoder_determinism_and_odd_geometry() {
             }
         }
     }
-
-    // Cross-ISA encoder determinism across every SIMD token permutation on
-    // the odd-by-odd grid with an odd column-group width (gbw = 7).
-    let (w, h) = (133u32, 117u32);
-    let px = synthetic_multi_region(w, h);
-    let info = ImageInfo::new(w, h, Channels::Rgb, SampleType::U8);
-    let cases: Vec<(LossyEntropy, f32, LossyConfig, Vec<u8>)> = [
-        (LossyEntropy::RunLevel, 7.5),
-        (LossyEntropy::RunLevel, 9.0),
-        (LossyEntropy::RunLevel, 9.5),
-        (LossyEntropy::RunLevel, 10.0),
-        (LossyEntropy::SplitHuf, 10.0),
-    ]
-    .into_iter()
-    .map(|(ent, effort)| {
-        let mut cfg = LossyConfig::new(55.0)
-            .with_effort(effort)
-            .with_entropy(ent)
-            .with_adaptive_partitions(true)
-            .with_threads(1);
-        cfg.column_groups = Some(56);
-        let reference =
-            encode_lossy(&px, info.row_bytes(), &info, &Metadata::default(), &cfg).unwrap();
-        (ent, effort, cfg, reference)
-    })
-    .collect();
-
-    let report = for_each_token_permutation(CompileTimePolicy::Warn, |perm| {
-        for (ent, effort, cfg, reference) in &cases {
-            let got =
-                encode_lossy(&px, info.row_bytes(), &info, &Metadata::default(), cfg).unwrap();
-            assert_eq!(
-                &got, reference,
-                "encoded bytes diverged under dispatch permutation {perm} ({ent:?} e{effort})"
-            );
-        }
-    });
-    assert!(report.permutations_run >= 1);
 }
 
 /// Verifies cooperative cancellation interrupts open-loop lambda map
