@@ -654,6 +654,47 @@ pub(crate) fn lane_symbols(
     );
 }
 
+/// Row-strided residual scan with full neighbor/cross context classes, avoiding
+/// any `step_major` transpose allocation. Symbol order, context classes and run
+/// limits match [`lane_symbols`] identically.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "encode")]
+pub(crate) fn lane_symbols_rows(
+    u: &[u32],
+    row_stride: usize,
+    cross: Option<&[u32]>,
+    lw: usize,
+    rows: usize,
+    width: usize,
+    l: usize,
+    tc: &TokenCfg,
+    run_min: u32,
+    ctx_shift: u32,
+    out: &mut Vec<Sym>,
+) {
+    lane_scan::<false, true>(
+        u,
+        row_stride,
+        cross,
+        lw,
+        rows,
+        width,
+        l,
+        tc,
+        run_min,
+        ctx_shift,
+        &mut |step, ctx, tok, nb, extra| {
+            out.push(Sym {
+                step,
+                ctx,
+                tok,
+                nb,
+                extra,
+            });
+        },
+    );
+}
+
 /// Row-strided residual scan for a model whose classes all select one table.
 /// Symbol steps and run limits match [`lane_symbols`]; context classes are
 /// deliberately zero because they cannot change a fixed model's frequencies.
@@ -713,6 +754,39 @@ pub(crate) fn lane_hist(
     lane_scan::<true, true>(
         u,
         0,
+        cross,
+        lw,
+        rows,
+        width,
+        l,
+        tc,
+        run_min,
+        ctx_shift,
+        &mut |_step, ctx, tok, _nb, _extra| {
+            hist[ctx as usize][tok as usize] += 1;
+        },
+    );
+}
+
+/// Row-strided equivalent of [`lane_hist`], avoiding `step_major` transposes.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "encode")]
+pub(crate) fn lane_hist_rows(
+    u: &[u32],
+    row_stride: usize,
+    cross: Option<&[u32]>,
+    lw: usize,
+    rows: usize,
+    width: usize,
+    l: usize,
+    tc: &TokenCfg,
+    run_min: u32,
+    ctx_shift: u32,
+    hist: &mut [Vec<u64>],
+) {
+    lane_scan::<false, true>(
+        u,
+        row_stride,
         cross,
         lw,
         rows,
@@ -872,6 +946,13 @@ impl<'a> EncodeTables<'a> {
     }
 }
 
+/// Reusable per-lane renormalization buffer across [`encode_lanes_tables_scratch`] calls.
+#[cfg(feature = "encode")]
+#[derive(Default)]
+pub(crate) struct RansScratch {
+    lane_words: [Vec<(u32, u8, u16)>; NL],
+}
+
 /// Encodes the 16 lanes of one stripe slot: active initial states followed
 /// by renormalization words in decoder consumption order.
 /// Words are emitted in (step, phase, lane) order.
@@ -882,12 +963,28 @@ pub(crate) fn encode_lanes_tables(
     active: usize,
     out: &mut Vec<u8>,
 ) {
+    let mut scratch = RansScratch::default();
+    encode_lanes_tables_scratch(tables, lanes, active, out, &mut scratch);
+}
+
+/// [`encode_lanes_tables`] reusing caller-owned renormalization buffers across calls.
+#[cfg(feature = "encode")]
+pub(crate) fn encode_lanes_tables_scratch(
+    tables: &EncodeTables<'_>,
+    lanes: &[Vec<Sym>; NL],
+    active: usize,
+    out: &mut Vec<u8>,
+    scratch: &mut RansScratch,
+) {
     let mut states = [0u32; NL];
     // Per lane: (step, phase, word). Symbols are visited in reverse decode
     // order (states only propagate backwards), and within one symbol the
     // pull phases are pushed descending, so every lane's list is sorted by
     // its packed key in *descending* order — see the merge below.
-    let mut lane_words: [Vec<(u32, u8, u16)>; NL] = core::array::from_fn(|_| Vec::new());
+    let lane_words = &mut scratch.lane_words;
+    for lw in lane_words.iter_mut() {
+        lw.clear();
+    }
     // The sort key emitted per (lane, word): (step, phase, lane).
     let key =
         |st: u32, ph: u8, l: usize| -> u64 { ((((st as u64) << 4) | ph as u64) << 4) | l as u64 };

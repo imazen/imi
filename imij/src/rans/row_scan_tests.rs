@@ -104,3 +104,109 @@ fn row_scanning_preserves_tokens_runs_and_complete_fixed_model_bytes() {
         compare(1, RUN_CAP as usize + 7, depth, 0, 0);
     }
 }
+
+#[test]
+fn row_scanning_with_context_and_cross_matches_step_major() {
+    for depth in [8u32, 16, 32] {
+        let shift = if depth > 16 { 10 } else { 0 };
+        let tc = TokenCfg::v1(4, 1, depth);
+        let asz = tc.alphabet() as usize;
+        for width in [1usize, 7, 16, 17, 65, 131] {
+            for rows in [1usize, 3, 17] {
+                let stride = width + 5;
+                let mut a_strided = vec![0xbadc0ffeu32; stride * rows];
+                let mut c_strided = vec![0xdeadbeefu32; stride * rows];
+                let mut a_tight = Vec::with_capacity(width * rows);
+                let mut c_tight = Vec::with_capacity(width * rows);
+                let mut rng = (0x9e37_79b9u32 ^ (width as u32 * 31) ^ (rows as u32 * 17)) | 1;
+                let mask = crate::mask_of(depth);
+                for y in 0..rows {
+                    for x in 0..width {
+                        rng ^= rng << 13;
+                        rng ^= rng >> 17;
+                        rng ^= rng << 5;
+                        let av = if (y * width + x) % 11 < 7 { 0 } else { rng & mask };
+                        rng ^= rng << 13;
+                        rng ^= rng >> 17;
+                        rng ^= rng << 5;
+                        let cv = if (y * width + x) % 9 < 4 { 0 } else { rng & mask };
+                        a_strided[y * stride + x] = av;
+                        c_strided[y * stride + x] = cv;
+                        a_tight.push(av);
+                        c_tight.push(cv);
+                    }
+                }
+                let lw = width.div_ceil(NL);
+                let widths = crate::v1::lane_widths(width, lw);
+                let a_step = crate::v1::step_major(&a_tight, width, lw, 0, rows);
+                let c_step = crate::v1::step_major(&c_tight, width, lw, 0, rows);
+                for use_cross in [false, true] {
+                    let mut h_ref = vec![vec![0u64; asz]; CLASSES];
+                    let mut h_row = vec![vec![0u64; asz]; CLASSES];
+                    for l in 0..NL {
+                        let w_l = widths[l] as usize;
+                        let mut s_ref = Vec::new();
+                        let mut s_row = Vec::new();
+                        lane_symbols(
+                            &a_step,
+                            use_cross.then_some(c_step.as_slice()),
+                            lw,
+                            rows,
+                            w_l,
+                            l,
+                            &tc,
+                            4,
+                            shift,
+                            &mut s_ref,
+                        );
+                        lane_symbols_rows(
+                            &a_strided,
+                            stride,
+                            use_cross.then_some(c_strided.as_slice()),
+                            lw,
+                            rows,
+                            w_l,
+                            l,
+                            &tc,
+                            4,
+                            shift,
+                            &mut s_row,
+                        );
+                        let key = |s: &Sym| (s.step, s.ctx, s.tok, s.nb, s.extra);
+                        assert_eq!(
+                            s_row.iter().map(key).collect::<Vec<_>>(),
+                            s_ref.iter().map(key).collect::<Vec<_>>(),
+                            "depth={depth} {width}x{rows} cross={use_cross} lane={l}"
+                        );
+                        lane_hist(
+                            &a_step,
+                            use_cross.then_some(c_step.as_slice()),
+                            lw,
+                            rows,
+                            w_l,
+                            l,
+                            &tc,
+                            4,
+                            shift,
+                            &mut h_ref,
+                        );
+                        lane_hist_rows(
+                            &a_strided,
+                            stride,
+                            use_cross.then_some(c_strided.as_slice()),
+                            lw,
+                            rows,
+                            w_l,
+                            l,
+                            &tc,
+                            4,
+                            shift,
+                            &mut h_row,
+                        );
+                    }
+                    assert_eq!(h_row, h_ref, "hist depth={depth} {width}x{rows} cross={use_cross}");
+                }
+            }
+        }
+    }
+}
