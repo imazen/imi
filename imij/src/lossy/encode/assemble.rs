@@ -181,7 +181,22 @@ pub(super) struct AssemblyCtx<'a> {
     pub exact: Option<&'a Coded>,
     pub stripes: &'a [StripeCoefs],
     pub pmaps: &'a PartitionMaps,
+    pub alt_stripes: Option<&'a [StripeCoefs]>,
+    pub alt_pmaps: Option<&'a PartitionMaps>,
     pub nested_features: crate::parse::header::Features,
+}
+
+impl<'a> AssemblyCtx<'a> {
+    fn coding_maps(&self, uses_alt: bool) -> (&'a [StripeCoefs], &'a PartitionMaps) {
+        if uses_alt {
+            (
+                self.alt_stripes.unwrap_or(self.stripes),
+                self.alt_pmaps.unwrap_or(self.pmaps),
+            )
+        } else {
+            (self.stripes, self.pmaps)
+        }
+    }
 }
 
 type Part<'p> = (&'p [u8], &'p [Vec<u8>]);
@@ -192,6 +207,7 @@ type Part<'p> = (&'p [u8], &'p [Vec<u8>]);
 fn assemble_v3_file(
     ctx: &AssemblyCtx<'_>,
     entropy: LossyEntropy,
+    uses_alt: bool,
     tb: &[u8],
     stripe_bytes: &[Vec<u8>],
     dc_head: &[u8],
@@ -203,10 +219,11 @@ fn assemble_v3_file(
         H_UNIT_ORDINALS, R_AC, R_ALPHA, R_DC, R_EXACT, main_framed_len, put_main_record, put_record,
     };
     let cfg = ctx.cfg;
+    let (stripes, pmaps) = ctx.coding_maps(uses_alt);
     let compact_states = ac_records_len(
         cfg,
-        ctx.stripes,
-        ctx.pmaps,
+        stripes,
+        pmaps,
         ctx.adaptive_mask,
         entropy,
         stripe_bytes,
@@ -271,16 +288,16 @@ fn assemble_v3_file(
         } else {
             st
         };
-        if ctx.adaptive_mask != 0 || compact_states || ctx.pmaps.sb_maps.is_some() {
+        if ctx.adaptive_mask != 0 || compact_states || pmaps.sb_maps.is_some() {
             let mut record = Vec::new();
-            if let Some(maps) = &ctx.pmaps.sb_maps {
+            if let Some(maps) = &pmaps.sb_maps {
                 put_varint(&mut record, maps[u].len() as u64);
                 record.extend_from_slice(&maps[u]);
             } else if ctx.adaptive_mask != 0 {
-                layout::write_modes(&mut record, &ctx.stripes[u].modes);
+                layout::write_modes(&mut record, &stripes[u].modes);
             }
             if compact_states {
-                record.extend_from_slice(&compact::pack(st, ctx.stripes[u].bw.min(NL))?);
+                record.extend_from_slice(&compact::pack(st, stripes[u].bw.min(NL))?);
             } else {
                 record.extend_from_slice(st);
             }
@@ -332,7 +349,7 @@ fn assemble_v3_file(
     match if cfg.coding_defaults {
         MapKind::None
     } else {
-        ctx.pmaps.map_kind
+        pmaps.map_kind
     } {
         MapKind::None => {}
         MapKind::Merges => put_record(&mut records, superblock::H_SUPERBLOCKS, &[]),
@@ -357,7 +374,7 @@ fn assemble_v3_file(
     if cfg.local_ans_contexts {
         put_record(&mut records, local_ans::HEAD, &[]);
     }
-    if let Some((head, _)) = &ctx.pmaps.default_maps {
+    if let Some((head, _)) = &pmaps.default_maps {
         put_record(&mut records, coding_defaults::HEAD, head);
     }
     if cfg.model_references {
@@ -453,7 +470,7 @@ fn assemble_v3_file(
     if ctx.qp.transform.is_some() {
         features = features.with(Feature::ColorTransform);
     }
-    if ctx.pmaps.any_merge {
+    if pmaps.any_merge {
         features = features.with(Feature::Superblocks);
     }
     if cfg.model_references {
@@ -465,7 +482,7 @@ fn assemble_v3_file(
     if cfg.coding_defaults {
         features = features.with(Feature::CodingDefaults);
     }
-    if ctx.pmaps.map_kind == MapKind::Joint {
+    if pmaps.map_kind == MapKind::Joint {
         features = features.with(Feature::SmallTransforms);
     }
     if ordinals {
@@ -523,17 +540,10 @@ pub(super) fn select_seeded_or_explicit(
     pulse: &dyn Pulse,
 ) -> Result<Vec<u8>, Error> {
     let ac_len = |c: &AcCoding, (tb, recs): Part<'_>| -> Result<u128, Error> {
+        let (stripes, pmaps) = ctx.coding_maps(c.uses_alt);
         Ok(varint_len(tb.len())
             + tb.len() as u128
-            + ac_records_len(
-                ctx.cfg,
-                ctx.stripes,
-                ctx.pmaps,
-                ctx.adaptive_mask,
-                c.entropy,
-                recs,
-            )?
-            .0)
+            + ac_records_len(ctx.cfg, stripes, pmaps, ctx.adaptive_mask, c.entropy, recs)?.0)
     };
     let ac = &codings[pick];
     let (ac_part, ac_seeded) = match &ac.explicit {
@@ -560,6 +570,7 @@ pub(super) fn select_seeded_or_explicit(
         assemble_v3_file(
             ctx,
             c.entropy,
+            c.uses_alt,
             t,
             r,
             dh,
@@ -587,6 +598,7 @@ pub(super) fn select_seeded_or_explicit(
     let file = assemble_v3_file(
         ctx,
         ac.entropy,
+        ac.uses_alt,
         ac_part.0,
         ac_part.1,
         dc_part.0,

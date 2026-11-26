@@ -618,3 +618,37 @@ fn lossy_encode_bytes_identical_across_token_permutations() {
     );
     eprintln!("token permutations: {report}");
 }
+
+/// Regression test for small (`<= 64K px`, >= 128 px longest side) `Compact`
+/// trellis encodes where tier selection picks the separately trellised
+/// split-Huffman candidate (`pass1`) while joint 4x4 split flags are active.
+/// Previously, `build_partition_maps` encoded split flags against the
+/// run-level trellis's AC support mask, desyncing the range-coded split flags
+/// on decode and corrupting blocks at high quality.
+#[test]
+fn small_compact_trellis_joint_partition_map_matches_selected_entropy() {
+    let info = ImageInfo::new(128, 128, Channels::Rgb, SampleType::U8);
+    let px = image(&info);
+    for effort in [9.0f32, 9.5, 10.0] {
+        for q in [75.0f32, 90.0, 98.0] {
+            let cfg = ImiEncoderConfig::lossy(q)
+                .with_decode_speed(DecodeSpeed::Compact)
+                .with_effort(effort);
+            let (_, dec) =
+                encode_checked(&px, &info, &cfg, &format!("compact 128x128 e{effort} q{q}"));
+            let base_cfg = ImiEncoderConfig::lossy(q).with_effort(effort);
+            let (_, base_dec) = encode_checked(
+                &px,
+                &info,
+                &base_cfg,
+                &format!("base 128x128 e{effort} q{q}"),
+            );
+            let compact_mse = mse(&px, &dec);
+            let base_mse = mse(&px, &base_dec);
+            assert!(
+                compact_mse <= base_mse * 2.0 + 4.0,
+                "compact 128x128 e{effort} q{q}: MSE {compact_mse:.2} far worse than base {base_mse:.2} (split-flag desync?)"
+            );
+        }
+    }
+}

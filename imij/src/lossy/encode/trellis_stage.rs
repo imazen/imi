@@ -19,11 +19,15 @@ use crate::{Error, ImageInfo};
 
 /// Table headers and independently coded stripe records in the selected
 /// mode; with seed tables, also the same blob with explicit tables.
+/// `uses_alt` is true when the records were coded from the separate
+/// split-Huffman pass (`pass1`) rather than the primary `stripes` slice, so
+/// partition maps and stripe metadata stay matched to the coded coefficients.
 pub(super) struct AcCoding {
     pub entropy: LossyEntropy,
     pub tb: Vec<u8>,
     pub records: Vec<Vec<u8>>,
     pub explicit: Option<Coded>,
+    pub uses_alt: bool,
 }
 
 impl AcCoding {
@@ -248,7 +252,7 @@ pub(super) fn select_ac_coding(
     #[cfg(feature = "lab")] reference_entropy: Option<u8>,
     pulse: &dyn Pulse,
 ) -> Result<(Vec<AcCoding>, usize, usize), Error> {
-    let code_units = |units: &[StripeCoefs], entropy| -> Result<AcCoding, Error> {
+    let code_units = |units: &[StripeCoefs], entropy, uses_alt| -> Result<AcCoding, Error> {
         let (tb, records, explicit) = if entropy == LossyEntropy::SplitHuf {
             encode_huffman_stripes(units, cfg, effort, pulse)?
         } else {
@@ -260,9 +264,10 @@ pub(super) fn select_ac_coding(
             tb,
             records,
             explicit,
+            uses_alt,
         })
     };
-    let code = |entropy| code_units(stripes, entropy);
+    let code = |entropy| code_units(stripes, entropy, false);
     // The tier's choice: split-Huffman when the cost model predicts it
     // decodes within the tier's ratio of run-level's time; small images
     // try both and also take split-Huffman when it is smaller (its tables
@@ -288,6 +293,7 @@ pub(super) fn select_ac_coding(
                         tb,
                         records,
                         explicit,
+                        uses_alt: false,
                     };
                     (rl, n)
                 };
@@ -299,7 +305,11 @@ pub(super) fn select_ac_coding(
                 // Split-Huffman never carries the run-level trellis's
                 // coefficients (with the effort's trellis: the split-Huffman
                 // rate model's, from pass 1).
-                let sh = code_units(pass1.unwrap_or(stripes), LossyEntropy::SplitHuf)?;
+                let sh = code_units(
+                    pass1.unwrap_or(stripes),
+                    LossyEntropy::SplitHuf,
+                    pass1.is_some(),
+                )?;
                 let pick = (fast || smaller(&sh) < smaller(&rl)) as usize;
                 let pick_explicit = (fast || size(sh.explicit()) < size(rl.explicit())) as usize;
                 #[cfg(feature = "lab")]

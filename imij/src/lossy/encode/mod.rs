@@ -357,6 +357,13 @@ pub(in crate::lossy) fn finish_lossy_frame(
 
     let pmaps =
         assemble::build_partition_maps(&stripes, cfg, layouts, sb_on, exact.is_some(), skip_on)?;
+    // When small-image tier selection ran a separate split-Huffman trellis on
+    // `pass1`, build its own partition maps from `pass1`'s AC support mask so
+    // joint 4x4 split flags stay synchronized with the decoded AC coefficients.
+    let alt_pmaps = pass1
+        .as_deref()
+        .map(|p| assemble::build_partition_maps(p, cfg, layouts, sb_on, exact.is_some(), skip_on))
+        .transpose()?;
     let ctx = assemble::AssemblyCtx {
         info,
         meta,
@@ -379,6 +386,8 @@ pub(in crate::lossy) fn finish_lossy_frame(
         exact: exact.as_ref(),
         stripes: &stripes,
         pmaps: &pmaps,
+        alt_stripes: pass1.as_deref(),
+        alt_pmaps: alt_pmaps.as_ref(),
         nested_features,
     };
     assemble::select_seeded_or_explicit(
