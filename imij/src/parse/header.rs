@@ -87,15 +87,19 @@ impl Coding {
 #[repr(u8)]
 #[non_exhaustive]
 pub enum DecodeSpeed {
-    /// Smallest files.
+    /// Smallest files: XYB with superblocks below effort `9.0` and full
+    /// adaptive superblock + 4x4 partitions with 9-context map DP from effort
+    /// `9.0` onward (8-bit images with longer side `>= 128 px`).
     Compact = 0,
-    /// Faster entropy decoding for a little size.
+    /// Fixed 8x8 XYB blocks with faster entropy decoding for a small size
+    /// trade-off (default).
     #[default]
     Balanced = 1,
-    /// Static Huffman side information: fastest entropy decoding.
+    /// Fixed 8x8 XYB blocks with static Huffman side information: fastest XYB
+    /// entropy decoding.
     Fast = 2,
-    /// Also skips the XYB color transform (YCoCg): fastest decoding, largest
-    /// files at equal quality.
+    /// Fixed 8x8 blocks skipping the XYB color transform (YCoCg): fastest
+    /// decoding, largest files at equal quality.
     Fastest = 3,
 }
 

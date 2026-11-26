@@ -192,19 +192,42 @@ impl ImiEncoderConfig {
         self
     }
 
-    /// Encoder work budget, 0..=10 (validated when encoding). Effort never
-    /// changes lossless samples; lossy effort may change which coefficients
-    /// are coded. Default 7.5. Ignored by the quick coder.
+    /// Encoder work budget, `0..=10` (validated when encoding; default `7.5`).
+    ///
+    /// Effort never changes lossless samples and is ignored by the quick coder.
+    /// For lossy XYB encoding:
+    /// - `< 9.0` (including default `7.5`): fixed quantization (for fixed-8x8
+    ///   encodes without effort-priced adaptive partitions, decoded samples are
+    ///   identical across efforts `< 9.0`); `>= 7.5` searches entropy table
+    ///   counts by coded size.
+    /// - `9.0`: enables 1-pass AC trellis, open-loop surrounding-block lambda
+    ///   AQ, and 2D-MED DC RDO; [`DecodeSpeed::Compact`] also enables full
+    ///   adaptive superblock + 4x4 partitions with 9-context partition-map DP.
+    /// - `9.5`: fast mid-tier Pareto rung for adaptive partitions (2-pass
+    ///   merged trellis + two-pass empirical pilot + closed-loop seam AQ,
+    ///   without per-candidate `trellis_select`).
+    /// - `10.0`: 2-pass AC trellis + closed-loop seam AQ (plus per-candidate
+    ///   `trellis_select` for adaptive partitions) for maximum compression.
     pub fn with_effort(mut self, effort: f32) -> Self {
         self.effort = effort;
         self
     }
 
     /// Decode-complexity tier of the lossy stream (smallest file to fastest
-    /// decode). `None` (default) lets the encoder pick per image. A tier
-    /// also fixes the color coding: `Fastest` codes YCoCg, the others XYB,
-    /// whatever [`LossyTuning::color`] says. The lossless coders have one
-    /// decode path and ignore it.
+    /// decode). `None` (default) lets the encoder pick per image (fixed 8x8
+    /// XYB blocks).
+    ///
+    /// - [`DecodeSpeed::Compact`]: smallest files — classic superblocks below
+    ///   effort `9.0` and full adaptive superblock + 4x4 partitions from
+    ///   effort `9.0` onward (8-bit images with longer side `>= 128 px`).
+    /// - [`DecodeSpeed::Balanced`] / [`DecodeSpeed::Fast`]: fixed 8x8 XYB
+    ///   blocks trading a small amount of file size for faster entropy decode.
+    /// - [`DecodeSpeed::Fastest`]: skips XYB in favor of YCoCg for maximum
+    ///   decode speed.
+    ///
+    /// Setting a tier fixes the color coding (`Fastest` codes YCoCg, the
+    /// others XYB) regardless of [`LossyTuning::color`]. The lossless coders
+    /// have one decode path and ignore it.
     pub fn with_decode_speed(mut self, speed: impl Into<Option<DecodeSpeed>>) -> Self {
         self.decode_speed = speed.into();
         self
@@ -904,10 +927,22 @@ pub struct LossyTuning {
     pub stripe_block_rows: u32,
     /// AC entropy coding (ignored when a decode speed is set).
     pub entropy: crate::LossyEntropy,
-    /// Exact-block ratio; `None` = the decode-speed tier decides.
+    /// Exact-block ratio; `None` = the decode-speed tier decides (`Compact`
+    /// selects exact blocks automatically — at effort `>= 9.0`, only for
+    /// quality scale `>= 60`; set `Some(ratio)` to force or `Some(0.0)` to
+    /// disable).
     pub exact_blocks: Option<f32>,
+    /// Explicit 4x4 sub-block transforms for `Compact` U8 stills below effort
+    /// `9.0` (rejected at effort `>= 9.0`, where [`DecodeSpeed::Compact`] and
+    /// [`Self::adaptive_partitions`] enable 4x4 splits automatically).
     pub small_transforms: bool,
+    /// Frequency-dependent dead-zone quantization bias (`0.46` at low AC
+    /// frequencies tapering to `0.33` at high AC frequencies).
     pub freq_zero_bias: bool,
+    /// Joint rate-distortion selection of `16x16`/`16x8`/`8x16` superblocks
+    /// and `4x4` transforms with 9-context partition-map DP across all efforts
+    /// and entropy modes (`RunLevel` and `SplitHuf`). [`DecodeSpeed::Compact`]
+    /// enables the same adaptive RDO ladder automatically at effort `>= 9.0`.
     pub adaptive_partitions: bool,
     /// Explicit color transform; `None` = automatic. Needs `color ==
     /// LossyColor::YCoCg`; [`Self::with_color_transform`] sets that.
