@@ -56,6 +56,7 @@ mod session;
 #[cfg(feature = "std")]
 mod stream;
 
+#[cfg(any(test, feature = "std"))]
 use passes::*;
 use plan::*;
 #[cfg(all(test, feature = "std"))]
@@ -67,6 +68,7 @@ use stream::*;
 pub(crate) use passes::component_one_pass_records;
 #[cfg(all(test, feature = "encode"))]
 pub(crate) use passes::encode_lossy_bounded;
+#[cfg(feature = "std")]
 pub(crate) use plan::bounded_working_bytes;
 #[cfg(feature = "std")]
 pub(crate) use session::{Session, SessionPlan, Step};
