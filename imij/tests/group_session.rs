@@ -228,8 +228,12 @@ fn bounded_groups_support_near_lossless_within_exact_bounds() {
                         let base = (x * 13 + y * 29 + c * 7) % 251;
                         match sample {
                             SampleType::U8 => pixels.push(base as u8),
-                            SampleType::U16 => pixels.extend_from_slice(&((base * 197) as u16).to_ne_bytes()),
-                            SampleType::U32 => pixels.extend_from_slice(&(base * 100_003).to_ne_bytes()),
+                            SampleType::U16 => {
+                                pixels.extend_from_slice(&((base * 197) as u16).to_ne_bytes())
+                            }
+                            SampleType::U32 => {
+                                pixels.extend_from_slice(&(base * 100_003).to_ne_bytes())
+                            }
                             SampleType::I32 => {
                                 let v = (base as i32 - 125) * 10_007;
                                 pixels.extend_from_slice(&v.to_ne_bytes());
@@ -242,7 +246,8 @@ fn bounded_groups_support_near_lossless_within_exact_bounds() {
             let cfg = imij::ImiEncoderConfig::lossless()
                 .tune_lossless(|t| t.max_error = [max_err; 4])
                 .with_row_groups(imij::RowGroups::new(16, 8, 32 << 20));
-            let mut sess = GroupEncodeSession::new(info.clone(), &Metadata::default(), &cfg).unwrap();
+            let mut sess =
+                GroupEncodeSession::new(info.clone(), &Metadata::default(), &cfg).unwrap();
             let mut file = Vec::new();
             let stride = info.row_bytes();
             let bpp = info.bytes_per_pixel();

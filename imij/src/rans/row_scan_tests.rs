@@ -125,11 +125,19 @@ fn row_scanning_with_context_and_cross_matches_step_major() {
                         rng ^= rng << 13;
                         rng ^= rng >> 17;
                         rng ^= rng << 5;
-                        let av = if (y * width + x) % 11 < 7 { 0 } else { rng & mask };
+                        let av = if (y * width + x) % 11 < 7 {
+                            0
+                        } else {
+                            rng & mask
+                        };
                         rng ^= rng << 13;
                         rng ^= rng >> 17;
                         rng ^= rng << 5;
-                        let cv = if (y * width + x) % 9 < 4 { 0 } else { rng & mask };
+                        let cv = if (y * width + x) % 9 < 4 {
+                            0
+                        } else {
+                            rng & mask
+                        };
                         a_strided[y * stride + x] = av;
                         c_strided[y * stride + x] = cv;
                         a_tight.push(av);
@@ -204,7 +212,10 @@ fn row_scanning_with_context_and_cross_matches_step_major() {
                             &mut h_row,
                         );
                     }
-                    assert_eq!(h_row, h_ref, "hist depth={depth} {width}x{rows} cross={use_cross}");
+                    assert_eq!(
+                        h_row, h_ref,
+                        "hist depth={depth} {width}x{rows} cross={use_cross}"
+                    );
                 }
             }
         }

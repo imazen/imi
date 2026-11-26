@@ -229,7 +229,8 @@ pub(crate) fn encode_variant(
         }
         if nvalues < 256 {
             let dict_bits = (usize::BITS - (nvalues - 1).leading_zeros()) as u8;
-            let dict_packed_len = 2 + nvalues
+            let dict_packed_len = 2
+                + nvalues
                 + count
                     .checked_mul(dict_bits as usize)
                     .ok_or("plane size")?

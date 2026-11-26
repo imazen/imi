@@ -20,110 +20,129 @@ pub(super) fn configure(mut p: Plan, cfg: &LossyConfig) -> Result<Plan, Error> {
     }
     // One native AC stripe per source band; its DC group can be published with
     // it instead of gathering DC over later source bands.
-    #[cfg(feature = "rayon")]
-    {
-        p.one_pass_threads = cfg.threads.max(1);
-    }
     p.work = p.sb as usize;
     p.dc_rows = p.work;
     Ok(p)
 }
 
-/// Keep cache-sized column partitions while reusing each task's scratch
-/// across every block row of the admitted source band. Jobs own disjoint
-/// output slices and never exceed the requested worker count.
-#[cfg(feature = "rayon")]
-pub(super) fn parallel_stripe(
-    p: &Plan,
-    band: &[u8],
-    y0: usize,
-    stripe: usize,
-    threads: usize,
-    aq_code: Option<u8>,
-) -> StripeCoefs {
-    struct Work<'a> {
-        bx: usize,
-        bw: usize,
-        rows: Vec<(usize, &'a mut [i32], &'a mut [u64])>,
-    }
-    let (by0, by1) = p.g.rows(stripe);
-    let nby = by1 - by0;
-    let bw = p.g.bw;
-    let workers = threads.min(bw.div_ceil(32)).max(1);
-    let chunk = bw.div_ceil(workers).div_ceil(8) * 8;
-    let mut q = vec![0i32; nby * bw * NCH * 64];
-    let mut nz = vec![0u64; nby * bw * NCH];
-    let mut jobs: Vec<_> = (0..bw.div_ceil(chunk))
-        .map(|i| Work {
-            bx: i * chunk,
-            bw: chunk.min(bw - i * chunk),
-            rows: Vec::with_capacity(nby),
-        })
-        .collect();
-    for (r, (q, nz)) in q
-        .chunks_mut(bw * NCH * 64)
-        .zip(nz.chunks_mut(bw * NCH))
-        .enumerate()
-    {
-        for (i, (q, nz)) in q
-            .chunks_mut(chunk * NCH * 64)
-            .zip(nz.chunks_mut(chunk * NCH))
-            .enumerate()
-        {
-            jobs[i].rows.push((by0 + r, q, nz));
+/// Blend raw band-0 observations with a calibrated normalized prior so flat or
+/// dark first bands retain realistic decay across unseen symbols instead of
+/// falling back to a flat uniform tail. Every legal symbol keeps weight >= 1.
+fn blend_prior(obs: &[u64], prior: &[f64], legal: impl Fn(usize) -> bool, out: &mut [u64]) {
+    const OBS_SCALE: u64 = 64;
+    let total_obs: u64 = obs.iter().sum();
+    // Keep ~8% mixture mass on the calibrated prior (and at least 64 virtual
+    // samples when a context had few or zero observations in band 0).
+    let prior_mass = (total_obs as f64 * 0.08).max(64.0) * OBS_SCALE as f64;
+    for i in 0..out.len() {
+        if legal(i) {
+            let p = ((prior[i] * prior_mass) as u64).max(1);
+            out[i] = obs[i].saturating_mul(OBS_SCALE).saturating_add(p);
+        } else {
+            out[i] = 0;
         }
     }
-    debug_assert!(jobs.len() <= workers);
-    let process = |work: Work<'_>| {
-        let Work {
-            bx,
-            bw: blocks,
-            rows,
-        } = work;
-        let pw = blocks * 8;
-        let mut planes = vec![0.0f32; NCH * 8 * pw];
-        let mut extremes = Vec::with_capacity(blocks);
-        let mut coefs = vec![0.0f32; blocks * 64];
-        let aq: Vec<f32> = aq_code.map_or_else(Vec::new, |a| vec![a as f32 / 64.0; blocks]);
-        for (by, q, nz) in rows {
-            p.fill_block_row_columns(band, y0, by, bx..bx + blocks, &mut planes, &mut extremes);
-            for ch in 0..NCH {
-                enc_simd::fdct_row(
-                    &planes[ch * 8 * pw..][..8 * pw],
-                    pw,
-                    blocks,
-                    &p.cm,
-                    &mut coefs,
-                );
-                enc_simd::quant_row(&coefs, blocks, ch, &p.inv_steps[ch], &aq, p.round, q, nz);
-                if p.dc_fix {
-                    let ext = (ch == 0 && p.white_code.is_some()).then_some(&extremes[..]);
-                    dc_row(&coefs, blocks, ch, p.inv_steps[ch][0], ext, q, nz);
-                }
-            }
+}
+
+fn normalize(v: &mut [f64]) {
+    let sum: f64 = v.iter().sum();
+    if sum > 0.0 {
+        for x in v.iter_mut() {
+            *x /= sum;
         }
+    }
+}
+
+fn rl_eob_prior() -> [f64; coef::ALPHA] {
+    let mut p = [0.0f64; coef::ALPHA];
+    p[0] = 6.0;
+    for e in 1..64usize {
+        p[e] = libm::pow(1.0 + e as f64 / 5.0, -1.35);
+    }
+    normalize(&mut p[..64]);
+    p
+}
+
+fn rl_ac_prior() -> [f64; coef::ALPHA] {
+    let mut p = [0.0f64; coef::ALPHA];
+    for run in 0..=coef::MAX_RUN {
+        let r_decay = libm::pow(1.0 + run as f64, -1.55);
+        for class in 0..coef::MAG_CLASSES {
+            let c_decay = libm::pow(1.0 + class as f64, -2.3);
+            p[(run * 32 + class) as usize] = r_decay * c_decay;
+        }
+    }
+    p[coef::ZRL as usize] = 0.03;
+    normalize(&mut p);
+    p
+}
+
+fn huf_count_prior() -> [f64; huf::CNT_ALPHA] {
+    let mut p = [0.0f64; huf::CNT_ALPHA];
+    p[0] = 5.0;
+    for c in 1..huf::CNT_ALPHA {
+        p[c] = libm::pow(1.0 + c as f64 / 2.0, -1.8);
+    }
+    normalize(&mut p);
+    p
+}
+
+fn huf_wid_prior() -> [f64; huf::WID_ALPHA] {
+    let mut p = [0.0f64; huf::WID_ALPHA];
+    p[0] = 8.0;
+    for w in 1..huf::WID_ALPHA {
+        p[w] = libm::pow(1.0 + w as f64, -2.3);
+    }
+    normalize(&mut p);
+    p
+}
+
+/// Calibrated Lomax + zero-run DC prior for `TokenCfg::v1(4, 1, 32)` by raw
+/// context class (0..16), keeping full support below the run cap.
+fn dc_class_prior(tc: &crate::tokens::TokenCfg, cls: usize) -> Vec<f64> {
+    let asz = tc.alphabet() as usize;
+    let vt = tc.value_tokens() as usize;
+    let legal_end = crate::rans::run_cap_end(tc).min(asz);
+    let (scale, power, zero_mass, run_mass) = match cls {
+        0 => (2.0, 1.4, 0.36, 0.34),
+        1..=3 => (3.5, 1.6, 0.16, 0.04),
+        4..=6 => (16.0, 1.5, 0.05, 0.015),
+        _ => (256.0, 1.0, 0.015, 0.01),
     };
-    let mut jobs = jobs.into_iter();
-    let first = jobs.next();
-    rayon::in_place_scope(|scope| {
-        for job in jobs {
-            let process = &process;
-            scope.spawn(move |_| process(job));
-        }
-        if let Some(job) = first {
-            process(job);
-        }
-    });
-    StripeCoefs {
-        by0,
-        nby,
-        bw,
-        q,
-        nz,
-        aq: aq_code.map_or_else(Vec::new, |a| vec![a; nby * bw]),
-        modes: Vec::new(),
-        splits: Vec::new(),
+    let mut p = vec![0.0f64; asz];
+    p[0] = zero_mass;
+    let val_mass = 1.0 - zero_mass - run_mass;
+    let mut val_sum = 0.0f64;
+    for (tok, slot) in p.iter_mut().enumerate().take(vt).skip(1) {
+        let (base, nb) = crate::tokens::hybrid_base(tok as u32, tc.k, tc.m);
+        let lo = base as f64;
+        let hi1 = lo + (1u64 << nb) as f64;
+        *slot =
+            (libm::pow(1.0 + lo / scale, -power) - libm::pow(1.0 + hi1 / scale, -power)).max(0.0);
+        val_sum += *slot;
     }
+    if val_sum > 0.0 {
+        let k = val_mass / val_sum;
+        for slot in &mut p[1..vt] {
+            *slot *= k;
+        }
+    }
+    let mut run_sum = 0.0f64;
+    for (tok, slot) in p.iter_mut().enumerate().take(legal_end).skip(vt) {
+        let (base, _) = crate::tokens::hybrid_base((tok - vt) as u32, tc.rk, tc.rm);
+        if base + 1 >= 4 {
+            let m = libm::pow((base + 1) as f64, -0.45);
+            *slot = m;
+            run_sum += m;
+        }
+    }
+    if run_sum > 0.0 {
+        let k = run_mass / run_sum;
+        for slot in &mut p[vt..legal_end] {
+            *slot *= k;
+        }
+    }
+    p
 }
 
 /// Conservative admission using the existing band's working-storage account,
@@ -185,7 +204,6 @@ pub(super) async fn prepare<I: PassIo>(
     let mut first_band = Vec::new();
     let y0 = io.rows(2, by0, by1, &mut first_band).await?;
     let first = p.band_stripes(&first_band, y0, by0, by1);
-    const OBSERVATION_WEIGHT: u64 = 64;
     let effort = crate::effort::Effort::new(cfg.effort)?;
     let entropy = if matches!(
         cfg.decode_speed,
@@ -197,24 +215,31 @@ pub(super) async fn prepare<I: PassIo>(
     };
     let ac = match entropy {
         LossyEntropy::RunLevel => {
-            let mut hist = vec![vec![0u64; coef::ALPHA]; coef::NRAW];
-            for (ctx, row) in hist.iter_mut().enumerate() {
-                if ctx < coef::EOB_CTX {
-                    row[..64].fill(1);
-                } else {
-                    for run in 0..=coef::MAX_RUN {
-                        for class in 0..coef::MAG_CLASSES {
-                            row[(run * 32 + class) as usize] = 1;
-                        }
-                    }
-                    row[coef::ZRL as usize] = 1;
-                }
-            }
+            let mut obs = vec![vec![0u64; coef::ALPHA]; coef::NRAW];
             for stripe in &first {
                 for unit in p.units(stripe.clone()) {
                     stripe_tokens(&unit, unit.bw, Group::ALL, |_, ctx, symbol, _, _| {
-                        hist[ctx][symbol as usize] += OBSERVATION_WEIGHT;
+                        obs[ctx][symbol as usize] += 1;
                     });
+                }
+            }
+            let eob_prior = rl_eob_prior();
+            let ac_prior = rl_ac_prior();
+            let mut hist = vec![vec![0u64; coef::ALPHA]; coef::NRAW];
+            for ctx in 0..coef::NRAW {
+                if ctx < coef::EOB_CTX {
+                    blend_prior(&obs[ctx], &eob_prior, |s| s < 64, &mut hist[ctx]);
+                } else {
+                    blend_prior(
+                        &obs[ctx],
+                        &ac_prior,
+                        |s| {
+                            s == coef::ZRL as usize
+                                || ((s / 32) <= coef::MAX_RUN as usize
+                                    && (s % 32) < coef::MAG_CLASSES as usize)
+                        },
+                        &mut hist[ctx],
+                    );
                 }
             }
             Ac::Rl(
@@ -231,23 +256,37 @@ pub(super) async fn prepare<I: PassIo>(
             )
         }
         LossyEntropy::SplitHuf => {
-            let mut luma = vec![vec![1u64; huf::CNT_ALPHA]; huf::LUMA_CTX];
-            let mut chroma = vec![vec![1u64; huf::CNT_ALPHA]; huf::CHROMA_CTX];
-            let mut wid = vec![vec![1u64; huf::WID_ALPHA]; huf::WID_CTX];
+            let mut luma_obs = vec![vec![0u64; huf::CNT_ALPHA]; huf::LUMA_CTX];
+            let mut chroma_obs = vec![vec![0u64; huf::CNT_ALPHA]; huf::CHROMA_CTX];
+            let mut wid_obs = vec![vec![0u64; huf::WID_ALPHA]; huf::WID_CTX];
             for stripe in &first {
                 for unit in p.units(stripe.clone()) {
                     let (counts, widths) = stripe_counts_widths(&unit, unit.bw);
                     let symbols = huf::stripe_syms(&counts, &widths, unit.nby * unit.bw);
                     for (hist, symbols) in [
-                        (&mut luma, &symbols.luma),
-                        (&mut chroma, &symbols.chroma),
-                        (&mut wid, &symbols.wid),
+                        (&mut luma_obs, &symbols.luma),
+                        (&mut chroma_obs, &symbols.chroma),
+                        (&mut wid_obs, &symbols.wid),
                     ] {
                         for &(ctx, symbol) in symbols {
-                            hist[ctx as usize][symbol as usize] += OBSERVATION_WEIGHT;
+                            hist[ctx as usize][symbol as usize] += 1;
                         }
                     }
                 }
+            }
+            let cnt_prior = huf_count_prior();
+            let wid_prior = huf_wid_prior();
+            let mut luma = vec![vec![0u64; huf::CNT_ALPHA]; huf::LUMA_CTX];
+            let mut chroma = vec![vec![0u64; huf::CNT_ALPHA]; huf::CHROMA_CTX];
+            let mut wid = vec![vec![0u64; huf::WID_ALPHA]; huf::WID_CTX];
+            for (o, h) in luma_obs.iter().zip(&mut luma) {
+                blend_prior(o, &cnt_prior, |_| true, h);
+            }
+            for (o, h) in chroma_obs.iter().zip(&mut chroma) {
+                blend_prior(o, &cnt_prior, |_| true, h);
+            }
+            for (o, h) in wid_obs.iter().zip(&mut wid) {
+                blend_prior(o, &wid_prior, |_| true, h);
             }
             Ac::Huf(huf::HufTables::build(&luma, &chroma, &wid, effort, None, table_k_mode(cfg)).0)
         }
@@ -283,33 +322,22 @@ pub(super) async fn prepare<I: PassIo>(
         closed_lambda: None,
         dc_rdo: false,
     };
-    if cfg.local_ans_contexts && !aq {
-        train_first_band_dc(p, &mut prepared)?;
+    if !aq {
+        train_dc_stripes(p, &mut prepared, &first, by0, by1)?;
     }
     Ok(prepared)
 }
 
-/// Learn DC models from the retained first band for local-context one-pass
-/// coding and the compatible study control. Smoothing preserves support for
-/// every legal later DC/run token without reading future source rows.
-pub(super) fn train_first_band_dc(p: &Plan, prepared: &mut Prepared) -> Result<(), Error> {
-    let band = prepared.first_band.take().ok_or(Error::InvalidInput(
-        "DC learning requires the retained first band",
-    ))?;
-    let result = train_dc_band(p, prepared, &band);
-    prepared.first_band = Some(band);
-    result
-}
-
-fn train_dc_band(p: &Plan, prepared: &mut Prepared, band: &[u8]) -> Result<(), Error> {
+fn train_dc_stripes(
+    p: &Plan,
+    prepared: &mut Prepared,
+    stripes: &[StripeCoefs],
+    by0: usize,
+    by1: usize,
+) -> Result<(), Error> {
     assert!(!prepared.fits16);
-    let (by0, by1) = p
-        .bands()
-        .next()
-        .ok_or(Error::InvalidInput("empty source band"))?;
-    let stripes = p.band_stripes(band, 0, by0, by1);
     let mut dc = Vec::new();
-    dc_band(p, &stripes, by0, by1, false, false, &mut dc);
+    dc_band(p, stripes, by0, by1, false, false, &mut dc);
     let mut histograms = prepared.dc_session.empty_histograms();
     let columns = if p.gcols == 0 { p.g.bw } else { p.gcols / 8 };
     for x in (0..p.g.bw).step_by(columns) {
@@ -323,15 +351,13 @@ fn train_dc_band(p: &Plan, prepared: &mut Prepared, band: &[u8]) -> Result<(), E
     }
     let tc = crate::tokens::TokenCfg::v1(4, 1, 32);
     let legal_end = crate::rans::run_cap_end(&tc);
+    let priors: Vec<Vec<f64>> = (0..crate::coding_layout::CTX_CLASSES)
+        .map(|cls| dc_class_prior(&tc, cls))
+        .collect();
     for slot in &mut histograms {
-        for context in slot {
-            for (symbol, weight) in context.iter_mut().enumerate() {
-                *weight = if symbol < legal_end {
-                    *weight * 64 + 1
-                } else {
-                    0
-                };
-            }
+        for (cls, context) in slot.iter_mut().enumerate() {
+            let obs = context.clone();
+            blend_prior(&obs, &priors[cls], |s| s < legal_end, context);
         }
     }
     let (info, cfg) = p.dc_layout(false, false);

@@ -721,11 +721,7 @@ pub(super) async fn encode_planned_stream_io<X: StreamIo>(
     let r = match preparation {
         Preparation::Measured => pass1(&p, cfg, &mut d).await,
         #[cfg(all(test, feature = "lab"))]
-        Preparation::StudyFirstBandDc => {
-            let mut prepared = one_pass::prepare(&p, cfg, &mut d, false).await?;
-            one_pass::train_first_band_dc(&p, &mut prepared)?;
-            Ok(prepared)
-        }
+        Preparation::StudyFirstBandDc => one_pass::prepare(&p, cfg, &mut d, false).await,
         #[cfg(feature = "lab")]
         Preparation::OnePass => one_pass::prepare(&p, cfg, &mut d, false).await,
         #[cfg(feature = "lab")]

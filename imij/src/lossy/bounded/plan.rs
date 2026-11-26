@@ -4,8 +4,8 @@ use super::*;
 
 /// Everything both passes share: the head's parameters and the geometry.
 pub(super) struct Plan {
-    #[cfg(all(feature = "std", feature = "lab", feature = "rayon"))]
-    pub(super) one_pass_threads: usize,
+    #[cfg(feature = "rayon")]
+    pub(super) threads: usize,
     pub(super) local_ans_contexts: bool,
     pub(super) coding_defaults: bool,
     pub(super) g: Geom,
@@ -287,8 +287,8 @@ pub(super) fn prepare_plan(
     let plan = Plan {
         local_ans_contexts: cfg.local_ans_contexts || cfg.model_references,
         coding_defaults: cfg.coding_defaults,
-        #[cfg(all(feature = "std", feature = "lab", feature = "rayon"))]
-        one_pass_threads: 1,
+        #[cfg(feature = "rayon")]
+        threads: cfg.threads.max(1),
         sb,
         nci: info.channels.count(),
         ci,
@@ -574,9 +574,10 @@ impl Plan {
         s: usize,
         aq_code: Option<u8>,
     ) -> StripeCoefs {
-        #[cfg(all(feature = "std", feature = "lab", feature = "rayon"))]
-        if self.one_pass_threads > 1 && self.g.bw > 32 {
-            return one_pass::parallel_stripe(self, band, y0, s, self.one_pass_threads, aq_code);
+        #[cfg(feature = "rayon")]
+        if self.threads > 1 && self.g.bw > 32 && self.layouts == [LossyChannelLayout::default(); 3]
+        {
+            return self.parallel_stripe(band, y0, s, self.threads, aq_code);
         }
         let g = &self.g;
         let pw = self.pw;
@@ -662,6 +663,119 @@ impl Plan {
             nz,
             aq: aq_code.map_or_else(Vec::new, |a| vec![a; nby * g.bw]),
             modes,
+            splits: Vec::new(),
+        }
+    }
+
+    /// Keep cache-sized column partitions while reusing each task's scratch
+    /// across every block row of the admitted source band. Jobs own disjoint
+    /// output slices and never exceed the requested worker count.
+    #[cfg(feature = "rayon")]
+    fn parallel_stripe(
+        &self,
+        band: &[u8],
+        y0: usize,
+        stripe: usize,
+        threads: usize,
+        aq_code: Option<u8>,
+    ) -> StripeCoefs {
+        struct Work<'a> {
+            bx: usize,
+            bw: usize,
+            rows: Vec<(usize, &'a mut [i32], &'a mut [u64])>,
+        }
+        let (by0, by1) = self.g.rows(stripe);
+        let nby = by1 - by0;
+        let bw = self.g.bw;
+        let workers = threads.min(bw.div_ceil(32)).max(1);
+        let chunk = bw.div_ceil(workers).div_ceil(8) * 8;
+        let mut q = vec![0i32; nby * bw * NCH * 64];
+        let mut nz = vec![0u64; nby * bw * NCH];
+        let mut jobs: Vec<_> = (0..bw.div_ceil(chunk))
+            .map(|i| Work {
+                bx: i * chunk,
+                bw: chunk.min(bw - i * chunk),
+                rows: Vec::with_capacity(nby),
+            })
+            .collect();
+        for (r, (q, nz)) in q
+            .chunks_mut(bw * NCH * 64)
+            .zip(nz.chunks_mut(bw * NCH))
+            .enumerate()
+        {
+            for (i, (q, nz)) in q
+                .chunks_mut(chunk * NCH * 64)
+                .zip(nz.chunks_mut(chunk * NCH))
+                .enumerate()
+            {
+                jobs[i].rows.push((by0 + r, q, nz));
+            }
+        }
+        debug_assert!(jobs.len() <= workers);
+        let process = |work: Work<'_>| {
+            let Work {
+                bx,
+                bw: blocks,
+                rows,
+            } = work;
+            let pw = blocks * 8;
+            let mut planes = vec![0.0f32; NCH * 8 * pw];
+            let mut extremes = Vec::with_capacity(blocks);
+            let mut coefs = vec![0.0f32; blocks * 64];
+            let aq: Vec<f32> = aq_code.map_or_else(Vec::new, |a| vec![a as f32 / 64.0; blocks]);
+            for (by, q, nz) in rows {
+                self.fill_block_row_columns(
+                    band,
+                    y0,
+                    by,
+                    bx..bx + blocks,
+                    &mut planes,
+                    &mut extremes,
+                );
+                for ch in 0..NCH {
+                    enc_simd::fdct_row(
+                        &planes[ch * 8 * pw..][..8 * pw],
+                        pw,
+                        blocks,
+                        &self.cm,
+                        &mut coefs,
+                    );
+                    enc_simd::quant_row(
+                        &coefs,
+                        blocks,
+                        ch,
+                        &self.inv_steps[ch],
+                        &aq,
+                        self.round,
+                        q,
+                        nz,
+                    );
+                    if self.dc_fix {
+                        let ext = (ch == 0 && self.white_code.is_some()).then_some(&extremes[..]);
+                        dc_row(&coefs, blocks, ch, self.inv_steps[ch][0], ext, q, nz);
+                    }
+                }
+            }
+        };
+        let mut jobs = jobs.into_iter();
+        let first = jobs.next();
+        rayon::in_place_scope(|scope| {
+            for job in jobs {
+                let process = &process;
+                scope.spawn(move |_| process(job));
+            }
+            if let Some(job) = first {
+                process(job);
+            }
+        });
+        StripeCoefs {
+            by0,
+            nby,
+            bw,
+            q,
+            nz,
+            aq: aq_code.map_or_else(Vec::new, |a| vec![a; nby * bw]),
+            modes: Vec::new(),
             splits: Vec::new(),
         }
     }

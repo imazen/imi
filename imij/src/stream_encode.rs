@@ -1000,9 +1000,8 @@ impl NativeGroupEncodeSession {
                         let src = &pixels[y * stride..y * stride + row_bytes];
                         let row = &mut dst[y * w..(y + 1) * w];
                         for (o, px) in row.iter_mut().zip(src.chunks_exact(step)) {
-                            let raw = u64::from_ne_bytes(
-                                px[ch_off..ch_off + 8].try_into().unwrap(),
-                            );
+                            let raw =
+                                u64::from_ne_bytes(px[ch_off..ch_off + 8].try_into().unwrap());
                             *o = if hi_word {
                                 sample.order((raw >> 32) as u32)
                             } else {

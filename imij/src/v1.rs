@@ -1054,25 +1054,26 @@ fn encode_parts_ref_with_progress(
                 .iter()
                 .map(|&b| if b <= 8 { 1 } else { 2 })
                 .sum();
-            let pal_hist = |plane: &[u32], row_stride: usize, lw: usize, widths: &[u32; NL], rows: usize| {
-                let mut hist = vec![vec![0u64; pal_tc.alphabet() as usize]; CTX_CLASSES];
-                for l in 0..NL {
-                    rans::lane_hist_rows(
-                        plane,
-                        row_stride,
-                        None,
-                        lw,
-                        rows,
-                        widths[l] as usize,
-                        l,
-                        &pal_tc,
-                        cfg.run_min,
-                        0,
-                        &mut hist,
-                    );
-                }
-                hist
-            };
+            let pal_hist =
+                |plane: &[u32], row_stride: usize, lw: usize, widths: &[u32; NL], rows: usize| {
+                    let mut hist = vec![vec![0u64; pal_tc.alphabet() as usize]; CTX_CLASSES];
+                    for l in 0..NL {
+                        rans::lane_hist_rows(
+                            plane,
+                            row_stride,
+                            None,
+                            lw,
+                            rows,
+                            widths[l] as usize,
+                            l,
+                            &pal_tc,
+                            cfg.run_min,
+                            0,
+                            &mut hist,
+                        );
+                    }
+                    hist
+                };
 
             // Pass 1 (parallel over units): row-major local planes (only when
             // cropping column groups / inter frames; whole-width units reuse
@@ -1197,11 +1198,7 @@ fn encode_parts_ref_with_progress(
                 for s in 0..ns {
                     let asz = tcs[s].alphabet() as usize;
                     let mut hist = vec![vec![0u64; asz]; CTX_CLASSES];
-                    let cr = if cross_of(s) {
-                        Some(cross_slice)
-                    } else {
-                        None
-                    };
+                    let cr = if cross_of(s) { Some(cross_slice) } else { None };
                     let slice = &res_u[s][py0 * pw..];
                     for l in 0..NL {
                         rans::lane_hist_rows(
