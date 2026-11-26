@@ -136,6 +136,8 @@ pub(crate) use encode::encode_lossy;
 pub(crate) use encode::encode_lossy_coefs;
 #[cfg(all(test, feature = "lab", feature = "encode"))]
 use encode::finish_lossy_frame;
+#[cfg(all(feature = "encode", feature = "native-jpeg"))]
+use encode::finish_quantized_coefficients;
 #[cfg(feature = "encode")]
 pub(crate) use encode::{
     encode_lossy_frame, encode_lossy_frame_with_progress, encode_lossy_with_progress,
