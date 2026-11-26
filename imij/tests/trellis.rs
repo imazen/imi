@@ -501,7 +501,7 @@ mod lab {
 #[test]
 fn lossy_encode_bytes_identical_across_token_permutations() {
     use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
-    let cases: Vec<(ImageInfo, ImiEncoderConfig)> = [
+    let mut cases: Vec<(ImageInfo, ImiEncoderConfig)> = [
         // e10 split-Huffman + run-level trellis, XYB.
         (
             64,
@@ -562,6 +562,29 @@ fn lossy_encode_bytes_identical_across_token_permutations() {
         )
     })
     .collect();
+    // Adaptive partitions + surrounding-block RDO on an odd-by-odd block grid
+    // (133x117 => 17x15 blocks, trailing 1x1 corner) with odd column-group
+    // width (gbw = 7) across both RunLevel and SplitHuf.
+    let odd_info = ImageInfo::new(133, 117, Channels::Rgb, SampleType::U8);
+    for (ent, effort) in [
+        (LossyEntropy::RunLevel, 7.5f32),
+        (LossyEntropy::RunLevel, 9.0),
+        (LossyEntropy::RunLevel, 9.5),
+        (LossyEntropy::RunLevel, 10.0),
+        (LossyEntropy::SplitHuf, 10.0),
+    ] {
+        cases.push((
+            odd_info.clone(),
+            imij::ImiEncoderConfig::lossy(55.0)
+                .with_effort(effort)
+                .with_column_groups(Some(56))
+                .with_threads(1)
+                .tune_lossy(|t| {
+                    t.entropy = ent;
+                    t.adaptive_partitions = true;
+                }),
+        ));
+    }
     let want: Vec<Vec<u8>> = cases
         .iter()
         .map(|(info, cfg)| encode(&image(info), info, cfg).unwrap())
