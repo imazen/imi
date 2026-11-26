@@ -102,6 +102,18 @@ impl TokenHistogram {
         }
     }
 
+    /// Tallies a borrowed full-width stripe (splits a clone only when
+    /// `group_bw > 0`).
+    pub(in crate::lossy) fn add_stripe(&mut self, sc: &StripeCoefs, group_bw: usize) {
+        if group_bw == 0 {
+            self.add_unit(sc);
+        } else {
+            for u in split_units(sc.clone(), group_bw) {
+                self.add_unit(&u);
+            }
+        }
+    }
+
     /// Exact elementwise addition of another accumulator of the same shape.
     pub(in crate::lossy) fn merge(&mut self, other: Self) {
         for (d, s) in self.rl.iter_mut().zip(other.rl) {
