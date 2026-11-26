@@ -391,22 +391,25 @@ fn run_two_pass_pilot(
                 } else {
                     split_units(selected, gbw)
                 };
+                let rewrite_args = trellis::StripeRewrite {
+                    rows,
+                    pw,
+                    image_bw: g.bw,
+                    group_bw: gbw,
+                    steps,
+                    cfg,
+                    set: &t_set,
+                    aq: trellis_aq,
+                    lambda_map: open_lambda_map,
+                    lambda_by0: 0,
+                    merged_trellis: plan.merged_trellis,
+                    bias: pilot_bias.as_ref(),
+                    pass_index: 0,
+                };
                 if let Err(e) = trellis::rewrite_stripe_lambda(
                     &pilot_pass,
                     &mut units,
-                    rows,
-                    pw,
-                    g.bw,
-                    gbw,
-                    steps,
-                    cfg,
-                    &t_set,
-                    trellis_aq,
-                    open_lambda_map,
-                    0,
-                    plan.merged_trellis,
-                    pilot_bias.as_ref(),
-                    0,
+                    &rewrite_args,
                     None,
                     stop,
                 ) {

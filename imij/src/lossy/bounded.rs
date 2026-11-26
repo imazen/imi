@@ -739,22 +739,25 @@ impl Plan {
             } else {
                 closed_lambda
             };
+            let rewrite_args = trellis::StripeRewrite {
+                rows: &rows,
+                pw: self.pw,
+                image_bw: self.g.bw,
+                group_bw: self.gcols / 8,
+                steps: &self.steps,
+                cfg,
+                set,
+                aq: &[],
+                lambda_map: lmap,
+                lambda_by0,
+                merged_trellis: self.plan.merged_trellis,
+                bias: None,
+                pass_index: k,
+            };
             trellis::rewrite_stripe_lambda(
                 pass,
                 units,
-                &rows,
-                self.pw,
-                self.g.bw,
-                self.gcols / 8,
-                &self.steps,
-                cfg,
-                set,
-                &[],
-                lmap,
-                lambda_by0,
-                self.plan.merged_trellis,
-                None,
-                k,
+                &rewrite_args,
                 if k == last {
                     freqs.as_deref_mut()
                 } else {
@@ -1601,22 +1604,25 @@ async fn merge_prices<I: PassIo>(
             };
             for sc in selected {
                 let mut units = p.units(sc);
+                let rewrite_args = trellis::StripeRewrite {
+                    rows: &rows,
+                    pw: p.pw,
+                    image_bw: p.g.bw,
+                    group_bw: p.gcols / 8,
+                    steps: &p.steps,
+                    cfg,
+                    set: &t_set,
+                    aq: &[],
+                    lambda_map: &band_open_lambda,
+                    lambda_by0: by0,
+                    merged_trellis: p.plan.merged_trellis,
+                    bias: None,
+                    pass_index: 0,
+                };
                 trellis::rewrite_stripe_lambda(
                     &pilot_pass,
                     &mut units,
-                    &rows,
-                    p.pw,
-                    p.g.bw,
-                    p.gcols / 8,
-                    &p.steps,
-                    cfg,
-                    &t_set,
-                    &[],
-                    &band_open_lambda,
-                    by0,
-                    p.plan.merged_trellis,
-                    None,
-                    0,
+                    &rewrite_args,
                     None,
                     io.stop(),
                 )?;
