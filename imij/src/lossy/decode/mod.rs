@@ -4,13 +4,16 @@
 pub(super) mod parse;
 pub(super) mod recon;
 
+#[cfg(any(feature = "v3", feature = "lab"))]
+pub(crate) use parse::RegionGeometry;
 #[cfg(any(all(test, feature = "encode"), feature = "lab"))]
 pub(crate) use parse::parse_lossy;
 pub(crate) use parse::{
-    LossyParsed, MapKind, RegionGeometry, decode_lossy_region, decoder_recon_bytes,
-    decoder_table_bytes, parse_lossy_as, parse_lossy_checked, parse_lossy_head_async,
-    parse_lossy_head_checked, payload_len_checked, region_unit_bytes,
+    LossyParsed, MapKind, decoder_recon_bytes, decoder_table_bytes, parse_lossy_as,
+    parse_lossy_checked, parse_lossy_head_async, parse_lossy_head_checked, payload_len_checked,
 };
+#[cfg(feature = "v3")]
+pub(crate) use parse::{decode_lossy_region, region_unit_bytes};
 #[cfg(feature = "lab")]
 pub(crate) use recon::IDCT_FMA;
 #[cfg(all(target_arch = "x86_64", feature = "avx512"))]

@@ -1506,6 +1506,9 @@ pub(crate) fn linear_rgb_lab(matrix: &[[f32; 4]; 3], values: [f32; 3]) -> [u8; 3
 mod decode;
 #[cfg(feature = "lab")]
 pub(crate) use decode::IDCT_FMA;
+#[allow(unused_imports)]
+#[cfg(any(feature = "v3", feature = "lab"))]
+pub(crate) use decode::RegionGeometry;
 #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
 pub(crate) use decode::aq_dequant_in;
 #[cfg(all(target_arch = "x86_64", any(test, feature = "lab")))]
@@ -1517,6 +1520,8 @@ use decode::parse::RansTables;
 use decode::parse::trace_lossy_group;
 #[cfg(any(all(test, feature = "encode"), feature = "lab"))]
 pub(crate) use decode::parse_lossy;
+#[allow(unused_imports)]
+pub(crate) use decode::parse_lossy_head_checked;
 #[cfg(all(test, feature = "encode"))]
 use decode::recon::decode_lossy_impl;
 #[cfg(feature = "lab")]
@@ -1538,14 +1543,14 @@ pub(crate) use decode::scoped_recon_chunk_override;
 pub(crate) use decode::set_shared_dc;
 pub(crate) use decode::{
     LossyParsed, MapKind, Scratch, aq_dequant, decode_lossy_frame, decode_lossy_parsed,
-    decode_lossy_parsed_checked, decode_lossy_parsed_observed, decode_lossy_region,
-    decoder_recon_bytes, decoder_table_bytes, decoder_transfer_table_bytes, parse_lossy_as,
-    parse_lossy_checked, parse_lossy_head_async, payload_len_checked, prof, region_unit_bytes,
+    decode_lossy_parsed_checked, decode_lossy_parsed_observed, decoder_recon_bytes,
+    decoder_table_bytes, decoder_transfer_table_bytes, parse_lossy_as, parse_lossy_checked,
+    parse_lossy_head_async, payload_len_checked, prof,
 };
-#[allow(unused_imports)]
-pub(crate) use decode::{RegionGeometry, parse_lossy_head_checked};
 #[cfg(all(feature = "std", feature = "lab"))]
 pub(crate) use decode::{decode_lossy_frame_observed, set_keep_scratch};
+#[cfg(feature = "v3")]
+pub(crate) use decode::{decode_lossy_region, region_unit_bytes};
 #[cfg(any(all(test, feature = "encode"), feature = "lab"))]
 pub(crate) use decode::{set_dc_split, set_pairs, set_recon_chunk};
 #[allow(unused_imports)]
