@@ -336,7 +336,7 @@ pub(crate) fn default_stripe_rows(w: u32) -> u32 {
 }
 
 /// Step-major residual plane of one stripe slot.
-#[cfg(feature = "encode")]
+#[cfg(all(any(test, feature = "lab"), feature = "encode"))]
 pub(crate) fn step_major(res: &[u32], w: usize, lw: usize, y0: usize, y1: usize) -> Vec<u32> {
     let rows = y1 - y0;
     let mut v = vec![0u32; rows * lw * NL];

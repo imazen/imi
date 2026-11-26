@@ -72,6 +72,8 @@ pub(crate) struct GroupEncodeConfig {
     pub quick_pixels: bool,
     /// Exact byte-plane preprocessing for quick groups.
     pub quick_bit_smarts: crate::QuickBitSmarts,
+    /// Per-channel error bound in sample units (`[0; 4]` = exact lossless).
+    pub max_error: [u32; 4],
 }
 
 impl GroupEncodeConfig {
@@ -89,6 +91,7 @@ impl GroupEncodeConfig {
             max_working_bytes,
             quick_pixels: false,
             quick_bit_smarts: crate::QuickBitSmarts::Off,
+            max_error: [0; 4],
         }
     }
 }
@@ -110,6 +113,9 @@ impl GroupEncodeConfig {
         groups: crate::RowGroups,
     ) -> Result<Self, Error> {
         let mut out = Self::new(groups.columns, groups.rows, groups.max_working_bytes);
+        if let Some(tuning) = cfg.lossless_tuning() {
+            out.max_error = tuning.max_error;
+        }
         match cfg.coder() {
             crate::Coder::Lossless => {}
             crate::Coder::Quick(bits) => out = out.with_quick_bit_smarts(bits),
@@ -375,6 +381,15 @@ impl std::error::Error for StreamEncodeError {
 /// Finally call [`Self::finish`]. All storage bits are preserved, including
 /// NaN payloads, significant-bit padding and exact alpha. Output is bounded by
 /// one header or one encoded group; the session never accumulates the image.
+#[derive(Default)]
+struct GroupScratch {
+    planes: Vec<Vec<u32>>,
+    residuals: Vec<Vec<u32>>,
+    streams: Vec<Vec<u8>>,
+    symbols: [Vec<rans::Sym>; NL],
+    rans: rans::RansScratch,
+}
+
 pub(crate) struct NativeGroupEncodeSession {
     output: Vec<u8>,
     consumed: usize,
@@ -390,7 +405,7 @@ pub(crate) struct NativeGroupEncodeSession {
     /// One shared fixed-model table, or one per learned nested DC slot.
     /// Tables are built once and reused for every group.
     tables: Vec<rans::EncodeTables<'static>>,
-    symbols: [Vec<rans::Sym>; NL],
+    scratch: GroupScratch,
     x: u32,
     y: u32,
 }
@@ -434,6 +449,23 @@ impl NativeGroupEncodeSession {
         info.validate_precision()?;
         if !cfg.quick_pixels && cfg.quick_bit_smarts != crate::QuickBitSmarts::Off {
             return Err(Error::InvalidInput("bit smarts require quick groups"));
+        }
+        let near_requested = cfg.max_error[..info.channels.count()]
+            .iter()
+            .any(|&d| d != 0);
+        if near_requested {
+            if cfg.quick_pixels {
+                return Err(Error::Unsupported(
+                    "near-lossless is not supported with quick groups",
+                ));
+            }
+            if !crate::near::defined_for(info.sample) {
+                return Err(Error::InvalidInput(if info.sample.is_float() {
+                    "near-lossless needs integer samples (quantize floats to integers first)"
+                } else {
+                    "near-lossless coding is defined for u8, u16, u32 and i32 samples"
+                }));
+            }
         }
         let columns = cfg.columns.min(info.width) as usize;
         let rows = cfg.rows.min(info.height) as usize;
@@ -513,32 +545,37 @@ impl NativeGroupEncodeSession {
         slot_models: Option<Vec<Model>>,
     ) -> Result<(Self, u64), Error> {
         Self::check_working(&info, meta, cfg)?;
-        let layout = Layout::new(
-            info.channels,
-            vec![
-                ChannelMap::identity(info.sample.word_depth());
-                info.channels.count() * info.sample.words()
-            ],
-        );
+        let maps = vec![
+            ChannelMap::identity(info.sample.word_depth());
+            info.channels.count() * info.sample.words()
+        ];
+        let mut near = vec![0u32; maps.len()];
+        let near_requested = !cfg.quick_pixels
+            && cfg.max_error[..info.channels.count()]
+                .iter()
+                .any(|&d| d != 0);
+        if near_requested {
+            let depth = info.sample.depth();
+            for c in 0..info.channels.count() {
+                near[c] = crate::near::coded_delta(&maps[c], depth, cfg.max_error[c]);
+            }
+        }
+        let layout = Layout::new(info.channels, maps).with_near(&near);
+        let near_used = layout.is_near();
+        let has_records = indexed || near_used;
         let model = if cfg.quick_pixels {
             None
         } else {
-            let tc = TokenCfg::v1(4, 1, info.sample.word_depth());
-            let mut weights = vec![1; tc.alphabet() as usize];
-            rans::enforce_run_cap(&tc, &mut weights);
-            let freq = rans::weights_to_freq(&weights).ok_or(Error::TooLarge)?;
-            Some(Model {
-                tc,
-                ctx_map: [0; rans::CLASSES],
-                freq: vec![freq; NCTX],
-                weights: vec![weights; NCTX],
-                prec: vec![1; NCTX],
-                cross: false,
-                ctx_shift: 0,
-                seeds: [None; NCTX],
-            })
+            Some(fixed_group_model(&info)?)
         };
         let mut head = Vec::new();
+        let features = if cfg.quick_pixels {
+            crate::quick::features(cfg.quick_bit_smarts)
+        } else if near_used {
+            crate::parse::header::Features::EMPTY.with(crate::Feature::NearLossless)
+        } else {
+            crate::parse::header::Features::EMPTY
+        };
         crate::container::write_group_head_features(
             &mut head,
             &info,
@@ -546,18 +583,14 @@ impl NativeGroupEncodeSession {
             crate::Coding::Lossless,
             None,
             crate::DecodeSpeed::Balanced,
-            if cfg.quick_pixels {
-                crate::quick::features(cfg.quick_bit_smarts)
-            } else {
-                crate::parse::header::Features::EMPTY
-            },
+            features,
             crate::parse::header::HEADER_VERSION,
         )?;
         head.extend_from_slice(b"DATA\0"); // open DATA: unit count comes from geometry
         let data_at = head.len();
         put_varint(
             &mut head,
-            (if indexed { crate::v1::H_RECORDS } else { 0 })
+            (if has_records { crate::v1::H_RECORDS } else { 0 })
                 | if cfg.quick_pixels {
                     crate::v1::H_QUICK
                         | if cfg.quick_bit_smarts == crate::QuickBitSmarts::Off {
@@ -600,13 +633,22 @@ impl NativeGroupEncodeSession {
             put_varint(&mut head, bytes.len() as u64);
             head.extend_from_slice(&bytes);
         }
-        if indexed {
+        if has_records {
             let mut records = Vec::new();
-            crate::parse::records::put_record(
-                &mut records,
-                crate::parse::records::H_UNIT_RESERVE,
-                &[crate::parse::records::RESERVE_TAIL],
-            );
+            if indexed {
+                crate::parse::records::put_record(
+                    &mut records,
+                    crate::parse::records::H_UNIT_RESERVE,
+                    &[crate::parse::records::RESERVE_TAIL],
+                );
+            }
+            if near_used {
+                let mut bounds = Vec::new();
+                for d in layout.channel_near() {
+                    put_varint(&mut bounds, d as u64);
+                }
+                crate::parse::records::put_record(&mut records, crate::v1::H_NEAR, &bounds);
+            }
             put_varint(&mut head, records.len() as u64);
             head.extend_from_slice(&records);
         }
@@ -630,6 +672,13 @@ impl NativeGroupEncodeSession {
                 })
                 .collect()
         };
+        let default_decor = if matches!(info.channels, crate::Channels::Rgb | crate::Channels::Rgba)
+            && !info.sample.is_float()
+        {
+            0x0f
+        } else {
+            1
+        };
         Ok((
             Self {
                 output: head,
@@ -639,9 +688,9 @@ impl NativeGroupEncodeSession {
                 layout,
                 model,
                 slot_models,
-                analysis: (1, 1 << crate::predict::P_MED),
+                analysis: (default_decor, 1 << crate::predict::P_MED),
                 tables,
-                symbols: Default::default(),
+                scratch: GroupScratch::default(),
                 x: 0,
                 y: 0,
             },
@@ -691,9 +740,9 @@ impl NativeGroupEncodeSession {
             "group encoder needs output drainage or is finished",
         ))?;
         // Restore scratch even on invalid input, preserving retry semantics.
-        let mut symbols = core::mem::take(&mut self.symbols);
-        let encoded = self.encode_group(g, pixels, stride, &mut symbols);
-        self.symbols = symbols;
+        let mut scratch = core::mem::take(&mut self.scratch);
+        let encoded = self.encode_group(g, pixels, stride, &mut scratch);
+        self.scratch = scratch;
         let (body, start) = encoded?;
         self.output = body;
         self.consumed = start;
@@ -718,9 +767,9 @@ impl NativeGroupEncodeSession {
         {
             return Err(Error::InvalidInput("V4 encode rectangle geometry"));
         }
-        let mut symbols = core::mem::take(&mut self.symbols);
-        let result = self.encode_group(rect, pixels, stride, &mut symbols);
-        self.symbols = symbols;
+        let mut scratch = core::mem::take(&mut self.scratch);
+        let result = self.encode_group(rect, pixels, stride, &mut scratch);
+        self.scratch = scratch;
         result
     }
 
@@ -745,7 +794,7 @@ impl NativeGroupEncodeSession {
         {
             return Err(Error::InvalidInput("group preview geometry"));
         }
-        self.encode_group(rect, pixels, stride, &mut Default::default())
+        self.encode_group(rect, pixels, stride, &mut GroupScratch::default())
     }
 
     fn encode_group(
@@ -753,7 +802,7 @@ impl NativeGroupEncodeSession {
         g: GroupRect,
         pixels: &[u8],
         stride: usize,
-        lanes: &mut [Vec<rans::Sym>; NL],
+        scratch: &mut GroupScratch,
     ) -> Result<(Vec<u8>, usize), Error> {
         let (w, h) = (g.width as usize, g.height as usize);
         let row = w
@@ -780,69 +829,67 @@ impl NativeGroupEncodeSession {
             crate::parse::records::put_record(&mut body, crate::v1::R_STRIPE, &payload);
             return Ok((body, 0));
         }
-        let (decor, preds, residuals, lw) = self.analyze(w, h, pixels, stride);
+        let (decor, preds, lw) = self.analyze_into(w, h, pixels, stride, scratch);
         let widths = crate::v1::lane_widths(w, lw);
-        let mut streams = Vec::with_capacity(residuals.len());
-        for (s, res) in residuals.iter().enumerate() {
+        let ns = self.layout.slot_channel.len();
+        if scratch.streams.len() < ns {
+            scratch.streams.resize_with(ns, Vec::new);
+        }
+        let active = crate::v1::active_lanes(&widths);
+        let fixed = self.slot_models.is_none();
+        for s in 0..ns {
             let model = self.slot_model(s);
-            let fixed = self.slot_models.is_none();
             let table = &self.tables[if fixed { 0 } else { s }];
-            // Fixed tables do not need neighbor context classes or the
-            // step-major transpose. Learned nested models keep their walk.
-            let steps = if fixed {
-                Vec::new()
-            } else {
-                crate::v1::step_major(res, w, lw, 0, h)
-            };
-            for (l, symbols) in lanes.iter_mut().enumerate() {
+            let res = &scratch.residuals[s];
+            for (l, symbols) in scratch.symbols.iter_mut().enumerate() {
                 symbols.clear();
-                if fixed {
-                    rans::lane_symbols_rows_flat(
-                        res,
-                        w,
-                        lw,
-                        h,
-                        widths[l] as usize,
-                        l,
-                        &model.tc,
-                        4,
-                        symbols,
-                    );
-                } else {
-                    rans::lane_symbols(
-                        &steps,
-                        None,
-                        lw,
-                        h,
-                        widths[l] as usize,
-                        l,
-                        &model.tc,
-                        4,
-                        0,
-                        symbols,
-                    );
-                }
+                rans::lane_symbols_rows(
+                    res,
+                    w,
+                    None,
+                    lw,
+                    h,
+                    widths[l] as usize,
+                    l,
+                    &model.tc,
+                    4,
+                    model.ctx_shift,
+                    symbols,
+                );
             }
-            let mut stream = Vec::new();
-            rans::encode_lanes_tables(table, lanes, crate::v1::active_lanes(&widths), &mut stream);
-            streams.push(stream);
+            let stream = &mut scratch.streams[s];
+            stream.clear();
+            rans::encode_lanes_tables_scratch(
+                table,
+                &scratch.symbols,
+                active,
+                stream,
+                &mut scratch.rans,
+            );
         }
         // Reserve the maximum two-varint record prefix, then expose only
         // the used suffix. The Write adapter and sans-I/O path share this
         // buffer without another whole-group copy.
         const PREFIX_RESERVE: usize = 20;
-        let mut body = vec![0; PREFIX_RESERVE];
+        let payload_est = 1
+            + preds.len().div_ceil(2)
+            + scratch.streams[..ns]
+                .iter()
+                .map(|s| s.len() + 10)
+                .sum::<usize>();
+        let mut body = Vec::with_capacity(PREFIX_RESERVE + payload_est);
+        body.resize(PREFIX_RESERVE, 0);
         body.push(decor);
         for pair in preds.chunks(2) {
             body.push(pair[0] | (pair.get(1).copied().unwrap_or(0) << 4));
         }
-        for stream in &streams {
+        for stream in &scratch.streams[..ns] {
             put_varint(&mut body, stream.len() as u64);
         }
-        for stream in &streams {
+        for stream in &scratch.streams[..ns] {
             body.extend_from_slice(stream);
         }
-        let mut prefix = Vec::new();
+        let mut prefix = Vec::with_capacity(20);
         put_varint(&mut prefix, crate::parse::records::R_STRIPE);
         put_varint(&mut prefix, (body.len() - PREFIX_RESERVE) as u64);
         let start = PREFIX_RESERVE - prefix.len();
@@ -865,48 +912,115 @@ impl NativeGroupEncodeSession {
         }
     }
 
-    /// One rANS group's analysis (by default decorrelation mask 1, MED): its
-    /// decorrelation byte, row predictors, per-slot residuals and lane width.
-    fn analyze(
+    /// One rANS group's analysis into reusable `scratch`: decorrelation byte,
+    /// row predictors, and lane width (residuals written to `scratch.residuals`).
+    fn analyze_into(
         &self,
         w: usize,
         h: usize,
         pixels: &[u8],
         stride: usize,
-    ) -> (u8, Vec<u8>, Vec<Vec<u32>>, usize) {
+        scratch: &mut GroupScratch,
+    ) -> (u8, Vec<u8>, usize) {
         let nch = self.info.channels.count();
         let bps = self.info.sample.bytes();
+        let sample = self.info.sample;
         let ns = self.layout.slot_channel.len();
-        let mut planes = vec![vec![0u32; w * h]; ns];
+        let px_count = w * h;
+        if scratch.planes.len() < ns {
+            scratch.planes.resize_with(ns, Vec::new);
+        }
+        if scratch.residuals.len() < ns {
+            scratch.residuals.resize_with(ns, Vec::new);
+        }
+        for s in 0..ns {
+            scratch.planes[s].resize(px_count, 0);
+            scratch.residuals[s].resize(px_count, 0);
+        }
+        let row_bytes = w * nch * bps;
+        // Fast unpack specialized by sample byte width, avoiding per-pixel
+        // branch dispatch on sample size or 64-bit word splitting.
         for (s, &c) in self.layout.slot_channel.iter().enumerate() {
-            for y in 0..h {
-                for x in 0..w {
-                    let pos = y * stride + (x * nch + c % nch) * bps;
-                    let b = &pixels[pos..pos + bps];
-                    let raw = match bps {
-                        1 => b[0] as u32,
-                        2 => u16::from_ne_bytes(b.try_into().unwrap()) as u32,
-                        4 => u32::from_ne_bytes(b.try_into().unwrap()),
-                        _ => {
-                            let raw = u64::from_ne_bytes(b.try_into().unwrap());
-                            if c < nch {
-                                (raw >> 32) as u32
-                            } else {
-                                raw as u32
+            let dst = &mut scratch.planes[s][..px_count];
+            let ch = c % nch;
+            let hi_word = c < nch;
+            match bps {
+                1 => {
+                    if nch == 1 {
+                        for y in 0..h {
+                            let src = &pixels[y * stride..y * stride + w];
+                            let row = &mut dst[y * w..(y + 1) * w];
+                            for (o, &b) in row.iter_mut().zip(src) {
+                                *o = sample.order(b as u32);
                             }
                         }
-                    };
-                    planes[s][y * w + x] = if c < nch {
-                        self.info.sample.order(raw)
                     } else {
-                        raw
-                    };
+                        for y in 0..h {
+                            let src = &pixels[y * stride..y * stride + row_bytes];
+                            let row = &mut dst[y * w..(y + 1) * w];
+                            for (o, px) in row.iter_mut().zip(src.chunks_exact(nch)) {
+                                *o = sample.order(px[ch] as u32);
+                            }
+                        }
+                    }
+                }
+                2 => {
+                    let ch_off = ch * 2;
+                    let step = nch * 2;
+                    for y in 0..h {
+                        let src = &pixels[y * stride..y * stride + row_bytes];
+                        let row = &mut dst[y * w..(y + 1) * w];
+                        for (o, px) in row.iter_mut().zip(src.chunks_exact(step)) {
+                            let raw = u16::from_ne_bytes([px[ch_off], px[ch_off + 1]]) as u32;
+                            *o = sample.order(raw);
+                        }
+                    }
+                }
+                4 => {
+                    let ch_off = ch * 4;
+                    let step = nch * 4;
+                    for y in 0..h {
+                        let src = &pixels[y * stride..y * stride + row_bytes];
+                        let row = &mut dst[y * w..(y + 1) * w];
+                        for (o, px) in row.iter_mut().zip(src.chunks_exact(step)) {
+                            let raw = u32::from_ne_bytes([
+                                px[ch_off],
+                                px[ch_off + 1],
+                                px[ch_off + 2],
+                                px[ch_off + 3],
+                            ]);
+                            *o = sample.order(raw);
+                        }
+                    }
+                }
+                _ => {
+                    let ch_off = ch * 8;
+                    let step = nch * 8;
+                    for y in 0..h {
+                        let src = &pixels[y * stride..y * stride + row_bytes];
+                        let row = &mut dst[y * w..(y + 1) * w];
+                        for (o, px) in row.iter_mut().zip(src.chunks_exact(step)) {
+                            let raw = u64::from_ne_bytes(
+                                px[ch_off..ch_off + 8].try_into().unwrap(),
+                            );
+                            *o = if hi_word {
+                                sample.order((raw >> 32) as u32)
+                            } else {
+                                raw as u32
+                            };
+                        }
+                    }
                 }
             }
         }
-        let mut residuals = vec![vec![0; w * h]; ns];
-        let refs: Vec<_> = planes.iter().map(Vec::as_slice).collect();
-        let mut residual_refs: Vec<_> = residuals.iter_mut().map(Vec::as_mut_slice).collect();
+        let refs: Vec<&[u32]> = scratch.planes[..ns]
+            .iter()
+            .map(|p| &p[..px_count])
+            .collect();
+        let mut residual_refs: Vec<&mut [u32]> = scratch.residuals[..ns]
+            .iter_mut()
+            .map(|r| &mut r[..px_count])
+            .collect();
         let lw = w.div_ceil(16);
         let cfg = AnalysisConfig {
             decor_mask: self.analysis.0,
@@ -914,18 +1028,31 @@ impl NativeGroupEncodeSession {
             threads: 1,
             ..Default::default()
         };
-        let (decor, preds) = crate::encode::analyze_stripe_fast(
-            &self.layout,
-            &refs,
-            w,
-            lw,
-            0,
-            h,
-            &cfg,
-            &mut residual_refs,
-            None,
-        );
-        (decor, preds, residuals, lw)
+        let (decor, preds) = if self.layout.is_near() {
+            crate::near::analyze_stripe_near(
+                &self.layout,
+                &refs,
+                w,
+                lw,
+                0,
+                h,
+                &cfg,
+                &mut residual_refs,
+            )
+        } else {
+            crate::encode::analyze_stripe_fast(
+                &self.layout,
+                &refs,
+                w,
+                lw,
+                0,
+                h,
+                &cfg,
+                &mut residual_refs,
+                None,
+            )
+        };
+        (decor, preds, lw)
     }
 
     /// Adds a `w` x `h` rANS group's token counts per slot and context
@@ -939,13 +1066,13 @@ impl NativeGroupEncodeSession {
         stride: usize,
         hists: &mut [Vec<Vec<u64>>],
     ) {
-        let (_, _, residuals, lw) = self.analyze(w, h, pixels, stride);
+        let mut scratch = GroupScratch::default();
+        let (_, _, lw) = self.analyze_into(w, h, pixels, stride, &mut scratch);
         let widths = crate::v1::lane_widths(w, lw);
         let tc = &self.model.as_ref().expect("rANS group model").tc;
-        for (res, hist) in residuals.iter().zip(hists.iter_mut()) {
-            let steps = crate::v1::step_major(res, w, lw, 0, h);
+        for (res, hist) in scratch.residuals.iter().zip(hists.iter_mut()) {
             for l in 0..NL {
-                rans::lane_hist(&steps, None, lw, h, widths[l] as usize, l, tc, 4, 0, hist);
+                rans::lane_hist_rows(res, w, None, lw, h, widths[l] as usize, l, tc, 4, 0, hist);
             }
         }
     }
@@ -1065,6 +1192,121 @@ impl<W: Write> GroupEncoder<W> {
         self.writer.flush()?;
         Ok(self.writer)
     }
+}
+
+/// Calibrated 4-context full-support fixed prior for one-pass bounded groups.
+///
+/// Uses Lomax (heavy-tailed Pareto Type II) value priors + power-law zero-run
+/// priors across four neighbor-activity contexts (flat/run, smooth, medium,
+/// rough/noisy), keeping positive weight on every legal symbol below the run
+/// cap so any future group encodes without a statistics pass. Depends only on
+/// `(info.sample)` (never image geometry) so growing/append heads stay canonical.
+fn fixed_group_model(info: &ImageInfo) -> Result<Model, Error> {
+    let depth = info.sample.word_depth();
+    let tc = TokenCfg::v1(4, 1, depth);
+    let asz = tc.alphabet() as usize;
+    let vt = tc.value_tokens() as usize;
+    let legal_end = rans::run_cap_end(&tc).min(asz);
+    let is_wide_float = depth > 16 && info.sample.is_float();
+    let ctx_shift = if is_wide_float { 10u32 } else { 0u32 };
+    let base_scale = (1u64 << ctx_shift) as f64;
+    let ctx_map: [u8; rans::CLASSES] = [0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3];
+    // (scale, power, zero_mass, run_mass) per context.
+    let s3 = if depth <= 8 {
+        64.0
+    } else if depth <= 16 {
+        256.0
+    } else if is_wide_float {
+        131_072.0
+    } else {
+        2048.0
+    };
+    let p3 = if depth <= 8 {
+        1.2
+    } else if depth <= 16 {
+        1.0
+    } else if is_wide_float {
+        0.55
+    } else {
+        0.85
+    };
+    let params: [(f64, f64, f64, f64, f64); NCTX] = if is_wide_float {
+        // Wide floats frequently jump across exponents (0.0 <-> 1e-6 or
+        // NaN <-> finite) straight out of flat or rough regions; keep a small
+        // log-uniform floor on contexts 0 and 3 while keeping contexts 1-2 sharp.
+        [
+            (3.0 * base_scale, 1.0, 0.34, 0.34, 0.10),
+            (3.5 * base_scale, 1.5, 0.15, 0.04, 0.01),
+            (16.0 * base_scale, 1.4, 0.05, 0.015, 0.01),
+            (s3, p3, 0.015, 0.01, 0.08),
+        ]
+    } else {
+        [
+            (2.0 * base_scale, 1.4, 0.36, 0.34, 0.0),
+            (3.5 * base_scale, 1.6, 0.16, 0.04, 0.0),
+            (16.0 * base_scale, 1.5, 0.05, 0.015, 0.0),
+            (s3, p3, 0.015, 0.01, 0.0),
+        ]
+    };
+    let mut freq = Vec::with_capacity(NCTX);
+    let mut weights = Vec::with_capacity(NCTX);
+    let prec = vec![4u32; NCTX];
+    for &(scale, power, zero_mass, run_mass, floor_share) in &params {
+        let mut probs = vec![0.0f64; asz];
+        let val_mass = 1.0 - zero_mass - run_mass;
+        probs[0] = zero_mass;
+        let mut val_sum = 0.0f64;
+        for (tok, p) in probs.iter_mut().enumerate().take(vt).skip(1) {
+            let (base, nb) = crate::tokens::hybrid_base(tok as u32, tc.k, tc.m);
+            let lo = base as f64;
+            let hi1 = lo + (1u64 << nb) as f64;
+            let m = libm::pow(1.0 + lo / scale, -power) - libm::pow(1.0 + hi1 / scale, -power);
+            *p = m.max(0.0);
+            val_sum += *p;
+        }
+        if val_sum > 0.0 {
+            let k = (val_mass * (1.0 - floor_share)) / val_sum;
+            let floor = (val_mass * floor_share) / (vt.saturating_sub(1).max(1) as f64);
+            for p in &mut probs[1..vt] {
+                *p = *p * k + floor;
+            }
+        }
+        let mut run_sum = 0.0f64;
+        for (tok, p) in probs.iter_mut().enumerate().take(legal_end).skip(vt) {
+            let (base, _nb) = crate::tokens::hybrid_base((tok - vt) as u32, tc.rk, tc.rm);
+            let len = base + 1;
+            if len >= 4 {
+                let m = libm::pow(len as f64, -0.45);
+                *p = m;
+                run_sum += m;
+            }
+        }
+        if run_sum > 0.0 {
+            let k = run_mass / run_sum;
+            for p in &mut probs[vt..legal_end] {
+                *p *= k;
+            }
+        }
+        let mut wt = vec![0u32; asz];
+        for tok in 0..legal_end {
+            let raw = (probs[tok] * 65536.0) as u64;
+            wt[tok] = rans::quantize_weight(raw.max(1), 4).max(1);
+        }
+        rans::enforce_run_cap(&tc, &mut wt);
+        let f = rans::weights_to_freq(&wt).ok_or(Error::TooLarge)?;
+        weights.push(wt);
+        freq.push(f);
+    }
+    Ok(Model {
+        tc,
+        ctx_map,
+        freq,
+        weights,
+        prec,
+        cross: false,
+        ctx_shift,
+        seeds: [None; NCTX],
+    })
 }
 
 /// A slot model from class histograms, as the lossless encoder builds one

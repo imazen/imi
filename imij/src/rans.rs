@@ -618,7 +618,7 @@ fn lane_scan<const STEP_MAJOR: bool, const CONTEXT: bool>(
 /// `ctx` of each symbol holds the raw context class (0..CLASSES); map it
 /// through the model's `ctx_map` before coding.
 #[allow(clippy::too_many_arguments)]
-#[cfg(feature = "encode")]
+#[cfg(all(any(test, feature = "lab"), feature = "encode"))]
 pub(crate) fn lane_symbols(
     u: &[u32],
     cross: Option<&[u32]>,
@@ -700,7 +700,7 @@ pub(crate) fn lane_symbols_rows(
 /// deliberately zero because they cannot change a fixed model's frequencies.
 /// A row's lane l begins at `l * lw`; `row_stride` is measured in u32 words.
 #[allow(clippy::too_many_arguments)]
-#[cfg(feature = "encode")]
+#[cfg(all(test, feature = "encode"))]
 pub(crate) fn lane_symbols_rows_flat(
     u: &[u32],
     row_stride: usize,
@@ -738,7 +738,7 @@ pub(crate) fn lane_symbols_rows_flat(
 /// Same walk as [`lane_symbols`] but only counts `(ctx, tok)` occurrences:
 /// the histogram pass needs no symbol list at all.
 #[allow(clippy::too_many_arguments)]
-#[cfg(feature = "encode")]
+#[cfg(all(test, feature = "encode"))]
 pub(crate) fn lane_hist(
     u: &[u32],
     cross: Option<&[u32]>,

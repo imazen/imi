@@ -206,3 +206,107 @@ fn invalid_group_can_be_retried_after_symbol_scratch_has_been_reused() {
     assert_eq!(file, expected);
     assert_eq!(imij::decode(&file).unwrap().1, pixels);
 }
+
+#[test]
+fn bounded_groups_support_near_lossless_within_exact_bounds() {
+    for (sample, max_err) in [
+        (SampleType::U8, 4u32),
+        (SampleType::U16, 4u32),
+        (SampleType::U32, 8u32),
+        (SampleType::I32, 8u32),
+    ] {
+        if sample.tier() == imij::Tier::Extended && !cfg!(feature = "extended") {
+            continue;
+        }
+        for channels in [Channels::Gray, Channels::Rgb, Channels::Rgba] {
+            let info = ImageInfo::new(41, 19, channels, sample);
+            let nch = channels.count();
+            let mut pixels = Vec::new();
+            for y in 0..19u32 {
+                for x in 0..41u32 {
+                    for c in 0..nch as u32 {
+                        let base = (x * 13 + y * 29 + c * 7) % 251;
+                        match sample {
+                            SampleType::U8 => pixels.push(base as u8),
+                            SampleType::U16 => pixels.extend_from_slice(&((base * 197) as u16).to_ne_bytes()),
+                            SampleType::U32 => pixels.extend_from_slice(&(base * 100_003).to_ne_bytes()),
+                            SampleType::I32 => {
+                                let v = (base as i32 - 125) * 10_007;
+                                pixels.extend_from_slice(&v.to_ne_bytes());
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+            }
+            let cfg = imij::ImiEncoderConfig::lossless()
+                .tune_lossless(|t| t.max_error = [max_err; 4])
+                .with_row_groups(imij::RowGroups::new(16, 8, 32 << 20));
+            let mut sess = GroupEncodeSession::new(info.clone(), &Metadata::default(), &cfg).unwrap();
+            let mut file = Vec::new();
+            let stride = info.row_bytes();
+            let bpp = info.bytes_per_pixel();
+            while !sess.is_finished() {
+                if !sess.output().is_empty() {
+                    let n = sess.output().len();
+                    file.extend_from_slice(sess.output());
+                    sess.consume_output(n).unwrap();
+                } else {
+                    let r = sess.next_group().unwrap();
+                    let at = r.y as usize * stride + r.x as usize * bpp;
+                    sess.push_group(&pixels[at..], stride).unwrap();
+                }
+            }
+            sess.finish().unwrap();
+            let (dec_info, dec) = imij::decode(&file).unwrap();
+            assert_eq!(dec_info, info);
+            assert_eq!(dec.len(), pixels.len());
+            match sample {
+                SampleType::U8 => {
+                    for (&a, &b) in pixels.iter().zip(&dec) {
+                        assert!(a.abs_diff(b) as u32 <= max_err);
+                    }
+                }
+                SampleType::U16 => {
+                    for (&a, &b) in pixels.as_chunks::<2>().0.iter().zip(dec.as_chunks::<2>().0) {
+                        let va = u16::from_ne_bytes(a);
+                        let vb = u16::from_ne_bytes(b);
+                        assert!(va.abs_diff(vb) as u32 <= max_err);
+                    }
+                }
+                SampleType::U32 => {
+                    for (&a, &b) in pixels.as_chunks::<4>().0.iter().zip(dec.as_chunks::<4>().0) {
+                        let va = u32::from_ne_bytes(a);
+                        let vb = u32::from_ne_bytes(b);
+                        assert!(va.abs_diff(vb) <= max_err);
+                    }
+                }
+                SampleType::I32 => {
+                    for (&a, &b) in pixels.as_chunks::<4>().0.iter().zip(dec.as_chunks::<4>().0) {
+                        let va = i32::from_ne_bytes(a);
+                        let vb = i32::from_ne_bytes(b);
+                        assert!(va.abs_diff(vb) <= max_err);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+    // Float samples and quick groups reject near-lossless cleanly.
+    let f32_info = ImageInfo::new(8, 8, Channels::Gray, SampleType::F32);
+    let near_cfg = imij::ImiEncoderConfig::lossless()
+        .tune_lossless(|t| t.max_error = [2; 4])
+        .with_row_groups(imij::RowGroups::new(8, 8, 16 << 20));
+    assert!(matches!(
+        GroupEncodeSession::new(f32_info, &Metadata::default(), &near_cfg),
+        Err(Error::InvalidInput(_))
+    ));
+    let u8_info = ImageInfo::new(8, 8, Channels::Gray, SampleType::U8);
+    let quick_near = imij::ImiEncoderConfig::quick()
+        .tune_lossless(|t| t.max_error = [2; 4])
+        .with_row_groups(imij::RowGroups::new(8, 8, 16 << 20));
+    assert!(matches!(
+        GroupEncodeSession::new(u8_info, &Metadata::default(), &quick_near),
+        Err(Error::Unsupported(_))
+    ));
+}
