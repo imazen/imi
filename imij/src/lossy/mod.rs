@@ -144,12 +144,12 @@ pub(crate) use encode::{
 use entropy_encode::ans_tables;
 #[cfg(feature = "encode")]
 use entropy_encode::{
-    Coded, HuffmanStripe, ans_tables_for_decisions, encode_ans_stripes, encode_huffman_stripes,
-    huffman_tables, seed_bank, seed_exact, split_units, stripe_counts_widths, stripe_raw_split,
-    stripe_symbols, stripe_tokens,
+    Coded, HuffmanStripe, TokenHistogram, ans_tables_for_decisions, encode_ans_stripes,
+    encode_huffman_stripes, huffman_tables, seed_bank, seed_exact, split_units,
+    stripe_counts_widths, stripe_raw_split, stripe_symbols, stripe_tokens,
 };
 #[cfg(feature = "encode")]
-use partition::{SMALL_EDGE, exact_aq_to_selector, exact_aq_to_wire, small_on, superblocks_on};
+use partition::{exact_aq_to_selector, exact_aq_to_wire, small_on, superblocks_on};
 use qparams::QParams;
 pub(crate) use qparams::default_dc_step;
 pub use quality_scale::{ButteraugliNorm, LossyQuality};

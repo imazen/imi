@@ -37,6 +37,12 @@ impl TokenHistogram {
         Self::with_modes(!split_huf, split_huf)
     }
 
+    /// Accumulator collecting both run-level and split-Huffman counts in one
+    /// pass (used when a decode-speed tier chooses the coder after pass 1).
+    pub(in crate::lossy) fn both() -> Self {
+        Self::with_modes(true, true)
+    }
+
     fn with_modes(want_rl: bool, want_huf: bool) -> Self {
         let rl_len = LossyEntropy::RunLevel.nraw() * coef::ALPHA;
         Self {
@@ -53,13 +59,19 @@ impl TokenHistogram {
         }
     }
 
-    /// Tallies one column-group unit into the enabled histogram(s).
-    pub(in crate::lossy) fn add_unit(&mut self, u: &StripeCoefs) {
+    /// Tallies one column-group unit's run-level tokens (when run-level
+    /// counting is enabled on this accumulator).
+    pub(in crate::lossy) fn add_rl(&mut self, u: &StripeCoefs) {
         if !self.rl.is_empty() {
             stripe_tokens(u, u.bw, Group::ALL, |_, ctx, tok, _, _| {
                 self.rl[ctx * coef::ALPHA + tok as usize] += 1;
             });
         }
+    }
+
+    /// Tallies one column-group unit's split-Huffman symbols (when
+    /// split-Huffman counting is enabled on this accumulator).
+    pub(in crate::lossy) fn add_huf(&mut self, u: &StripeCoefs) {
         if !self.freqs[0].is_empty() {
             let (counts, widths) = stripe_counts_widths(u, u.bw);
             let syms = huf::stripe_syms(&counts, &widths, u.nby * u.bw);
@@ -70,6 +82,12 @@ impl TokenHistogram {
                 }
             }
         }
+    }
+
+    /// Tallies one column-group unit into the enabled histogram(s).
+    pub(in crate::lossy) fn add_unit(&mut self, u: &StripeCoefs) {
+        self.add_rl(u);
+        self.add_huf(u);
     }
 
     /// Tallies a full-width stripe by splitting into column-group units when
@@ -96,6 +114,31 @@ impl TokenHistogram {
                 }
             }
         }
+    }
+
+    /// Zeroes run-level counts in place without reallocating.
+    pub(in crate::lossy) fn clear_rl(&mut self) {
+        self.rl.fill(0);
+    }
+
+    /// Zeroes split-Huffman frequencies in place without reallocating.
+    pub(in crate::lossy) fn clear_freqs(&mut self) {
+        for table in &mut self.freqs {
+            for row in table {
+                row.fill(0);
+            }
+        }
+    }
+
+    /// Expands flat context-major run-level counts into per-context rows for
+    /// `Tables::build_seeded`.
+    pub(in crate::lossy) fn rl_rows(&self) -> Vec<Vec<u64>> {
+        self.rl
+            .as_chunks::<{ coef::ALPHA }>()
+            .0
+            .iter()
+            .map(|row| row.to_vec())
+            .collect()
     }
 
     /// Builds a trellis pricing pass from the accumulated counts.
