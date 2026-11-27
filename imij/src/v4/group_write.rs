@@ -68,6 +68,9 @@ impl GroupEncodeSession {
         if groups.quick_pixels {
             cfg = cfg.with_quick(groups.quick_bit_smarts);
         }
+        if groups.max_error != [0; 4] {
+            cfg = cfg.tune_lossless(|t| t.max_error = groups.max_error);
+        }
         let spatial = SpatialConfig {
             tile_columns: info.width.div_ceil(groups.columns),
             tile_rows: 1,

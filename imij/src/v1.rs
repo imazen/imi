@@ -336,7 +336,7 @@ pub(crate) fn default_stripe_rows(w: u32) -> u32 {
 }
 
 /// Step-major residual plane of one stripe slot.
-#[cfg(feature = "encode")]
+#[cfg(all(any(test, feature = "lab"), feature = "encode"))]
 pub(crate) fn step_major(res: &[u32], w: usize, lw: usize, y0: usize, y1: usize) -> Vec<u32> {
     let rows = y1 - y0;
     let mut v = vec![0u32; rows * lw * NL];
@@ -915,15 +915,25 @@ fn encode_parts_ref_with_progress(
         ],
     )
     .complete_with(|stages| {
-        let a = stages.run(|p| encode::analyze_with_progress(pixels, stride, info, &ecfg, p))?;
+        let encode::Analysis {
+            layout,
+            planes: analysis_planes,
+            res: analysis_res,
+            w,
+            h,
+            sw: lw,
+            stripe_decor,
+            stripe_adapt,
+            row_pred,
+            ..
+        } = stages.run(|p| encode::analyze_with_progress(pixels, stride, info, &ecfg, p))?;
         stages.run(|pulse| {
             let pulse = pulse.live();
             use how_far::Stop;
             pulse.check().map_err(|_| Error::Cancelled)?;
-            let (w, h, lw) = (a.w, a.h, a.sw);
             let hs = hs as usize;
             let nstripes = h.div_ceil(hs);
-            let layout = &a.layout;
+            let layout = &layout;
             let ns = layout.slot_channel.len();
             // Inter frames: the reference's coded values per slot (w x h).
             let guide: Option<Vec<Vec<u32>>> = reference
@@ -1003,7 +1013,7 @@ fn encode_parts_ref_with_progress(
                         return 0;
                     }
                     let mut hist = [0u64; 34];
-                    for &u in a.res[s].iter().step_by(7) {
+                    for &u in analysis_res[s].iter().step_by(7) {
                         // Bit length of a typical context sum (~2u), at most 33.
                         hist[(64 - (2 * u as u64).leading_zeros()) as usize] += 1;
                     }
@@ -1037,39 +1047,42 @@ fn encode_parts_ref_with_progress(
             let slot_planes: Vec<&[u32]> = layout
                 .slot_channel
                 .iter()
-                .map(|&c| a.planes[c].as_slice())
+                .map(|&c| analysis_planes[c].as_slice())
                 .collect();
             let entry_bytes: usize = layout
                 .slot_bits
                 .iter()
                 .map(|&b| if b <= 8 { 1 } else { 2 })
                 .sum();
-            let pal_hist = |plane: &[u32], lw: usize, widths: &[u32; NL], rows: usize| {
-                let mut hist = vec![vec![0u64; pal_tc.alphabet() as usize]; CTX_CLASSES];
-                for l in 0..NL {
-                    rans::lane_hist(
-                        plane,
-                        None,
-                        lw,
-                        rows,
-                        widths[l] as usize,
-                        l,
-                        &pal_tc,
-                        cfg.run_min,
-                        0,
-                        &mut hist,
-                    );
-                }
-                hist
-            };
+            let pal_hist =
+                |plane: &[u32], row_stride: usize, lw: usize, widths: &[u32; NL], rows: usize| {
+                    let mut hist = vec![vec![0u64; pal_tc.alphabet() as usize]; CTX_CLASSES];
+                    for l in 0..NL {
+                        rans::lane_hist_rows(
+                            plane,
+                            row_stride,
+                            None,
+                            lw,
+                            rows,
+                            widths[l] as usize,
+                            l,
+                            &pal_tc,
+                            cfg.run_min,
+                            0,
+                            &mut hist,
+                        );
+                    }
+                    hist
+                };
 
-            // Pass 1 (parallel over units): step-major planes + class histograms
-            // (slot histograms empty and a palette histogram for palette stripes),
-            // decorrelation mode and row predictors.
+            // Pass 1 (parallel over units): row-major local planes (only when
+            // cropping column groups / inter frames; whole-width units reuse
+            // `a.res` in place without duplicating it via `step_major`) + class
+            // histograms, decorrelation mode and row predictors.
             let unit_ids: Vec<usize> = (0..units).collect();
             #[allow(clippy::type_complexity)]
             let pass1: Vec<(
-                Vec<Vec<u32>>,
+                Option<Vec<Vec<u32>>>,
                 Vec<Vec<Vec<u64>>>,
                 Option<(PalStripe, Vec<Vec<u64>>)>,
                 u8,
@@ -1089,9 +1102,9 @@ fn encode_parts_ref_with_progress(
                     if rectangles.is_none() && ng == 1 && guide.is_none() {
                         (
                             None,
-                            a.stripe_decor[si],
-                            a.stripe_adapt[si],
-                            a.row_pred[y0..y1].to_vec(),
+                            stripe_decor[si],
+                            stripe_adapt[si],
+                            row_pred[y0..y1].to_vec(),
                         )
                     } else {
                         let lp: Vec<Vec<u32>> = slot_planes
@@ -1143,7 +1156,7 @@ fn encode_parts_ref_with_progress(
                 };
                 let res_u: Vec<&[u32]> = match &local {
                     Some((_, lr)) => lr.iter().map(|v| v.as_slice()).collect(),
-                    None => a.res.iter().map(|v| v.as_slice()).collect(),
+                    None => analysis_res.iter().map(|v| v.as_slice()).collect(),
                 };
                 let pal = if pal_ok {
                     stripe_palette(&planes_u, pw, py0, py0 + rows).and_then(|(entries, idx)| {
@@ -1166,35 +1179,31 @@ fn encode_parts_ref_with_progress(
                             .sum::<f64>()
                             + adapt_hdr;
                         let pal = est_bits(&res) + 8.0 * (entries.len() * entry_bytes + 1) as f64;
-                        (pal < normal).then(|| PalStripe {
+                        (pal < normal).then_some(PalStripe {
                             entries,
                             preds,
-                            plane: step_major(&res, gw, lw, 0, rows),
+                            plane: res,
                         })
                     })
                 } else {
                     None
                 };
                 if let Some(ps) = pal {
-                    let hist = pal_hist(&ps.plane, lw, &widths, rows);
+                    let hist = pal_hist(&ps.plane, gw, lw, &widths, rows);
                     pulse.check().map_err(|_| Error::Cancelled)?;
-                    return Ok((Vec::new(), Vec::new(), Some((ps, hist)), decor, None, preds));
+                    return Ok((None, Vec::new(), Some((ps, hist)), decor, None, preds));
                 }
-                let pl: Vec<Vec<u32>> = (0..ns)
-                    .map(|s| step_major(res_u[s], pw, lw, py0, py0 + rows))
-                    .collect();
                 let mut hists = Vec::with_capacity(ns);
+                let cross_slice = &res_u[0][py0 * pw..];
                 for s in 0..ns {
                     let asz = tcs[s].alphabet() as usize;
                     let mut hist = vec![vec![0u64; asz]; CTX_CLASSES];
-                    let cr = if cross_of(s) {
-                        Some(pl[0].as_slice())
-                    } else {
-                        None
-                    };
+                    let cr = if cross_of(s) { Some(cross_slice) } else { None };
+                    let slice = &res_u[s][py0 * pw..];
                     for l in 0..NL {
-                        rans::lane_hist(
-                            &pl[s],
+                        rans::lane_hist_rows(
+                            slice,
+                            pw,
                             cr,
                             lw,
                             rows,
@@ -1208,8 +1217,9 @@ fn encode_parts_ref_with_progress(
                     }
                     hists.push(hist);
                 }
+                let local_res = local.map(|(_, lr)| lr);
                 pulse.check().map_err(|_| Error::Cancelled)?;
-                Ok((pl, hists, None, decor, adapt, preds))
+                Ok((local_res, hists, None, decor, adapt, preds))
             })
             .into_iter()
             .collect::<Result<_, _>>()?;
@@ -1380,7 +1390,7 @@ fn encode_parts_ref_with_progress(
             // Pass 2 (parallel over stripes): code streams.
             #[allow(clippy::type_complexity)]
             let planes: Vec<(
-                Vec<Vec<u32>>,
+                Option<Vec<Vec<u32>>>,
                 Option<PalStripe>,
                 u8,
                 Option<crate::adapt_color::AdaptWeights>,
@@ -1523,6 +1533,8 @@ fn encode_parts_ref_with_progress(
                 Some((rec, units))
             })
             .flatten();
+            drop(slot_planes);
+            drop(analysis_planes);
             pulse.check().map_err(|_| Error::Cancelled)?;
             let code =
                 |all: &[Model],
@@ -1551,12 +1563,14 @@ fn encode_parts_ref_with_progress(
                             if only_unit.is_some_and(|selected| selected != u) {
                                 return Ok(Vec::new());
                             }
-                            let (pl, pal, decor, adapt, preds) = p;
+                            let (local_res, pal, decor, adapt, preds) = p;
                             let (y0, y1, gi) = bounds(u);
                             let rows = y1 - y0;
                             let (_, gw, lw) = geo(gi);
                             let widths = lane_widths(gw, lw);
                             let mut sb = Vec::new();
+                            let mut lanes_syms: [Vec<Sym>; NL] = Default::default();
+                            let mut rans_scratch = rans::RansScratch::default();
                             if let Some(ps) = pal {
                                 let md = pmref.as_ref().unwrap();
                                 sb.push(PAL_STRIPE);
@@ -1574,10 +1588,11 @@ fn encode_parts_ref_with_progress(
                                 for pair in ps.preds.chunks(2) {
                                     sb.push(pair[0] | (pair.get(1).copied().unwrap_or(0) << 4));
                                 }
-                                let lanes_syms: [Vec<Sym>; NL] = core::array::from_fn(|l| {
-                                    let mut v = Vec::new();
-                                    rans::lane_symbols(
+                                for (l, v) in lanes_syms.iter_mut().enumerate() {
+                                    v.clear();
+                                    rans::lane_symbols_rows(
                                         &ps.plane,
+                                        gw,
                                         None,
                                         lw,
                                         rows,
@@ -1586,16 +1601,16 @@ fn encode_parts_ref_with_progress(
                                         &md.tc,
                                         cfg.run_min,
                                         0,
-                                        &mut v,
+                                        v,
                                     );
-                                    v
-                                });
+                                }
                                 let mut st = Vec::new();
-                                rans::encode_lanes_tables(
+                                rans::encode_lanes_tables_scratch(
                                     palette_tables.as_ref().unwrap(),
                                     &lanes_syms,
                                     active_lanes(&widths),
                                     &mut st,
+                                    &mut rans_scratch,
                                 );
                                 put_varint(&mut sb, st.len() as u64);
                                 sb.extend_from_slice(&st);
@@ -1609,19 +1624,24 @@ fn encode_parts_ref_with_progress(
                             for pair in preds.chunks(2) {
                                 sb.push(pair[0] | (pair.get(1).copied().unwrap_or(0) << 4));
                             }
+                            let (row_stride, slot0) = match local_res {
+                                Some(lr) => (gw, lr[0].as_slice()),
+                                None => (w, &analysis_res[0][y0 * w..]),
+                            };
                             let mut streams = Vec::with_capacity(ns);
                             for s in 0..ns {
                                 pulse.check().map_err(|_| Error::Cancelled)?;
                                 let md = &mref[s];
-                                let cr = if md.cross {
-                                    Some(pl[0].as_slice())
-                                } else {
-                                    None
+                                let cr = if md.cross { Some(slot0) } else { None };
+                                let slice = match local_res {
+                                    Some(lr) => lr[s].as_slice(),
+                                    None => &analysis_res[s][y0 * w..],
                                 };
-                                let lanes_syms: [Vec<Sym>; NL] = core::array::from_fn(|l| {
-                                    let mut v = Vec::new();
-                                    rans::lane_symbols(
-                                        &pl[s],
+                                for (l, v) in lanes_syms.iter_mut().enumerate() {
+                                    v.clear();
+                                    rans::lane_symbols_rows(
+                                        slice,
+                                        row_stride,
                                         cr,
                                         lw,
                                         rows,
@@ -1630,16 +1650,16 @@ fn encode_parts_ref_with_progress(
                                         &md.tc,
                                         cfg.run_min,
                                         md.ctx_shift,
-                                        &mut v,
+                                        v,
                                     );
-                                    v
-                                });
+                                }
                                 let mut st = Vec::new();
-                                rans::encode_lanes_tables(
+                                rans::encode_lanes_tables_scratch(
                                     &encode_tables[s],
                                     &lanes_syms,
                                     active_lanes(&widths),
                                     &mut st,
+                                    &mut rans_scratch,
                                 );
                                 streams.push(st);
                             }

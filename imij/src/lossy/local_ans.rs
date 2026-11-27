@@ -164,6 +164,44 @@ fn frame(tables: &[u8], body: &[u8], packed: bool) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "encode")]
+fn min_local_bytes(
+    lanes: &[Vec<Sym>; NL],
+    active: usize,
+    hist: &[Vec<u64>],
+    extra_bits: u64,
+    total_syms: u64,
+    compact_streams: bool,
+) -> usize {
+    // Provably conservative lower bound on any local unseeded RunLevel payload:
+    // 1 B frame varint + >= 6 B minimal table header (2 counts + >= 2 ctx_map
+    // runs + >= 2 non-empty weight tables) + minimal state header + minimal
+    // 16-bit renorm payload after subtracting the < 16 bits/lane absorbed in
+    // final states and <= 0.01 bits/symbol rANS floor slack.
+    let active_nonempty = lanes[..active].iter().filter(|l| !l.is_empty()).count();
+    let mut shannon_bits = 0.0f64;
+    for row in hist {
+        let sum: u64 = row.iter().sum();
+        if sum > 1 {
+            let log_sum = crate::mathx::log2(sum as f64);
+            for &c in row {
+                if c > 0 {
+                    shannon_bits += c as f64 * (log_sum - crate::mathx::log2(c as f64));
+                }
+            }
+        }
+    }
+    let min_states = if compact_streams {
+        1 + active.div_ceil(8)
+    } else {
+        4 * active
+    };
+    let absorbed_and_slack = 16.0 * active_nonempty as f64 + 0.01 * total_syms as f64;
+    let min_payload =
+        ((shannon_bits + extra_bits as f64 - absorbed_and_slack).max(0.0) / 8.0) as usize;
+    1 + 6 + min_states + min_payload
+}
+
 /// Price every byte of the four legal alternatives. Ties retain the shared
 /// model, then raw states. Symbols are those already made for this unit.
 #[cfg(feature = "encode")]
@@ -182,8 +220,26 @@ pub(super) fn encode(
         }
     }
     let mut hist = vec![vec![0u64; coef::ALPHA]; LossyEntropy::RunLevel.nraw()];
+    let mut extra_bits = 0u64;
+    let mut total_syms = 0u64;
     for symbol in lanes.iter().flatten() {
         hist[symbol.ctx as usize][symbol.tok as usize] += 1;
+        extra_bits += symbol.nb as u64;
+        total_syms += 1;
+    }
+    if total_syms == 0 {
+        return Ok(best);
+    }
+    let min_local = min_local_bytes(
+        lanes,
+        active,
+        &hist,
+        extra_bits,
+        total_syms,
+        cfg.compact_streams,
+    );
+    if min_local >= best.len() {
+        return Ok(best);
     }
     let tables = Tables::build_seeded(
         &hist,
@@ -488,5 +544,161 @@ mod tests {
         assert!(
             encode_lossy(&source, info.row_bytes(), &info, &Metadata::default(), &bad).is_err()
         );
+    }
+
+    #[test]
+    fn min_local_bytes_never_exceeds_actual_local_payload() {
+        let cases: [(&str, usize, Vec<Vec<Sym>>); 5] = [
+            // Single zero-entropy symbol in 1 lane (state stays RANS_L).
+            (
+                "single_zero_entropy",
+                1,
+                vec![
+                    (0..32)
+                        .map(|i| Sym {
+                            step: i as u32,
+                            ctx: 0,
+                            tok: 0,
+                            nb: 0,
+                            extra: 0,
+                        })
+                        .collect(),
+                ],
+            ),
+            // Identical symbols across all 16 lanes (compact tag 2 collapses all 16 states).
+            (
+                "identical_16_lanes",
+                16,
+                (0..16)
+                    .map(|_| {
+                        (0..24)
+                            .map(|i| Sym {
+                                step: i as u32,
+                                ctx: (i % coef::EOB_CTX) as u16,
+                                tok: (i % 4) as u8,
+                                nb: 2,
+                                extra: (i & 3) as u32,
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            ),
+            // Sparse active lanes (only 2 of 16 non-empty) with wide extra bits.
+            (
+                "sparse_wide_extra",
+                16,
+                (0..16)
+                    .map(|l| {
+                        if l == 0 || l == 11 {
+                            (0..40)
+                                .map(|i| Sym {
+                                    step: i as u32,
+                                    ctx: (coef::EOB_CTX + (i % 12)) as u16,
+                                    tok: ((i % (coef::MAX_RUN as usize + 1)) * 32 + (i % 5)) as u8,
+                                    nb: 8,
+                                    extra: (i * 13) as u32,
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        }
+                    })
+                    .collect(),
+            ),
+            // Dense diverse symbols across all 16 lanes.
+            (
+                "dense_diverse",
+                16,
+                (0..16)
+                    .map(|l| {
+                        (0..120)
+                            .map(|i| {
+                                let ctx = (i + l) % LossyEntropy::RunLevel.nraw();
+                                let tok = if ctx < coef::EOB_CTX {
+                                    ((i + l * 3) % 32) as u8
+                                } else if (i + l) % 5 == 0 {
+                                    coef::ZRL as u8
+                                } else {
+                                    (((i * 3 + l) % (coef::MAX_RUN as usize + 1)) * 32
+                                        + ((i + l * 7) % 10))
+                                        as u8
+                                };
+                                Sym {
+                                    step: i as u32,
+                                    ctx: ctx as u16,
+                                    tok,
+                                    nb: ((i + l) % 6) as u8,
+                                    extra: ((i * 17 + l) & 0x1f) as u32,
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            ),
+            // Two-symbol alternating stream (high discretization test).
+            (
+                "two_symbol_alt",
+                4,
+                (0..4)
+                    .map(|l| {
+                        (0..200)
+                            .map(|i| Sym {
+                                step: i as u32,
+                                ctx: coef::EOB_CTX as u16,
+                                tok: ((i + l) & 1) as u8,
+                                nb: 0,
+                                extra: 0,
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            ),
+        ];
+        let effort = crate::effort::Effort::new(0.0).unwrap();
+        for (name, active, init) in cases {
+            let mut lanes: [Vec<Sym>; NL] = core::array::from_fn(|_| Vec::new());
+            for (l, syms) in init.into_iter().enumerate() {
+                lanes[l] = syms;
+            }
+            let mut hist = vec![vec![0u64; coef::ALPHA]; LossyEntropy::RunLevel.nraw()];
+            let mut extra_bits = 0u64;
+            let mut total_syms = 0u64;
+            for sym in lanes.iter().flatten() {
+                hist[sym.ctx as usize][sym.tok as usize] += 1;
+                extra_bits += sym.nb as u64;
+                total_syms += 1;
+            }
+            let cfg = LossyConfig::new(75.0).with_effort(0.0);
+            let tables = Tables::build_seeded(
+                &hist,
+                4,
+                cfg.max_ac_tables,
+                LossyEntropy::RunLevel,
+                effort,
+                None,
+                table_k_mode(&cfg),
+            )
+            .0;
+            let mut bits = BitWriter::new();
+            tables.write(&mut bits);
+            let tables_bytes = bits.finish();
+            let encoder = EncodeTables::new(&tables.freq, &tables.ctx_map);
+            let mut body = Vec::new();
+            encode_lanes_tables(&encoder, &lanes, active, &mut body);
+            let raw_len = frame(&tables_bytes, &body, false).len();
+            let packed_len =
+                frame(&tables_bytes, &compact::pack(&body, active).unwrap(), true).len();
+            let bound_raw = min_local_bytes(&lanes, active, &hist, extra_bits, total_syms, false);
+            let bound_compact =
+                min_local_bytes(&lanes, active, &hist, extra_bits, total_syms, true);
+            assert!(
+                bound_raw <= raw_len,
+                "{name}: raw lower bound {bound_raw} exceeded actual {raw_len}"
+            );
+            assert!(
+                bound_compact <= raw_len.min(packed_len),
+                "{name}: compact lower bound {bound_compact} exceeded actual min({raw_len}, {packed_len})"
+            );
+        }
     }
 }

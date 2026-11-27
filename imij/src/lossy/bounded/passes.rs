@@ -817,7 +817,11 @@ pub(super) async fn pass1<I: PassIo>(
     let mut band = Vec::new();
     let mut fits16 = true;
     let mut side = [0u64; 3];
-    let mut ac_hist = TokenHistogram::both();
+    let mut ac_hist = match cfg.decode_speed {
+        None => TokenHistogram::new(cfg.entropy == LossyEntropy::SplitHuf),
+        Some(speed) if huf_max_ratio(speed).is_none() => TokenHistogram::new(false),
+        Some(_) => TokenHistogram::both(),
+    };
     // The nested DC groups' token counts, for measured DC tables; collected
     // as U16 and discarded if any DC needs I32.
     let (dc16_info, dc_cfg) = p.dc_layout(true, false);

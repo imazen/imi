@@ -855,9 +855,8 @@ fn analyze_stripe_impl<const FIXED_W: bool>(
         .collect();
     let mut d: Vec<Vec<u32>> = (0..ns).map(|_| vec![0u32; w]).collect();
     let (mut ro, mut bo) = (vec![0u32; w], vec![0u32; w]);
-    // With no prediction/decorrelation choice, scoring cannot affect the
-    // result. Emit the same modular W residuals directly, retaining the
-    // north-at-lane-start rule on rows after the stripe's first row.
+    // With no prediction choice (`P_W` or `P_MED`), avoid `RowNb`'s 8-vector
+    // scatter copy and two-pass prediction recomputation.
     if FIXED_W && guide.is_none() && preds == [predict::P_W] && decors.len() == 1 {
         let decor = decors[0];
         for y in y0..y1 {
@@ -898,6 +897,152 @@ fn analyze_stripe_impl<const FIXED_W: bool>(
             }
         }
         return (decor, vec![predict::P_W; rows]);
+    }
+    if FIXED_W && guide.is_none() && preds == [predict::P_MED] {
+        let do_decor = cs == 3 && layout.decor_ok;
+        let fill_med_row = |plane: &[u32], y: usize, mask: u32, dst: &mut [u32]| {
+            let row = &plane[y * w..(y + 1) * w];
+            if y == y0 {
+                for xs in (0..w).step_by(sw) {
+                    let xe = (xs + sw).min(w);
+                    let mut west = 0u32;
+                    for x in xs..xe {
+                        dst[x] = row[x].wrapping_sub(west) & mask;
+                        west = row[x];
+                    }
+                }
+            } else {
+                let up = &plane[(y - 1) * w..y * w];
+                for xs in (0..w).step_by(sw) {
+                    let xe = (xs + sw).min(w);
+                    let mut west = up[xs];
+                    let mut nw = west;
+                    dst[xs] = row[xs].wrapping_sub(west) & mask;
+                    west = row[xs];
+                    for x in (xs + 1)..xe {
+                        let n = up[x];
+                        let lo = west.min(n);
+                        let hi = west.max(n);
+                        let pred = if nw >= hi {
+                            lo
+                        } else if nw <= lo {
+                            hi
+                        } else {
+                            west.wrapping_add(n).wrapping_sub(nw)
+                        };
+                        let cur = row[x];
+                        dst[x] = cur.wrapping_sub(pred) & mask;
+                        west = cur;
+                        nw = n;
+                    }
+                }
+            }
+        };
+        let mut pr = vec![predict::P_MED; rows];
+        pr[0] = predict::P_W;
+        if !do_decor || decors.len() == 1 {
+            let decor = decors[0];
+            for y in y0..y1 {
+                for s in 0..ns {
+                    fill_med_row(planes[s], y, masks[s], &mut d[s]);
+                }
+                if do_decor && decor != 0 {
+                    decor_rows(
+                        decor,
+                        &d[0],
+                        &d[1],
+                        &d[2],
+                        layout.slot_bits[0],
+                        masks[0],
+                        &mut ro,
+                        &mut bo,
+                    );
+                    d[1].copy_from_slice(&ro);
+                    d[2].copy_from_slice(&bo);
+                }
+                for s in 0..ns {
+                    let bits = layout.slot_bits[s];
+                    let row = &mut res[s][(y - y0) * w..(y - y0 + 1) * w];
+                    if bits == 0 {
+                        row.fill(0);
+                    } else {
+                        for (out, &delta) in row.iter_mut().zip(&d[s]) {
+                            *out = zz(delta, bits, masks[s]);
+                        }
+                    }
+                }
+            }
+            return (decor, pr);
+        }
+        // Multiple decorrelation candidates with fixed MED: compute MED once
+        // into `res[0..3]` (raw modular residuals) while accumulating per-decor
+        // costs, finalize non-color slots immediately, then apply the winning
+        // decorrelation + zigzag in place.
+        let cbits = layout.slot_bits[0];
+        let cmask = masks[0];
+        let mut dcost = vec![0u64; decors.len()];
+        for y in y0..y1 {
+            let r = y - y0;
+            for s in 0..3 {
+                let dst = &mut res[s][r * w..(r + 1) * w];
+                fill_med_row(planes[s], y, masks[s], dst);
+            }
+            for s in 3..ns {
+                fill_med_row(planes[s], y, masks[s], &mut d[s]);
+                let bits = layout.slot_bits[s];
+                let dst = &mut res[s][r * w..(r + 1) * w];
+                if bits == 0 {
+                    dst.fill(0);
+                } else {
+                    for (out, &delta) in dst.iter_mut().zip(&d[s]) {
+                        *out = zz(delta, bits, masks[s]);
+                    }
+                }
+            }
+            // Match the general search path, which excludes the stripe's first
+            // row when only non-W/REF predictors are eligible (`y == y0`).
+            if r > 0 {
+                let g_row = &res[0][r * w..(r + 1) * w];
+                let r_row = &res[1][r * w..(r + 1) * w];
+                let b_row = &res[2][r * w..(r + 1) * w];
+                for (di, &m) in decors.iter().enumerate() {
+                    dcost[di] += if m == 0 {
+                        cost_sum(r_row, cbits, cmask) + cost_sum(b_row, cbits, cmask)
+                    } else {
+                        decor_rows(m, g_row, r_row, b_row, cbits, cmask, &mut ro, &mut bo);
+                        cost_sum(&ro, cbits, cmask) + cost_sum(&bo, cbits, cmask)
+                    };
+                }
+            }
+        }
+        let di = (0..decors.len()).min_by_key(|&i| (dcost[i], i)).unwrap();
+        let decor = decors[di];
+        for r in 0..rows {
+            let span = r * w..(r + 1) * w;
+            if decor != 0 {
+                let (s0, rest) = res.split_at_mut(1);
+                let (s1, rest) = rest.split_at_mut(1);
+                let g_row = &s0[0][span.clone()];
+                let r_row = &mut s1[0][span.clone()];
+                let b_row = &mut rest[0][span.clone()];
+                decor_rows(decor, g_row, r_row, b_row, cbits, cmask, &mut ro, &mut bo);
+                r_row.copy_from_slice(&ro);
+                b_row.copy_from_slice(&bo);
+            }
+            for s in 0..3 {
+                let bits = layout.slot_bits[s];
+                let mask = masks[s];
+                let row = &mut res[s][span.clone()];
+                if bits == 0 {
+                    row.fill(0);
+                } else {
+                    for v in row.iter_mut() {
+                        *v = zz(*v, bits, mask);
+                    }
+                }
+            }
+        }
+        return (decor, pr);
     }
     let mut nbs: Vec<RowNb> = (0..ns).map(|_| RowNb::new(w)).collect();
     // cost[decor][row][pred]

@@ -86,42 +86,72 @@ pub(crate) fn encode_variant(
     let mut bodies = Vec::new();
     reserve(&mut bodies, n)?;
     let mut originals: Vec<Vec<u8>> = Vec::new();
-    reserve(&mut originals, n)?;
+    reserve(&mut originals, n.saturating_sub(1))?;
+    // Reusable scratch across planes: avoids allocating separate `saved`,
+    // `remapped` and three `count * 2` packet buffers per plane.
+    let mut remapped = Vec::new();
+    let mut trial = Vec::new();
+    let packet_cap = if packets_enabled {
+        count
+            .checked_mul(2)
+            .and_then(|v| v.checked_add(258))
+            .ok_or("plane size")?
+    } else {
+        0
+    };
+    let plane_shape = Shape {
+        channels: 1,
+        bytes: 1,
+        ..shape
+    };
     for plane in 0..n {
         let mut data = Vec::new();
         reserve(&mut data, count)?;
-        let (mut and, mut or) = (255, 0);
+        let (mut and, mut or) = (255u8, 0u8);
+        let mut seen = [false; 256];
         for y in 0..shape.height {
             check()?;
-            for x in 0..shape.width {
+            let row = &input[y * stride..y * stride + shape.width * n];
+            for (x, px) in row.chunks_exact(n).enumerate() {
                 if x & 16383 == 0 {
                     check()?;
                 }
-                let v = input[y * stride + x * n + plane];
+                let v = px[plane];
                 data.push(v);
                 and &= v;
                 or |= v;
+                seen[v as usize] = true;
             }
         }
         let mask = and ^ or;
         let bits = mask.count_ones() as u8;
         if bits == 0 {
             bodies.push(alloc::vec![2, and]);
-            originals.push(Vec::new());
+            if plane + 1 < n {
+                originals.push(Vec::new());
+            }
             continue;
         }
-        if let Some(previous) = originals.iter().position(|old| old == &data) {
+        if let Some(previous) = originals
+            .iter()
+            .position(|old| !old.is_empty() && old == &data)
+        {
             bodies.push(alloc::vec![7, previous as u8]);
-            originals.push(data);
+            if plane + 1 < n {
+                originals.push(Vec::new());
+            }
             continue;
         }
-        let mut saved = Vec::new();
-        reserve(&mut saved, count)?;
-        saved.extend_from_slice(&data);
-        originals.push(saved);
-        let original = &originals[plane];
         let mut body = Vec::new();
-        reserve(&mut body, count.checked_add(3).ok_or("plane size")?)?;
+        let packed_len = if bits < 8 {
+            3 + count
+                .checked_mul(bits as usize)
+                .ok_or("plane size")?
+                .div_ceil(8)
+        } else {
+            count.checked_add(1).ok_or("plane size")?
+        };
+        reserve(&mut body, packed_len)?;
         if bits < 8 {
             body.extend_from_slice(&[3, and, mask]);
             let codes: [u8; 256] = core::array::from_fn(|v| compact(v as u8, mask));
@@ -150,140 +180,123 @@ pub(crate) fn encode_variant(
             body.extend_from_slice(&data);
         }
         if packets_enabled {
-            let mut packets = Vec::new();
-            reserve(
-                &mut packets,
-                count
-                    .checked_mul(2)
-                    .and_then(|v| v.checked_add(1))
-                    .ok_or("plane size")?,
-            )?;
-            packets.push(1);
-            super::pixels::encode_into(
-                &data,
-                shape.width,
-                Shape {
-                    channels: 1,
-                    bytes: 1,
-                    ..shape
-                },
-                &mut packets,
-                &mut check,
-            )?;
-            if packets.len() < body.len() {
-                body = packets;
+            trial.clear();
+            if trial.capacity() < packet_cap {
+                reserve(&mut trial, packet_cap)?;
+            }
+            trial.push(1);
+            super::pixels::encode_into(&data, shape.width, plane_shape, &mut trial, &mut check)?;
+            if trial.len() < body.len() {
+                body.clear();
+                body.extend_from_slice(&trial);
             }
             if bits < 8 {
+                remapped.clear();
+                if remapped.capacity() < count {
+                    reserve(&mut remapped, count)?;
+                }
                 let codes: [u8; 256] = core::array::from_fn(|v| compact(v as u8, mask));
-                for (i, v) in data.iter_mut().enumerate() {
+                for (i, &v) in data.iter().enumerate() {
                     if i & 16383 == 0 {
                         check()?;
                     }
-                    *v = codes[*v as usize];
+                    remapped.push(codes[v as usize]);
                 }
-                let mut mapped = Vec::new();
-                reserve(
-                    &mut mapped,
-                    count
-                        .checked_mul(2)
-                        .and_then(|n| n.checked_add(3))
-                        .ok_or("plane size")?,
-                )?;
-                mapped.extend_from_slice(&[4, and, mask]);
+                trial.clear();
+                trial.extend_from_slice(&[4, and, mask]);
                 super::pixels::encode_into(
-                    &data,
+                    &remapped,
                     shape.width,
-                    Shape {
-                        channels: 1,
-                        bytes: 1,
-                        ..shape
-                    },
-                    &mut mapped,
+                    plane_shape,
+                    &mut trial,
                     &mut check,
                 )?;
-                if mapped.len() < body.len() {
-                    body = mapped;
+                if trial.len() < body.len() {
+                    body.clear();
+                    body.extend_from_slice(&trial);
                 }
             }
         }
         // Exact value remapping handles sparse/full-range byte values even
         // when no individual bit is constant (e.g. bit-replicated samples).
-        let mut seen = [false; 256];
-        for (i, &v) in original.iter().enumerate() {
-            if i & 16383 == 0 {
-                check()?;
-            }
-            seen[v as usize] = true;
-        }
-        let mut values = Vec::new();
-        reserve(&mut values, 256)?;
-        for (v, present) in seen.iter().enumerate() {
-            if *present {
-                values.push(v as u8);
+        let mut values = [0u8; 256];
+        let mut nvalues = 0usize;
+        for (v, &present) in seen.iter().enumerate() {
+            if present {
+                values[nvalues] = v as u8;
+                nvalues += 1;
             }
         }
-        if values.len() < 256 {
-            let bits = (usize::BITS - (values.len() - 1).leading_zeros()) as u8;
-            let mut indices = [0u8; 256];
-            for (i, &v) in values.iter().enumerate() {
-                indices[v as usize] = i as u8;
-            }
-            let mut dictionary = Vec::new();
-            reserve(&mut dictionary, count.checked_add(258).ok_or("plane size")?)?;
-            dictionary.extend_from_slice(&[5, (values.len() - 1) as u8]);
-            dictionary.extend_from_slice(&values);
-            let mut acc = 0u16;
-            let mut used = 0;
-            for (i, &v) in original.iter().enumerate() {
-                if i & 16383 == 0 {
-                    check()?;
+        if nvalues < 256 {
+            let dict_bits = (usize::BITS - (nvalues - 1).leading_zeros()) as u8;
+            let dict_packed_len = 2
+                + nvalues
+                + count
+                    .checked_mul(dict_bits as usize)
+                    .ok_or("plane size")?
+                    .div_ceil(8);
+            let try_dict_packed = dict_packed_len < body.len();
+            if try_dict_packed || packets_enabled {
+                let mut indices = [0u8; 256];
+                for (i, &v) in values[..nvalues].iter().enumerate() {
+                    indices[v as usize] = i as u8;
                 }
-                acc |= u16::from(indices[v as usize]) << used;
-                used += bits;
-                if used >= 8 {
-                    dictionary.push(acc as u8);
-                    acc >>= 8;
-                    used -= 8;
-                }
-            }
-            if used != 0 {
-                dictionary.push(acc as u8);
-            }
-            if dictionary.len() < body.len() {
-                body = dictionary;
-            }
-            if packets_enabled {
-                for (i, (dst, &v)) in data.iter_mut().zip(original).enumerate() {
-                    if i & 16383 == 0 {
-                        check()?;
+                if try_dict_packed {
+                    let mut dictionary = Vec::new();
+                    reserve(&mut dictionary, dict_packed_len)?;
+                    dictionary.extend_from_slice(&[5, (nvalues - 1) as u8]);
+                    dictionary.extend_from_slice(&values[..nvalues]);
+                    let mut acc = 0u16;
+                    let mut used = 0;
+                    for (i, &v) in data.iter().enumerate() {
+                        if i & 16383 == 0 {
+                            check()?;
+                        }
+                        acc |= u16::from(indices[v as usize]) << used;
+                        used += dict_bits;
+                        if used >= 8 {
+                            dictionary.push(acc as u8);
+                            acc >>= 8;
+                            used -= 8;
+                        }
                     }
-                    *dst = indices[v as usize];
+                    if used != 0 {
+                        dictionary.push(acc as u8);
+                    }
+                    if dictionary.len() < body.len() {
+                        body = dictionary;
+                    }
                 }
-                let mut packets = Vec::new();
-                reserve(
-                    &mut packets,
-                    count
-                        .checked_mul(2)
-                        .and_then(|n| n.checked_add(258))
-                        .ok_or("plane size")?,
-                )?;
-                packets.extend_from_slice(&[6, (values.len() - 1) as u8]);
-                packets.extend_from_slice(&values);
-                super::pixels::encode_into(
-                    &data,
-                    shape.width,
-                    Shape {
-                        channels: 1,
-                        bytes: 1,
-                        ..shape
-                    },
-                    &mut packets,
-                    &mut check,
-                )?;
-                if packets.len() < body.len() {
-                    body = packets;
+                if packets_enabled {
+                    remapped.clear();
+                    if remapped.capacity() < count {
+                        reserve(&mut remapped, count)?;
+                    }
+                    for (i, &v) in data.iter().enumerate() {
+                        if i & 16383 == 0 {
+                            check()?;
+                        }
+                        remapped.push(indices[v as usize]);
+                    }
+                    trial.clear();
+                    trial.extend_from_slice(&[6, (nvalues - 1) as u8]);
+                    trial.extend_from_slice(&values[..nvalues]);
+                    super::pixels::encode_into(
+                        &remapped,
+                        shape.width,
+                        plane_shape,
+                        &mut trial,
+                        &mut check,
+                    )?;
+                    if trial.len() < body.len() {
+                        body.clear();
+                        body.extend_from_slice(&trial);
+                    }
                 }
             }
+        }
+        if plane + 1 < n {
+            originals.push(data);
         }
         bodies.push(body);
     }
