@@ -51,9 +51,9 @@ pub(crate) enum AdaptiveMode {
 /// Centralized lossy encoder search policy derived once from [`Effort`] and
 /// [`AdaptiveMode`].
 ///
-/// Every lossy stage (`lossy/mod.rs`, `lossy/superblock/select.rs`,
-/// `lossy/trellis.rs`, `lossy/bounded.rs`) consumes this plan directly instead
-/// of duplicating effort threshold checks.
+/// Every lossy stage (`lossy/encode/`, `lossy/superblock/select/`,
+/// `lossy/trellis/`, `lossy/adaptive_rdo/`, `lossy/bounded/`) consumes this
+/// plan directly instead of duplicating effort threshold checks.
 #[cfg(feature = "encode")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LossyEffortPlan {
@@ -80,6 +80,9 @@ pub(crate) struct LossyEffortPlan {
     /// Closed-loop residual & unfiltered-seam feedback weight for
     /// trellis-lambda AQ (`0.0` = off).
     pub lambda_aq_closed_loop: f32,
+    /// Per-DC-stripe 3-state row-Viterbi 2D-MED DC rate-distortion
+    /// optimization (encoder-only, zero wire/decode overhead).
+    pub dc_rdo: bool,
     /// Base 4x4 split distortion weight.
     pub small_kappa: f32,
 }
@@ -96,6 +99,7 @@ impl Default for LossyEffortPlan {
             two_pass_pilot: false,
             lambda_aq_open: 0.0,
             lambda_aq_closed_loop: 0.0,
+            dc_rdo: false,
             small_kappa: SMALL_KAPPA_DEFAULT,
         }
     }
@@ -146,22 +150,40 @@ impl Effort {
     /// Centralized lossy encoder search policy for this effort and
     /// [`AdaptiveMode`].
     ///
+    /// Monotonic lossy ladder for fixed-8x8 encodes ([`AdaptiveMode::Off`]):
+    /// - `< 9.0` (incl. default `7.5`): `trellis_passes = 0`; pixels unchanged.
+    /// - `9.0..<10.0`: 1-pass AC trellis + open-loop lambda AQ + 2D-MED DC RDO.
+    /// - `10.0`: 2-pass AC trellis + open-loop & closed-loop seam lambda AQ +
+    ///   2D-MED DC RDO.
+    ///
     /// Monotonic lossy ladder for adaptive encodes:
     /// - `< 9.0` (incl. default `7.5`): `trellis_passes = 0`; `map_dp` on for
     ///   [`AdaptiveMode::Explicit`], classic fast superblocks for
     ///   [`AdaptiveMode::Compact`].
-    /// - `9.0..<9.5`: 1-pass merged AC trellis + `map_dp` + open-loop lambda AQ.
+    /// - `9.0..<9.5`: 1-pass merged AC trellis + `map_dp` + open-loop lambda AQ
+    ///   + 2D-MED DC RDO.
     /// - `9.5..<10.0`: 2-pass merged AC trellis + two-pass empirical pilot +
-    ///   open-loop & closed-loop seam lambda AQ (fast mid-tier Pareto rung
-    ///   without per-candidate `trellis_select`).
+    ///   open-loop & closed-loop seam lambda AQ + 2D-MED DC RDO (fast mid-tier
+    ///   Pareto rung without per-candidate `trellis_select`).
     /// - `10.0`: adds per-candidate `trellis_select` (maximum compression).
     #[cfg(feature = "encode")]
     pub(crate) fn lossy_plan(self, mode: AdaptiveMode) -> LossyEffortPlan {
         let table_count_search = self.table_count_search();
         if mode == AdaptiveMode::Off {
+            let trellis_passes = self.trellis_passes();
+            let (lambda_aq_open, lambda_aq_closed_loop, dc_rdo) = if trellis_passes >= 2 {
+                (0.30, 0.18, true)
+            } else if trellis_passes >= 1 {
+                (0.22, 0.0, true)
+            } else {
+                (0.0, 0.0, false)
+            };
             return LossyEffortPlan {
-                trellis_passes: self.trellis_passes(),
+                trellis_passes,
                 table_count_search,
+                lambda_aq_open,
+                lambda_aq_closed_loop,
+                dc_rdo,
                 ..LossyEffortPlan::default()
             };
         }
@@ -175,6 +197,7 @@ impl Effort {
                 two_pass_pilot: true,
                 lambda_aq_open: 0.30,
                 lambda_aq_closed_loop: 0.18,
+                dc_rdo: true,
                 small_kappa: SMALL_KAPPA_ADAPTIVE_TRELLIS,
             }
         } else if self.0 >= ADAPTIVE_PILOT {
@@ -187,6 +210,7 @@ impl Effort {
                 two_pass_pilot: true,
                 lambda_aq_open: 0.30,
                 lambda_aq_closed_loop: 0.18,
+                dc_rdo: true,
                 small_kappa: SMALL_KAPPA_ADAPTIVE_TRELLIS,
             }
         } else if self.0 >= TRELLIS_ONE_PASS {
@@ -199,6 +223,7 @@ impl Effort {
                 two_pass_pilot: false,
                 lambda_aq_open: 0.30,
                 lambda_aq_closed_loop: 0.0,
+                dc_rdo: true,
                 small_kappa: SMALL_KAPPA_ADAPTIVE_TRELLIS,
             }
         } else {
@@ -211,6 +236,7 @@ impl Effort {
                 two_pass_pilot: false,
                 lambda_aq_open: 0.0,
                 lambda_aq_closed_loop: 0.0,
+                dc_rdo: false,
                 small_kappa: SMALL_KAPPA_DEFAULT,
             }
         }

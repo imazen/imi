@@ -20,7 +20,8 @@ fn open_loop_effective_strength(steps: &[[f32; 64]; NCH], strength: f32) -> f64 
 }
 
 /// Computes per-block `(min_q, mean_q, sat_smooth)` features for one 8-pixel
-/// block row from color-converted `planes` (`NCH * 8 * pw`, plane-major).
+/// block row from color-converted `planes` (`NCH * 8 * pw`, plane-major),
+/// observing cancellation inside wide rows.
 pub(in crate::lossy) fn open_loop_row_features(
     planes: &[f32],
     pw: usize,
@@ -29,11 +30,15 @@ pub(in crate::lossy) fn open_loop_row_features(
     min_q: &mut [f32],
     mean_q: &mut [f32],
     sat_smooth: &mut [f32],
-) {
+    stop: &dyn how_far::Stop,
+) -> Result<(), Error> {
     let s1_y = steps[0][1].max(1e-4);
     let s1_x = steps[1][1].max(1e-4);
     let s1_b = steps[2][1].max(1e-4);
     for bx in 0..bw {
+        if bx & 3 == 0 {
+            stop.check().map_err(|_| Error::Cancelled)?;
+        }
         let base_y = bx * 8;
         let mut q_act = [0.0f32; 4];
         for qy in 0..2 {
@@ -84,6 +89,7 @@ pub(in crate::lossy) fn open_loop_row_features(
         let smooth = 1.0 / (1.0 + avg_grad * avg_grad);
         sat_smooth[bx] = (avg_mag / (avg_mag + 8.0)) * smooth;
     }
+    Ok(())
 }
 
 /// Computes raw open-loop perceptual scores for one block row using the 3-row
@@ -187,7 +193,8 @@ pub(in crate::lossy) fn build_open_loop_lambda_map(
                     &mut min_b[off..off + bw],
                     &mut mean_b[off..off + bw],
                     &mut sat_b[off..off + bw],
-                );
+                    stop,
+                )?;
             }
             Ok((min_b, mean_b, sat_b))
         });
@@ -347,7 +354,7 @@ impl OpenLoopLambdaStream {
     ) {
         debug_assert_eq!(by, self.next_by);
         self.next_by += 1;
-        open_loop_row_features(
+        let _ = open_loop_row_features(
             planes,
             pw,
             self.bw,
@@ -355,6 +362,7 @@ impl OpenLoopLambdaStream {
             &mut self.next_min,
             &mut self.next_mean,
             &mut self.next_sat,
+            &how_far::NoPulse,
         );
         if by.is_multiple_of(self.work) {
             self.band_first_mean.extend_from_slice(&self.next_mean);
@@ -488,7 +496,7 @@ impl OpenLoopLambdaModel {
             cursor.extremes.clear();
             rows(by0 + r, &mut cursor.planes, &mut cursor.extremes);
             let off = r * bw;
-            open_loop_row_features(
+            let _ = open_loop_row_features(
                 &cursor.planes,
                 pw,
                 bw,
@@ -496,6 +504,7 @@ impl OpenLoopLambdaModel {
                 &mut cursor.min_q[off..off + bw],
                 &mut cursor.mean_q[off..off + bw],
                 &mut cursor.sat_smooth[off..off + bw],
+                &how_far::NoPulse,
             );
         }
         let next_band_idx = by0 / self.work + 1;

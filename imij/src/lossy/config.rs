@@ -522,15 +522,19 @@ pub(crate) struct LossyConfig {
     /// Exact blocks (8-bit RGB and RGBA only): 8x8 blocks whose estimated
     /// lossless cost is at most this many times their AC bits are coded
     /// losslessly instead (docs/LOSSY.md "Exact blocks"). `None` (default):
-    /// the decode-speed tier decides (`Compact`: 1.5; other tiers and no
-    /// tier: off). `Some(k > 0)`: on with ratio k on any tier; `Some(0.0)`:
-    /// off. Images without a qualifying block encode as without the feature.
+    /// the decode-speed tier decides (`Compact`: 1.5, gated to quality scale
+    /// `>= 60` at effort `>= 9.0` to avoid 4-channel DC overhead at low/mid
+    /// quality; other tiers and no tier: off). `Some(k > 0)`: on with ratio k
+    /// on any tier and quality; `Some(0.0)`: off. Images without a qualifying
+    /// block encode as without the feature.
     pub exact_blocks: Option<f32>,
     /// Allow the rate-priced selector to code color planes as four 4x4 DCTs
     /// (feature `small_transforms`, Compact 0.3). Off by default. Initial
     /// production support requires an explicitly requested Compact tier,
     /// U8 intra images (including intra animation frames and pages), default
-    /// channel layouts, effort below 9 and no AC trellis. Reference-predicted
+    /// channel layouts, effort below 9 and no AC trellis (at effort `>= 9.0`,
+    /// `DecodeSpeed::Compact` and [`Self::adaptive_partitions`] enable 4x4
+    /// splits automatically without setting this flag). Reference-predicted
     /// inputs and other configurations return [`crate::Error::Unsupported`]. Selection may
     /// change decoded pixels at fixed quality and emits the feature only
     /// when a plane is selected. Exact blocks and alpha remain lossless.

@@ -440,6 +440,7 @@ struct MergedStripUnits {
     src: Vec<Option<[[f32; 64]; NCH]>>,
     steps: Vec<[[f32; 64]; NCH]>,
     norms: Vec<[f64; NCH]>,
+    lmuls: Vec<f64>,
     idx: Vec<usize>,
 }
 
@@ -449,23 +450,27 @@ impl MergedStripUnits {
         sc: &StripeCoefs,
         enc: &super::superblock::select::Enc,
         planes2: &[Vec<f32>; 2],
-        pw: usize,
+        args: &StripeRewrite<'_>,
+        by0: usize,
         r0: usize,
         rr: usize,
         bx0: usize,
         sp: &mut [super::superblock::select::Spectra; NCH],
     ) -> Result<Self, Error> {
+        let pw = args.pw;
         let sbw = sc.bw;
         let slots = rr.checked_mul(sbw).ok_or(Error::TooLarge)?;
         let mut src = try_vec(slots, None)?;
         let mut steps = Vec::new();
         let mut norms = Vec::new();
+        let mut lmuls = Vec::new();
         let mut idx = try_vec(slots, usize::MAX)?;
         if sc.modes.is_empty() {
             return Ok(Self {
                 src,
                 steps,
                 norms,
+                lmuls,
                 idx,
             });
         }
@@ -523,6 +528,20 @@ impl MergedStripUnits {
                     }
                     norm[ch] = tot_e / n_parents;
                 }
+                // Use one unified mean lambda multiplier across all frequency
+                // quadrants of a merged superblock (each coded unit `p` is a
+                // frequency quadrant, not a spatial parent).
+                let block_lmul = if args.lambda_map.is_empty() {
+                    1.0
+                } else {
+                    let mut sum = 0.0f64;
+                    for py in 0..s.ph() {
+                        for px in 0..s.pw() {
+                            sum += args.lambda_at(by0 + r0 + py0 + py, bx0 + gx + px0 + px);
+                        }
+                    }
+                    sum / n_parents
+                };
                 for py in 0..s.ph() {
                     for px in 0..s.pw() {
                         let p = py * s.pw() + px;
@@ -542,6 +561,7 @@ impl MergedStripUnits {
                         src[slot] = Some(usrc);
                         try_push(&mut steps, usteps)?;
                         try_push(&mut norms, norm)?;
+                        try_push(&mut lmuls, block_lmul)?;
                     }
                 }
             }
@@ -550,6 +570,7 @@ impl MergedStripUnits {
             src,
             steps,
             norms,
+            lmuls,
             idx,
         })
     }
@@ -707,7 +728,7 @@ pub(in crate::lossy) fn rewrite_stripe_lambda(
                 let bx0 = g * args.group_bw;
                 let sbw = sc.bw;
                 let merged =
-                    MergedStripUnits::build(sc, &enc, &planes2, args.pw, r0, rr, bx0, &mut sp)?;
+                    MergedStripUnits::build(sc, &enc, &planes2, args, by0, r0, rr, bx0, &mut sp)?;
                 for dy in 0..rr {
                     let r = r0 + dy;
                     if cfg!(debug_assertions) && args.pass_index == 0 {
@@ -722,7 +743,7 @@ pub(in crate::lossy) fn rewrite_stripe_lambda(
                             let mut coupled = *args.set;
                             let (set, tpw) =
                                 args.block_settings(pass, by0 + r, bx0 + x, &mut coupled);
-                            let lmul = args.lambda_at(by0 + r, bx0 + x);
+                            let lmul = merged.lmuls[mi];
                             let at = |ch: usize| -> &[f32] { &usrc[ch] };
                             let hw = dispatch_block_norm(
                                 sc,
