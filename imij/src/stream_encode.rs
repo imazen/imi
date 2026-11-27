@@ -472,9 +472,10 @@ impl NativeGroupEncodeSession {
         if columns.checked_mul(rows).ok_or(Error::TooLarge)? > u32::MAX as usize {
             return Err(Error::TooLarge);
         }
-        // Padding to sixteen lanes, live input/residual/symbol/renormalization
-        // vectors and their growth capacities, plus fixed model/header space.
-        // No term depends on the total image or the number of units.
+        // Per-slot buffers (planes, residuals, optional near-lossless scratch,
+        // streams, assembled body) plus one slot-reused symbol/rANS scratch
+        // pass (does not multiply by slots) and fixed model/header space.
+        // No term depends on total image height or the number of units.
         let group = if cfg.quick_pixels {
             columns
                 .checked_mul(rows)
@@ -488,12 +489,26 @@ impl NativeGroupEncodeSession {
                 })
                 .ok_or(Error::TooLarge)?
         } else {
-            columns
+            let samples = columns
                 .checked_add(15)
                 .and_then(|w| w.checked_mul(rows))
-                .and_then(|n| n.checked_mul(info.channels.count()))
-                .and_then(|n| n.checked_mul(info.sample.words()))
-                .and_then(|n| n.checked_mul(512))
+                .ok_or(Error::TooLarge)?;
+            let slots = info
+                .channels
+                .count()
+                .checked_mul(info.sample.words())
+                .ok_or(Error::TooLarge)?;
+            let total_samples = samples.checked_mul(slots).ok_or(Error::TooLarge)?;
+            let per_slot = if near_requested { 56usize } else { 48usize };
+            let row_scratch = columns
+                .checked_mul(slots)
+                .and_then(|n| n.checked_mul(16))
+                .and_then(|n| n.checked_add(columns.checked_mul(16)?))
+                .ok_or(Error::TooLarge)?;
+            total_samples
+                .checked_mul(per_slot)
+                .and_then(|n| n.checked_add(samples.checked_mul(64)?))
+                .and_then(|n| n.checked_add(row_scratch))
                 .ok_or(Error::TooLarge)?
         };
         let mut metadata = 4096usize;
