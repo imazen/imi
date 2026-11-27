@@ -152,6 +152,183 @@ impl FloatQuantization {
         ))
     }
 
+    /// Plans a quantization from known or pre-scanned value bounds without
+    /// holding the full float array in memory, for streaming band-by-band
+    /// quantization via [`Self::quantize_into`] into a bounded group encoder.
+    ///
+    /// Pass `has_missing = true` if any streamed chunk may contain `NaN` or
+    /// `nodata` (reserving stored `0` for missing values; an all-missing
+    /// stream can pass `(0.0, 0.0, true, max_error, near)`). Picks the
+    /// tightest grid margin whose binary64 rounding stays within `max_error`
+    /// across `[min, max]`.
+    pub fn from_bounds(
+        min: f64,
+        max: f64,
+        has_missing: bool,
+        max_error: f64,
+        near: u32,
+    ) -> Result<Self, Error> {
+        if !(max_error.is_finite() && max_error > 0.0) {
+            return Err(Error::InvalidInput("max_error must be finite and positive"));
+        }
+        if !(min.is_finite() && max.is_finite()) || min > max {
+            return Err(Error::InvalidInput("bounds must be finite with min <= max"));
+        }
+        let base = if has_missing { 2 * near as u64 + 1 } else { 0 };
+        let mag = min.abs().max(max.abs()).max(max_error);
+        for margin in MARGINS {
+            let step = (max_error / (near as f64 + 0.5)).min(f64::MAX) * (1.0 - margin);
+            if !step.is_finite() || step <= 0.0 {
+                return Err(Error::InvalidInput(
+                    "max_error too small: the grid step underflows to zero",
+                ));
+            }
+            let top = ((max - min) / step).round() + base as f64 + near as f64;
+            if !top.is_finite() || top > u32::MAX as f64 {
+                return Err(Error::InvalidInput(
+                    "the values span more than 2^32 grid steps at this max_error",
+                ));
+            }
+            let sample = if top <= u16::MAX as f64 {
+                SampleType::U16
+            } else {
+                SampleType::U32
+            };
+            let offset = min - step * base as f64;
+            if !offset.is_finite() {
+                return Err(Error::InvalidInput(
+                    "max_error too large: the offset below the valid values overflows",
+                ));
+            }
+            if max > min && margin * max_error < 4.0 * f64::EPSILON * mag {
+                continue;
+            }
+            let q = Self {
+                slope: step,
+                offset,
+                valid_min: has_missing.then_some(near as f64 + 1.0),
+                near,
+                sample,
+            };
+            let mid = 0.5 * min + 0.5 * max;
+            if q.encode_valid(min, base, max_error).is_some()
+                && q.encode_valid(max, base, max_error).is_some()
+                && q.encode_valid(mid, base, max_error).is_some()
+            {
+                return Ok(q);
+            }
+        }
+        Err(Error::InvalidInput(
+            "max_error too small for the values' magnitude (binary64 rounding)",
+        ))
+    }
+
+    /// Quantizes one slice or streaming band into `out`, reusing `out`'s
+    /// buffer capacity without reallocating once sized for the band.
+    ///
+    /// Verifies every sample against the exact `slope * (v ± near) + offset`
+    /// binary64 bound. On error, `out` is cleared and an [`Error::InvalidInput`]
+    /// or [`Error::TooLarge`] is returned.
+    pub fn quantize_into<T: Copy + Into<f64>>(
+        &self,
+        values: &[T],
+        nodata: Option<f64>,
+        max_error: f64,
+        out: &mut Vec<u8>,
+    ) -> Result<(), Error> {
+        out.clear();
+        if !(max_error.is_finite() && max_error > 0.0) {
+            return Err(Error::InvalidInput("max_error must be finite and positive"));
+        }
+        if !(self.slope.is_finite() && self.slope > 0.0 && self.offset.is_finite()) {
+            return Err(Error::InvalidInput("invalid quantization parameters"));
+        }
+        if self
+            .valid_min
+            .is_some_and(|m| !m.is_finite() || m <= self.near as f64)
+        {
+            return Err(Error::InvalidInput("invalid quantization valid_min"));
+        }
+        if !matches!(self.sample, SampleType::U16 | SampleType::U32) {
+            return Err(Error::InvalidInput(
+                "quantization sample must be U16 or U32",
+            ));
+        }
+        let has_missing = self.valid_min.is_some();
+        let base = if has_missing {
+            2 * self.near as u64 + 1
+        } else {
+            0
+        };
+        let bytes = self.sample.bytes();
+        let cap = if bytes == 2 {
+            u16::MAX as u64
+        } else {
+            u32::MAX as u64
+        };
+        if base > cap {
+            return Err(Error::InvalidInput("near exceeds sample range"));
+        }
+        let len = values.len().checked_mul(bytes).ok_or(Error::TooLarge)?;
+        out.try_reserve_exact(len).map_err(|_| Error::TooLarge)?;
+        let missing = |x: f64| x.is_nan() || nodata.is_some_and(|n| x == n);
+        for &v in values {
+            let x: f64 = v.into();
+            let s = if missing(x) {
+                if !has_missing {
+                    out.clear();
+                    return Err(Error::InvalidInput(
+                        "missing sample requires a quantization with valid_min",
+                    ));
+                }
+                0
+            } else if x.is_infinite() {
+                out.clear();
+                return Err(Error::InvalidInput("infinite sample"));
+            } else {
+                let Some(s) = self.encode_valid(x, base, max_error) else {
+                    out.clear();
+                    return Err(Error::InvalidInput(
+                        "sample outside quantization range or error bound",
+                    ));
+                };
+                s
+            };
+            match bytes {
+                2 => out.extend_from_slice(&(s as u16).to_ne_bytes()),
+                _ => out.extend_from_slice(&s.to_ne_bytes()),
+            }
+        }
+        Ok(())
+    }
+
+    fn encode_valid(&self, x: f64, base: u64, max_error: f64) -> Option<u32> {
+        let cap = if self.sample == SampleType::U16 {
+            u16::MAX as i64
+        } else {
+            u32::MAX as i64
+        };
+        let lowest = base as i64;
+        let near = self.near as i64;
+        let q_f = ((x - self.offset) / self.slope).round();
+        if !q_f.is_finite() || q_f < -1.0 || q_f > (cap + 1) as f64 {
+            return None;
+        }
+        let q = q_f as i64;
+        let ok = |v: i64| {
+            self.valid_min.is_none_or(|m| ((v - near) as f64) >= m)
+                && [v - near, v + near]
+                    .iter()
+                    .all(|&w| (self.slope * w as f64 + self.offset - x).abs() <= max_error)
+        };
+        // Also test `lowest` when offset cancellation (`min - step * base == min`)
+        // maps a constant-range sample to index 0 while `base` reconstructs exactly.
+        [q, q - 1, q + 1, lowest]
+            .into_iter()
+            .find(|&c| c >= lowest && c <= cap && ok(c))
+            .map(|c| c as u32)
+    }
+
     /// Stored integers for `values`, each checked against the bound for
     /// every integer a decoder may return; `None` if a sample fails.
     fn fill<T: Copy + Into<f64>>(
@@ -360,5 +537,80 @@ mod tests {
         // Wide but representable: U32.
         let (q, _) = FloatQuantization::quantize(&[0.0, 1e6], None, 1e-3, 0).unwrap();
         assert_eq!(q.sample, SampleType::U32);
+    }
+
+    #[test]
+    fn from_bounds_and_quantize_into_cover_extremes_and_reject_invalid() {
+        let tiny = f64::from_bits(1);
+        let huge = f64::MAX;
+        for (v, e, near) in [
+            (vec![1.0; 4], tiny, 0),
+            (vec![0.0, tiny], tiny, 0),
+            (vec![0.0, tiny, f64::NAN], tiny, 0),
+            (vec![0.0, tiny], tiny, 1),
+            (vec![-1.0, 0.0, 1e300], huge, 0),
+            (vec![-1.0, 0.0, 1e300], huge, 1),
+            (vec![-1.0, f64::NAN, 1e300], huge, 0),
+            (vec![0.0, huge / 2.0], huge / 2.0, 0),
+            (vec![f64::NAN; 3], tiny, 0),
+            (vec![-100.0, 0.0, 50.0, f64::NAN, 250.0], 0.01, 4),
+            (vec![0.0, 1e6], 1e-3, 0),
+            // Constant range where `min - step * base` rounds back to `min`.
+            (vec![1.0, 1.0, f64::NAN, 1.0], 1e-20, 1),
+        ] {
+            let (mut lo, mut hi, mut has_missing) = (f64::INFINITY, f64::NEG_INFINITY, false);
+            for &x in &v {
+                if x.is_nan() {
+                    has_missing = true;
+                } else {
+                    lo = lo.min(x);
+                    hi = hi.max(x);
+                }
+            }
+            if lo > hi {
+                (lo, hi) = (0.0, 0.0);
+            }
+            let q = FloatQuantization::from_bounds(lo, hi, has_missing, e, near).unwrap();
+            let mut out = Vec::new();
+            q.quantize_into(&v, None, e, &mut out).unwrap();
+            let top = if q.sample == SampleType::U16 {
+                u16::MAX as i64
+            } else {
+                u32::MAX as i64
+            };
+            for (i, &x) in v.iter().enumerate() {
+                let s = stored(&q, &out, i) as i64;
+                for w in (s - near as i64).max(0)..=(s + near as i64).min(top) {
+                    match q.value(w as u32) {
+                        None => assert!(x.is_nan(), "valid x={x} lost"),
+                        Some(y) => {
+                            assert!(!x.is_nan(), "missing x decoded as {y}");
+                            assert!((y - x).abs() <= e, "x={x} y={y} e={e} near={near}");
+                        }
+                    }
+                }
+            }
+        }
+        // Invalid bounds and manually mutated invalid quantizations fail cleanly.
+        assert!(FloatQuantization::from_bounds(2.0, 1.0, false, 0.1, 0).is_err());
+        assert!(FloatQuantization::from_bounds(f64::NEG_INFINITY, 1.0, false, 0.1, 0).is_err());
+        assert!(FloatQuantization::from_bounds(0.0, 1e30, false, 1e-3, 0).is_err());
+        let mut bad = FloatQuantization::from_bounds(0.0, 10.0, false, 0.1, 0).unwrap();
+        bad.sample = SampleType::U8;
+        let mut out = vec![1, 2, 3];
+        assert!(bad.quantize_into(&[1.0f32], None, 0.1, &mut out).is_err());
+        assert!(out.is_empty());
+        // Mutated `valid_min <= near` would let missing code 0 decode as valid.
+        let mut bad_vm = FloatQuantization::from_bounds(0.0, 10.0, true, 0.1, 2).unwrap();
+        for vm in [0.0, 1.0, 2.0, f64::NAN] {
+            bad_vm.valid_min = Some(vm);
+            let mut out = vec![9, 9];
+            assert!(
+                bad_vm
+                    .quantize_into(&[1.0f32], None, 0.1, &mut out)
+                    .is_err()
+            );
+            assert!(out.is_empty());
+        }
     }
 }
