@@ -315,3 +315,94 @@ fn bounded_groups_support_near_lossless_within_exact_bounds() {
         Err(Error::Unsupported(_))
     ));
 }
+
+#[test]
+fn check_working_admits_1024x64_rgb8_in_20mib_and_bounds_worst_case_peak_allocs() {
+    // Tightened per-buffer working estimate admits 1024x64 RGB8 under 20 MiB
+    // (previously required >100 MiB at 512 B/sample, ~118 MiB with V4 framing).
+    let wide_info = ImageInfo::new(1024, 64, Channels::Rgb, SampleType::U8);
+    let wide_cfg = imij::ImiEncoderConfig::lossless().with_row_groups(imij::RowGroups::new(
+        1024,
+        64,
+        20 << 20,
+    ));
+    GroupEncodeSession::new(wide_info, &Metadata::default(), &wide_cfg).unwrap();
+
+    // Measure live peak allocations on worst-case incompressible random groups
+    // (including wide 1-row Gray/U32 groups with alternating 0 / 2^30 residuals)
+    // across sample depths, channel counts, and near-lossless mode, verifying
+    // peak heap stays strictly below the admitted working budget.
+    let cases = [
+        (Channels::Gray, SampleType::U8, 256u32, 32u32, 0u32, false),
+        (Channels::Rgb, SampleType::U8, 256, 32, 0, false),
+        (Channels::Rgb, SampleType::U8, 256, 32, 4, false),
+        (Channels::Rgba, SampleType::U16, 128, 32, 0, false),
+        (Channels::Gray, SampleType::F32, 256, 32, 0, false),
+        (Channels::Rgba, SampleType::F32, 128, 16, 0, false),
+        (Channels::Gray, SampleType::F64, 128, 32, 0, false),
+        (Channels::Gray, SampleType::U32, 262_160, 1, 0, true),
+        (Channels::Gray, SampleType::U32, 65_536, 1, 4, true),
+    ];
+    for (channels, sample, cols, rows, near, wide_u32_spike) in cases {
+        let info = ImageInfo::new(cols, rows * 2, channels, sample);
+        let bpp = info.bytes_per_pixel();
+        let stride = cols as usize * bpp;
+        let mut pixels = vec![0u8; stride * rows as usize * 2];
+        if wide_u32_spike {
+            for (i, chunk) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let v: u32 = if i & 1 == 0 { 0 } else { 1 << 30 };
+                *chunk = v.to_ne_bytes();
+            }
+        } else {
+            let mut s = 0x9e37_79b9_7f4a_7c15u64 ^ (cols as u64) ^ ((near as u64) << 8);
+            for b in &mut pixels {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                *b = s as u8;
+            }
+        }
+        // Binary-search the exact admitted floor for this geometry and config.
+        let make_cfg = |budget: usize| {
+            imij::ImiEncoderConfig::lossless()
+                .tune_lossless(|t| t.max_error = [near; 4])
+                .with_row_groups(imij::RowGroups::new(cols, rows, budget))
+        };
+        let (mut lo, mut hi) = (0usize, 128 << 20);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if GroupEncodeSession::new(info.clone(), &Metadata::default(), &make_cfg(mid)).is_ok() {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let admitted = lo;
+        assert!(
+            GroupEncodeSession::new(info.clone(), &Metadata::default(), &make_cfg(admitted - 1))
+                .is_err()
+        );
+        let cfg = make_cfg(admitted);
+        let stats = allocation_counter::measure(|| {
+            let mut sess =
+                GroupEncodeSession::new(info.clone(), &Metadata::default(), &cfg).unwrap();
+            while !sess.is_finished() {
+                if !sess.output().is_empty() {
+                    let n = sess.output().len();
+                    sess.consume_output(n).unwrap();
+                } else {
+                    let r = sess.next_group().unwrap();
+                    let at = r.y as usize * stride + r.x as usize * bpp;
+                    sess.push_group(&pixels[at..], stride).unwrap();
+                }
+            }
+            sess.finish().unwrap();
+        });
+        assert!(
+            stats.bytes_max > 0 && stats.bytes_max <= admitted as u64,
+            "{channels:?} {sample:?} {cols}x{rows} near={near}: peak {} vs admitted {}",
+            stats.bytes_max,
+            admitted
+        );
+    }
+}

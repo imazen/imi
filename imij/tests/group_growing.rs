@@ -11,7 +11,7 @@ const BUDGET: usize = 32 << 20;
 #[test]
 fn growing_admits_full_group_geometry_before_scratch_or_output() {
     let meta = Metadata::default();
-    for (columns, rows) in [(32, 64), (2, u32::MAX)] {
+    for (columns, rows) in [(256, 64), (2, u32::MAX)] {
         let info = ImageInfo::new(columns, 0, Channels::Gray, SampleType::U8);
         let mut output = Vec::new();
         let mut data = Cursor::new(b"data".to_vec());
