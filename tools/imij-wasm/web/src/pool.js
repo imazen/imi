@@ -26,7 +26,18 @@
 import { relaxedSimdSupported } from './relaxed.js';
 import {compiledModule} from './compiled-module.js';
 
-const VARIANTS = ['simd', 'threads', 'relaxed', 'relaxed-threads'];
+const VARIANTS = [
+  'simd',
+  'threads',
+  'relaxed',
+  'relaxed-threads',
+  'polyfill',
+  'polyfill-relaxed',
+  'polyfill-anim',
+  'polyfill-anim-relaxed',
+];
+
+export const POOL_PROFILES = ['full', 'polyfill', 'polyfill-anim'];
 
 export class DecoderPool {
   /**
@@ -34,19 +45,33 @@ export class DecoderPool {
    * @param {object} [opts]
    * @param {number} [opts.maxWorkers] - cap N on the simd-variant pool size (ignored on isolated pages).
    * @param {URL|string} [opts.workerUrl] - override for `worker.js` (tests point this at a fixture).
-   * @param {'auto'|'threads'|'simd'|'relaxed'|'relaxed-threads'} [opts.variant] - package policy;
-   *   'auto' uses relaxed SIMD when the probe validates, `threads` when the page is cross-origin
-   *   isolated (SharedArrayBuffer available) and `simd` otherwise.
+   * @param {'full'|'polyfill'|'polyfill-anim'} [opts.profile] - bundle profile when `variant === 'auto'`:
+   *   'full' (default) includes gigapixel/range/archives; 'polyfill' is the compact up-to-16bpp still
+   *   bundle (lossy + lossless + alpha + Display-P3); 'polyfill-anim' adds animation/multi-page decoding.
+   * @param {'auto'|'threads'|'simd'|'relaxed'|'relaxed-threads'|'polyfill'|'polyfill-relaxed'|'polyfill-anim'|'polyfill-anim-relaxed'} [opts.variant] - package policy.
    * @param {number} [opts.threads] - rayon pool size of a threads-variant worker.
    */
-  constructor({ maxWorkers = 4, workerUrl, variant = 'auto', threads, allowOversubscription = false } = {}) {
+  constructor({ maxWorkers = 4, workerUrl, variant = 'auto', profile = 'full', threads, allowOversubscription = false } = {}) {
+    if (!POOL_PROFILES.includes(profile)) throw new Error(`unknown profile ${profile}`);
+    this.profile = profile;
     this.isolated = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated === true;
     this.relaxedSupported = relaxedSimdSupported();
-    const strict = this.isolated ? 'threads' : 'simd';
-    const relaxed = this.isolated ? 'relaxed-threads' : 'relaxed';
+    let strict;
+    let relaxed;
+    if (profile === 'polyfill') {
+      strict = 'polyfill';
+      relaxed = 'polyfill-relaxed';
+    } else if (profile === 'polyfill-anim') {
+      strict = 'polyfill-anim';
+      relaxed = 'polyfill-anim-relaxed';
+    } else {
+      strict = this.isolated ? 'threads' : 'simd';
+      relaxed = this.isolated ? 'relaxed-threads' : 'relaxed';
+    }
     const resolved = variant === 'auto' ? (this.relaxedSupported ? relaxed : strict) : variant;
     if (!VARIANTS.includes(resolved)) throw new Error(`unknown variant ${resolved}`);
     this.variant = resolved;
+    this.capabilities = null;
     const hwc = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
     this.size = resolved.includes('threads') ? 1 : Math.max(1, Math.min(maxWorkers, allowOversubscription ? maxWorkers : hwc - 1));
     this.workers = [];
@@ -78,7 +103,14 @@ export class DecoderPool {
         if (msg.type === 'ready') {
           w.removeEventListener('message', onFirst);
           this._readySettlers.delete(w);
-          resolve({ ok: true, variant: msg.variant, tier: msg.tier, threads: msg.threads });
+          if (msg.capabilities) this.capabilities = msg.capabilities;
+          resolve({
+            ok: true,
+            variant: msg.variant,
+            tier: msg.tier,
+            threads: msg.threads,
+            capabilities: msg.capabilities ?? null,
+          });
         } else if (msg.type === 'ready-error') {
           w.removeEventListener('message', onFirst);
           this._readySettlers.delete(w);
@@ -222,8 +254,38 @@ export class DecoderPool {
       height: m.height,
       channels: m.channels,
       sample: m.sample,
+      cicp: m.cicp ?? null,
+      colorSpace: m.colorSpace ?? 'srgb',
       pixels: m.pixels ?? null,
       rgba: m.rgba ?? null,
+      timings: { ...m.timings, queued: m.queued },
+    }));
+  }
+
+  /**
+   * Decode an imij stream and re-encode off-main-thread to uncompressed BMP or
+   * uncompressed store-mode PNG bytes (`Uint8Array`) ready for `new Blob([bytes], { type })`.
+   */
+  decodeToBlobBytes(stream, opts = {}) {
+    const buf = snapshotView(stream);
+    const msg = {
+      type: 'blob',
+      stream: buf,
+      threads: opts.threads,
+      format: opts.format || 'png',
+      encoder: opts.encoder || 'wasm',
+      embedIcc: opts.embedIcc !== false,
+      includeIccp: opts.includeIccp !== false,
+    };
+    return this._post(msg, opts, ArrayBuffer.isView(stream) ? [buf] : []).then((m) => ({
+      width: m.width,
+      height: m.height,
+      channels: m.channels,
+      sample: m.sample,
+      cicp: m.cicp ?? null,
+      colorSpace: m.colorSpace ?? 'srgb',
+      bytes: m.bytes,
+      mime: m.mime,
       timings: { ...m.timings, queued: m.queued },
     }));
   }
@@ -250,6 +312,8 @@ export class DecoderPool {
       height: m.height,
       channels: m.channels,
       sample: m.sample,
+      cicp: m.cicp ?? null,
+      colorSpace: m.colorSpace ?? 'srgb',
       pixels: m.pixels ?? null,
       rgba: m.rgba ?? null,
       pixelChecksum: m.pixelChecksum,
@@ -274,8 +338,37 @@ export class DecoderPool {
       height: m.height,
       channels: m.channels,
       sample: m.sample,
+      cicp: m.cicp ?? null,
+      colorSpace: m.colorSpace ?? 'srgb',
       pixels: m.pixels ?? null,
       headers: m.headers,
+      kind: m.kind,
+      timings: { ...m.timings, queued: m.queued },
+    }));
+  }
+
+  /**
+   * Decode every frame of an animation or multi-page stream into concatenated
+   * 8-bit RGBA preview frames (`Uint8ClampedArray`) with per-frame dimensions
+   * and frame delays in milliseconds (`durationsMs`). Requires the
+   * `polyfill-anim` or `full` bundle.
+   */
+  decodeFramesRgba(stream, opts = {}) {
+    const buf = snapshotView(stream);
+    const msg = { type: 'frames-rgba', stream: buf, threads: opts.threads };
+    return this._post(msg, opts, ArrayBuffer.isView(stream) ? [buf] : []).then((m) => ({
+      width: m.width,
+      height: m.height,
+      channels: m.channels,
+      sample: m.sample,
+      cicp: m.cicp ?? null,
+      colorSpace: m.colorSpace ?? 'srgb',
+      rgba: m.rgba,
+      frameCount: m.frameCount,
+      frameWidths: m.frameWidths,
+      frameHeights: m.frameHeights,
+      durationsMs: m.durationsMs,
+      frameColorSpaces: m.frameColorSpaces ?? null,
       kind: m.kind,
       timings: { ...m.timings, queued: m.queued },
     }));
@@ -287,7 +380,9 @@ export class DecoderPool {
       size: this.size,
       allocatedWorkers: this.workers.length,
       threads: this.threads,
+      profile: this.profile,
       variant: this.variant,
+      capabilities: this.capabilities,
       relaxedSupported: this.relaxedSupported,
       isolated: this.isolated,
       inflight: this._pending.size,

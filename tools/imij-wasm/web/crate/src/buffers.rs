@@ -1,10 +1,10 @@
 //! Browser-owned allocations obey the decoder's default output limits before
 //! allocation, including padded canvases and the concatenated frame result.
 use imij::Error;
-#[cfg(any(feature = "full", test))]
+#[cfg(any(feature = "full", feature = "animations", feature = "threads", test))]
 use imij::{ImageInfo, Limits};
 
-#[cfg(any(feature = "full", test))]
+#[cfg(any(feature = "full", feature = "animations", feature = "threads", test))]
 pub(super) fn layout(info: &ImageInfo, padding: usize) -> Result<(usize, usize), Error> {
     let pixels = u64::from(info.width) * u64::from(info.height);
     let row = (info.width as usize)
@@ -27,13 +27,27 @@ pub(super) fn filled(size: usize, value: u8) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-#[cfg(any(feature = "full", test))]
+#[cfg(any(feature = "full", feature = "animations", test))]
 pub(super) fn reserve_result(out: &mut Vec<u8>, additional: usize) -> Result<(), Error> {
     let size = out.len().checked_add(additional).ok_or(Error::TooLarge)?;
     if size as u64 > Limits::DEFAULT.max_bytes {
         return Err(Error::TooLarge);
     }
     out.try_reserve(additional).map_err(|_| Error::TooLarge)
+}
+
+#[cfg(any(feature = "full", feature = "animations", test))]
+pub(super) fn try_push_bounded<T>(
+    out: &mut Vec<T>,
+    value: T,
+    max_items: usize,
+) -> Result<(), Error> {
+    if out.len() >= max_items {
+        return Err(Error::TooLarge);
+    }
+    out.try_reserve(1).map_err(|_| Error::TooLarge)?;
+    out.push(value);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -60,5 +74,10 @@ mod tests {
             reserve_result(&mut result, usize::MAX),
             Err(Error::TooLarge)
         );
+        let mut items = Vec::new();
+        assert_eq!(try_push_bounded(&mut items, 1u32, 2), Ok(()));
+        assert_eq!(try_push_bounded(&mut items, 2u32, 2), Ok(()));
+        assert_eq!(try_push_bounded(&mut items, 3u32, 2), Err(Error::TooLarge));
+        assert_eq!(items, [1, 2]);
     }
 }

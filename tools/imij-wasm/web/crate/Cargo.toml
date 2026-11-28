@@ -17,6 +17,11 @@ crate-type = ["cdylib", "rlib"]
 default = ["full"]
 # General image, sequence and archive bindings. The Explorer needs only pyramids.
 full = ["dep:garb", "dep:imij-set", "near-lossless"]
+# Compact still-image browser polyfill: V4 lossy & lossless up to 16bpp
+# (U8, U16, F16) with full alpha & Display-P3, omitting gigapixel range/pyramid/archive code.
+polyfill = ["dep:garb"]
+# Composable animation / multi-page decoder (`decodeFrames`, `decodeFramesRgba`) on top of `polyfill`.
+animations = ["polyfill"]
 # Optional import of V2 and V3 images. The Explorer catalog is entirely V4.
 v3 = ["imij/v3"]
 extended = ["imij/extended"]
@@ -57,6 +62,10 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 debug = false
+
+[profile.wasm-polyfill]
+inherits = "wasm-release"
+opt-level = "z"
 
 # Separate workspaces must resolve the same pixel types as zencodec.
 [patch.crates-io]

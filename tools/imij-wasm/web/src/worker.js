@@ -1,4 +1,5 @@
 import {requestModule} from './compiled-module.js';
+import {encodeBmpJs, encodeStorePngJs} from './image-encoders.js';
 // imij decode worker: one module Worker owns one wasm module instance.
 //
 // Package selection: `?variant=threads|simd` on the worker URL (set by
@@ -25,7 +26,16 @@ import {requestModule} from './compiled-module.js';
 
 const isolated = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated === true;
 const forcedVariant = new URLSearchParams(self.location.search).get('variant');
-const VARIANTS = ['simd', 'threads', 'relaxed', 'relaxed-threads'];
+const VARIANTS = [
+  'simd',
+  'threads',
+  'relaxed',
+  'relaxed-threads',
+  'polyfill',
+  'polyfill-relaxed',
+  'polyfill-anim',
+  'polyfill-anim-relaxed',
+];
 const variant = VARIANTS.includes(forcedVariant)
   ? forcedVariant
   : isolated ? 'threads' : 'simd';
@@ -71,7 +81,8 @@ const ready = (async () => {
   try {
     mod = await loadPackage(variant);
     const threads = variant.includes('threads') ? mod.rayonThreads() : 1;
-    self.postMessage({ type: 'ready', variant, tier: mod.simdTier(), threads });
+    const capabilities = typeof mod.capabilities === 'function' ? mod.capabilities() : null;
+    self.postMessage({ type: 'ready', variant, tier: mod.simdTier(), threads, capabilities });
   } catch (err) {
     mod = null;
     self.postMessage({ type: 'ready-error', variant, message: String((err && err.message) || err) });
@@ -86,14 +97,80 @@ async function run(msg) {
   let r;
   let transfer;
   if (msg.type === 'region') {
+    const fn = msg.rgba ? mod.decodeRegionRgba : mod.decodeRegion;
+    if (typeof fn !== 'function') {
+      throw new Error('region decoding requires the full bundle (disabled in polyfill profile)');
+    }
     const { x, y, width, height } = msg.rect;
-    r = msg.rgba
-      ? mod.decodeRegionRgba(bytes, x, y, width, height, threads)
-      : mod.decodeRegion(bytes, x, y, width, height, threads);
+    r = fn(bytes, x, y, width, height, threads);
     transfer = [(msg.rgba ? r.rgba : r.pixels).buffer];
   } else if (msg.type === 'frames') {
+    if (typeof mod.decodeFrames !== 'function') {
+      throw new Error('sequence decoding requires the polyfill-anim or full bundle');
+    }
     r = mod.decodeFrames(bytes, threads, msg.padding || 0);
     transfer = [r.pixels.buffer];
+  } else if (msg.type === 'frames-rgba') {
+    if (typeof mod.decodeFramesRgba !== 'function') {
+      throw new Error('animation decoding requires the polyfill-anim or full bundle');
+    }
+    r = mod.decodeFramesRgba(bytes, threads);
+    transfer = [
+      r.rgba.buffer,
+      r.frameWidths.buffer,
+      r.frameHeights.buffer,
+      r.durationsMs.buffer,
+    ];
+  } else if (msg.type === 'blob') {
+    const fmt = msg.format || 'png';
+    const encoder = msg.encoder || 'wasm';
+    if (encoder === 'wasm' && fmt === 'bmp' && typeof mod.decodeToBmp === 'function') {
+      r = mod.decodeToBmp(bytes, threads, msg.embedIcc !== false);
+      transfer = [r.bytes.buffer];
+    } else if (encoder === 'wasm' && fmt === 'png' && typeof mod.decodeToPng === 'function') {
+      r = mod.decodeToPng(bytes, threads, msg.includeIccp !== false);
+      transfer = [r.bytes.buffer];
+    } else {
+      // JS re-encode path (for direct JS-vs-Wasm speed comparison): decode RGB8 directly when opaque.
+      const tDec0 = performance.now();
+      const raw = mod.decode(bytes, threads);
+      let pix = raw.pixels;
+      let ch = 3;
+      if (!(raw.channels === 'Rgb' && raw.sample === 'U8')) {
+        const rgbaRes = mod.decodeRgba(bytes, threads);
+        pix = rgbaRes.rgba;
+        ch = 4;
+      }
+      const tDec1 = performance.now();
+      const encoded = fmt === 'bmp'
+        ? encodeBmpJs(pix, raw.width, raw.height, {
+            channels: ch,
+            displayP3: raw.colorSpace === 'display-p3',
+            embedIcc: msg.embedIcc !== false,
+          })
+        : encodeStorePngJs(pix, raw.width, raw.height, {
+            channels: ch,
+            cicp: raw.cicp,
+            includeIccp: msg.includeIccp !== false,
+          });
+      const tEnc1 = performance.now();
+      r = {
+        width: raw.width,
+        height: raw.height,
+        channels: raw.channels,
+        sample: raw.sample,
+        bytesPerPixel: raw.bytesPerPixel,
+        cicp: raw.cicp,
+        colorSpace: raw.colorSpace,
+        bytes: encoded,
+        mime: fmt === 'bmp' ? 'image/bmp' : 'image/png',
+        threads: raw.threads,
+        decodeMs: tDec1 - tDec0,
+        encodeMs: tEnc1 - tDec1,
+        ms: tEnc1 - tDec0,
+      };
+      transfer = [encoded.buffer];
+    }
   } else if (msg.rgba) {
     r = mod.decodeRgba(bytes, threads);
     transfer = [r.rgba.buffer];
@@ -108,7 +185,15 @@ async function run(msg) {
     type: 'result',
     id: msg.id,
     ...r,
-    timings: { total: t2 - t0, queueWait: 0, decode: t2 - t1, wasmMs: r.ms, variant, tier: mod.simdTier() },
+    timings: {
+      total: t2 - t0,
+      queueWait: 0,
+      decode: r.decodeMs ?? (t2 - t1),
+      encode: r.encodeMs ?? 0,
+      wasmMs: r.ms,
+      variant,
+      tier: mod.simdTier(),
+    },
   };
   self.postMessage(out, transfer);
 }

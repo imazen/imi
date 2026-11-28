@@ -8,13 +8,15 @@ use wasm_bindgen::prelude::*;
 const MAX_ENTRIES: u32 = 128;
 const MAX_PAYLOAD: usize = 32 << 20;
 
+type DecodedItem = (imij::ImageInfo, Vec<u8>, Option<Vec<u8>>);
+
 // This covers retained archives whose earlier sequence index is migration-only.
 // The complete encoded blob has already passed its archive digest check.
 fn decode_buffered_item(
     file: &[u8],
     ordinal: u64,
     limits: &imij::Limits,
-) -> Result<(imij::ImageInfo, Vec<u8>, Option<Vec<u8>>), imij::Error> {
+) -> Result<DecodedItem, imij::Error> {
     let mut decoder = imij::FrameDecoder::with_limits(file, limits)?;
     let mut index = usize::try_from(ordinal).map_err(|_| imij::Error::TooLarge)?;
     if decoder.kind() == imij::FrameKind::Animation && index != 0 {
