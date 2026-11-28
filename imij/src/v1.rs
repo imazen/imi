@@ -4252,26 +4252,44 @@ fn recon_row_simd32(
     false
 }
 
-#[cfg(feature = "std")]
+// Browser wasm (`wasm32-unknown-unknown`) has no process environment variables,
+// so `std::env::var_os` is always `None`; folding `force_scalar()` to `false`
+// lets LLVM prune unreachable scalar fallback kernels when `Wasm128Token::summon()`
+// is compile-time proven.
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 pub(crate) fn force_scalar() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *F.get_or_init(|| std::env::var_os("IMIJ_SCALAR").is_some())
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(any(
+    not(feature = "std"),
+    all(target_arch = "wasm32", target_os = "unknown")
+))]
+#[inline(always)]
 pub(crate) fn force_scalar() -> bool {
     false
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub(crate) fn force_avx2() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *F.get_or_init(|| std::env::var_os("IMIJ_NO_AVX512").is_some())
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(any(
+    not(feature = "std"),
+    all(target_arch = "wasm32", target_os = "unknown")
+))]
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[inline(always)]
 pub(crate) fn force_avx2() -> bool {
     false
 }
