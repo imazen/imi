@@ -28,6 +28,72 @@ pub(crate) fn finish_encoded_image(file: Vec<u8>) -> Result<Vec<u8>, Error> {
     finish_produced(file, true)
 }
 
+/// Finalizes a newly encoded sequence (animation or pages) directly into V4
+/// without first assembling a full-sequence V3 buffer.
+///
+/// Each `fRAM` payload in `frames` is migrated in place one frame at a time so
+/// only a single working frame is live above the compressed frame buffers, then
+/// `first` (frame/page 0 alone) is migrated to V4, `before_data` chunks
+/// (`aNIM`, optional `sDEF`) are inserted, and the V4 `fRAM` chunks are drained
+/// into an exact-capacity output buffer.
+#[cfg(feature = "encode")]
+pub(crate) fn finish_sequence(
+    first: Vec<u8>,
+    mut frames: Vec<Vec<u8>>,
+    before_data: &[([u8; 4], &[u8])],
+    extra_features: crate::Features,
+    checksum: Option<crate::HashAlgorithm>,
+    stop: &dyn how_far::Stop,
+) -> Result<Vec<u8>, Error> {
+    stop.check().map_err(|_| Error::Cancelled)?;
+    let limits = UpgradeLimits {
+        max_encoded_bytes: usize::MAX,
+        ..Default::default()
+    };
+    let source = header::read_versioned(&mut ByteReader::new(&first), u64::MAX)?;
+    let version = source.header.version;
+    let mut needed = extra_features;
+    for frame in &mut frames {
+        stop.check().map_err(|_| Error::Cancelled)?;
+        let nested = crate::upgrade::frame_with(frame, version, &limits, 0, &|f, l, d| {
+            rewrite_inner(f, l, d, true, true, false)
+        })?;
+        if let Some(image) = crate::frames::frame_file(&nested, 4)? {
+            let h = header::read_versioned(&mut ByteReader::new(image), u64::MAX)?;
+            needed = needed.union(h.declared);
+        }
+        *frame = nested;
+    }
+    stop.check().map_err(|_| Error::Cancelled)?;
+    let first = crate::container::finish_unit_table(first)?;
+    let first_v4 = rewrite_inner(&first, &limits, 0, true, true, false)?;
+    drop(first);
+    let first_v4 = crate::container::require_features(first_v4, needed)?;
+    let mut out = crate::container::insert_before_data(&first_v4, before_data)?;
+    drop(first_v4);
+    let extra = frames
+        .iter()
+        .try_fold(0usize, |acc, f| {
+            let chunk = 4usize
+                .checked_add(crate::varint_len(f.len() as u64 + 1))?
+                .checked_add(f.len())?;
+            acc.checked_add(chunk)
+        })
+        .ok_or(Error::TooLarge)?;
+    out.try_reserve_exact(extra).map_err(|_| Error::TooLarge)?;
+    for f in frames {
+        stop.check().map_err(|_| Error::Cancelled)?;
+        crate::container::put_chunk(&mut out, b"fRAM", &f);
+    }
+    let out = crate::checksum::finish_file(out, checksum)?;
+    stop.check().map_err(|_| Error::Cancelled)?;
+    let session = DecodeSession::new(producer_policy());
+    let parsed = super::file::parse_file(&out, &session)?;
+    crate::frames::admit_headers(&parsed, &Structure)?;
+    stop.check().map_err(|_| Error::Cancelled)?;
+    Ok(out)
+}
+
 #[cfg(feature = "encode")]
 fn finish_produced(file: Vec<u8>, fresh_xyb_power: bool) -> Result<Vec<u8>, Error> {
     let limits = UpgradeLimits {

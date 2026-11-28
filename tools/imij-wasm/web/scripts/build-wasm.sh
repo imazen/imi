@@ -64,14 +64,15 @@ wasm_opt=$WEB/node_modules/.bin/wasm-opt
 
 for v in "${variants[@]}"; do
   relaxed=""
-  case $v in relaxed|relaxed-threads) relaxed=",+relaxed-simd" ;; esac
+  case $v in relaxed|relaxed-threads|polyfill-relaxed|polyfill-anim-relaxed) relaxed=",+relaxed-simd" ;; esac
   case $v in
     simd|relaxed)
       RUSTFLAGS="-Ctarget-feature=+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals$relaxed $REMAP" \
         nice -n 19 cargo +"$NIGHTLY" build --locked --timings -j "$JOBS" "${extra_features[@]}" --manifest-path "$CRATE/Cargo.toml" \
         --target wasm32-unknown-unknown --profile wasm-release --target-dir "$TARGET_DIR" \
         -Z build-std=panic_abort,std >&2
-      in=$TARGET_DIR/wasm32-unknown-unknown/wasm-release/imij_web.wasm ;;
+      in=$TARGET_DIR/wasm32-unknown-unknown/wasm-release/imij_web.wasm
+      opt_mode="-O3" ;;
     threads|relaxed-threads)
       # Shared memory needs --shared-memory explicitly: +atomics plus --max-memory alone
       # still links a NON-shared memory, which is not structured-cloneable, so
@@ -82,7 +83,17 @@ for v in "${variants[@]}"; do
         nice -n 19 cargo +"$NIGHTLY" build --locked --timings -j "$JOBS" "${extra_features[@]}" --manifest-path "$CRATE/Cargo.toml" \
         --features threads --target wasm32-unknown-unknown --profile wasm-release \
         --target-dir "$TARGET_DIR" -Z build-std=panic_abort,std >&2
-      in=$TARGET_DIR/wasm32-unknown-unknown/wasm-release/imij_web.wasm ;;
+      in=$TARGET_DIR/wasm32-unknown-unknown/wasm-release/imij_web.wasm
+      opt_mode="-O3" ;;
+    polyfill|polyfill-relaxed|polyfill-anim|polyfill-anim-relaxed)
+      pf_feat="polyfill"
+      case $v in polyfill-anim|polyfill-anim-relaxed) pf_feat="animations" ;; esac
+      RUSTFLAGS="-Ctarget-feature=+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals$relaxed -Z unstable-options -C panic=immediate-abort $REMAP" \
+        nice -n 19 cargo +"$NIGHTLY" build --locked --timings -j "$JOBS" --no-default-features --features "$pf_feat" --manifest-path "$CRATE/Cargo.toml" \
+        --target wasm32-unknown-unknown --profile wasm-polyfill --target-dir "$TARGET_DIR" \
+        -Z build-std=panic_abort,std >&2
+      in=$TARGET_DIR/wasm32-unknown-unknown/wasm-polyfill/imij_web.wasm
+      opt_mode="-Oz" ;;
     *) echo "unknown variant $v" >&2; exit 2 ;;
   esac
   out=$DIST/pkg-$v
@@ -104,12 +115,16 @@ for v in "${variants[@]}"; do
   # for shipment. The instruction stream is shared by both artifacts.
   # Keep plane tile decoding and each numeric slot kernel independently
   # compilable so one first-use decode only compiles the functions it calls.
-  "$wasm_opt" '--no-inline=*::parsed_into*' '--no-inline=*::go16*' \
-    -O3 -g "$out/imij_bg.wasm" -o "$out/imij_profile.wasm"
+  if [ "$opt_mode" = "-Oz" ]; then
+    "$wasm_opt" -Oz -g "$out/imij_bg.wasm" -o "$out/imij_profile.wasm"
+  else
+    "$wasm_opt" '--no-inline=*::parsed_into*' '--no-inline=*::go16*' \
+      -O3 -g "$out/imij_bg.wasm" -o "$out/imij_profile.wasm"
+  fi
   "$wasm_opt" --strip-debug "$out/imij_profile.wasm" -o "$out/imij_bg.wasm"
   opt=$(stat -c %s "$out/imij_bg.wasm")
   node -e 'const z=require("node:zlib"),f=require("node:fs"),p=process.argv[1],b=f.readFileSync(p);f.writeFileSync(p+".gz",z.gzipSync(b,{level:9}));f.writeFileSync(p+".br",z.brotliCompressSync(b,{params:{[z.constants.BROTLI_PARAM_QUALITY]:11}}))' "$out/imij_bg.wasm"
   gz=$(stat -c %s "$out/imij_bg.wasm.gz")
   br=$(stat -c %s "$out/imij_bg.wasm.br")
-  printf 'pkg-%s\twasm-bindgen %s bytes\twasm-opt -O3 %s bytes\tgzip -9 %s\tbrotli -q11 %s\n' "$v" "$raw" "$opt" "$gz" "$br"
+  printf 'pkg-%s\twasm-bindgen %s bytes\twasm-opt %s %s bytes\tgzip -9 %s\tbrotli -q11 %s\n' "$v" "$raw" "$opt_mode" "$opt" "$gz" "$br"
 done

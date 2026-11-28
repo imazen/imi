@@ -1,5 +1,5 @@
 // Internal worker bootstrap. Sharing code does not share instances or memory.
-const variants=new Set(['simd','relaxed','threads','relaxed-threads']),cache=new Map();
+const variants=new Set(['simd','relaxed','threads','relaxed-threads','polyfill','polyfill-relaxed','polyfill-anim','polyfill-anim-relaxed']),cache=new Map();
 function moduleUrl(variant){if(!variants.has(variant))throw Error('WASM module variant');return new URL(`../dist/pkg-${variant}/imij_bg.wasm`,import.meta.url).href;}
 export function compiledModule(variant,url=moduleUrl(variant),preloaded=null){
  if(!variants.has(variant))throw Error('WASM module variant');url=new URL(url,import.meta.url).href;
@@ -12,8 +12,8 @@ export function compiledModule(variant,url=moduleUrl(variant),preloaded=null){
   return typeof WebAssembly.compileStreaming==='function'&&mime==='application/wasm'
    ?WebAssembly.compileStreaming(response):WebAssembly.compile(await response.arrayBuffer());
  })();
- // Four package flavors; callers using more URLs can reload an evicted module.
- if(cache.size>=4)cache.delete(cache.keys().next().value);cache.set(url,pending);
+ // Eight package flavors; callers using more URLs can reload an evicted module.
+ if(cache.size>=8)cache.delete(cache.keys().next().value);cache.set(url,pending);
  pending.catch(()=>{if(cache.get(url)===pending)cache.delete(url);});return pending;
 }
 export function requestModule(variant,url=moduleUrl(variant)){

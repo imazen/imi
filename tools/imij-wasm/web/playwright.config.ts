@@ -25,6 +25,7 @@ const benchIgnore = process.env.IMIJ_WASM_BENCH ? [] : ['**/benchmark.spec.ts'];
 // The caller selects it through `just web-current-test`; missing files fail.
 const v4Ignore = [...(process.env.IMIJ_V4 ? [] : ['**/v4-integration.spec.ts']), ...(process.env.IMIJ_V4_VIEWER ? [] : ['**/v4-viewer.spec.ts'])];
 const currentIgnore = process.env.IMIJ_WEB_CURRENT ? [] : ['**/current-grammar.spec.ts'];
+const p3Ignore = process.env.IMIJ_P3_SWATCH ? [] : ['**/display-p3-polyfill.spec.ts'];
 
 export default defineConfig({
   testDir: 'tests',
@@ -40,8 +41,8 @@ export default defineConfig({
     timeout: 20_000,
   })),
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] }, testIgnore: [...benchIgnore, ...currentIgnore, ...v4Ignore] },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testIgnore: ['**/benchmark.spec.ts', ...currentIgnore, ...v4Ignore] },
-    { name: 'webkit', use: { ...devices['Desktop Safari'] }, testIgnore: ['**/benchmark.spec.ts', ...currentIgnore, ...v4Ignore] },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] }, testIgnore: [...benchIgnore, ...currentIgnore, ...v4Ignore, ...p3Ignore] },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testIgnore: ['**/benchmark.spec.ts', ...currentIgnore, ...v4Ignore, ...p3Ignore] },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] }, testIgnore: ['**/benchmark.spec.ts', ...currentIgnore, ...v4Ignore, ...p3Ignore] },
   ],
 });

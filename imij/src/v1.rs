@@ -935,34 +935,14 @@ fn encode_parts_ref_with_progress(
             let nstripes = h.div_ceil(hs);
             let layout = &layout;
             let ns = layout.slot_channel.len();
-            // Inter frames: the reference's coded values per slot (w x h).
-            let guide: Option<Vec<Vec<u32>>> = reference
-                .map(|(rp, rs)| -> Result<Vec<Vec<u32>>, Error> {
-                    let nch = info.channels.count();
-                    let bps = info.sample.bytes();
-                    layout
-                        .slot_channel
-                        .iter()
-                        .map(|&c| {
-                            let m = &layout.maps[c];
-                            let mut v = Vec::with_capacity(w * h);
-                            for y in 0..h {
-                                pulse.check().map_err(|_| Error::Cancelled)?;
-                                let row = &rp[y * rs..];
-                                for x in 0..w {
-                                    v.push(coded_ref(
-                                        m,
-                                        layout.table(c),
-                                        info.sample,
-                                        read_sample(row, x * nch + c, bps),
-                                    ));
-                                }
-                            }
-                            Ok(v)
-                        })
-                        .collect()
-                })
-                .transpose()?;
+            if let Some((rp, rs)) = reference {
+                let extent = info
+                    .checked_stride_len(rs)
+                    .ok_or(Error::InvalidInput("invalid reference layout"))?;
+                if rp.len() < extent {
+                    return Err(Error::InvalidInput("reference buffer too small"));
+                }
+            }
             // Column groups: units (stripe, group) in stripe-major order; without
             // groups one unit per stripe over the whole width.
             let gcols = group_cols(cfg, w);
@@ -1099,7 +1079,7 @@ fn encode_parts_ref_with_progress(
                 // (rows y0..y1 of planes `pw` wide), or for column groups the
                 // group's columns cropped and analysed here (rows 0..rows).
                 let (local, decor, adapt, preds) =
-                    if rectangles.is_none() && ng == 1 && guide.is_none() {
+                    if rectangles.is_none() && ng == 1 && reference.is_none() {
                         (
                             None,
                             stripe_decor[si],
@@ -1107,25 +1087,58 @@ fn encode_parts_ref_with_progress(
                             row_pred[y0..y1].to_vec(),
                         )
                     } else {
-                        let lp: Vec<Vec<u32>> = slot_planes
-                            .iter()
-                            .map(|p| {
-                                (y0..y1)
-                                    .flat_map(|y| p[y * w + x0..y * w + x0 + gw].iter().copied())
-                                    .collect()
-                            })
-                            .collect();
+                        let lp_owned: Option<Vec<Vec<u32>>> = if ng == 1 {
+                            None
+                        } else {
+                            Some(
+                                slot_planes
+                                    .iter()
+                                    .map(|p| {
+                                        (y0..y1)
+                                            .flat_map(|y| {
+                                                p[y * w + x0..y * w + x0 + gw].iter().copied()
+                                            })
+                                            .collect()
+                                    })
+                                    .collect(),
+                            )
+                        };
+                        let lpr: Vec<&[u32]> = match &lp_owned {
+                            Some(lp) => lp.iter().map(|v| v.as_slice()).collect(),
+                            None => slot_planes.iter().map(|p| &p[y0 * w..y1 * w]).collect(),
+                        };
                         let mut lr = vec![vec![0u32; gw * rows]; ns];
-                        let lpr: Vec<&[u32]> = lp.iter().map(|v| v.as_slice()).collect();
                         let mut views: Vec<&mut [u32]> =
                             lr.iter_mut().map(|v| v.as_mut_slice()).collect();
-                        let crop = |p: &[u32]| -> Vec<u32> {
-                            (y0..y1)
-                                .flat_map(|y| p[y * w + x0..y * w + x0 + gw].iter().copied())
-                                .collect()
-                        };
-                        let gl: Option<Vec<Vec<u32>>> =
-                            guide.as_ref().map(|g| g.iter().map(|p| crop(p)).collect());
+                        let gl: Option<Vec<Vec<u32>>> = reference
+                            .map(|(rp, rs)| -> Result<Vec<Vec<u32>>, Error> {
+                                let nch = info.channels.count();
+                                let bps = info.sample.bytes();
+                                layout
+                                    .slot_channel
+                                    .iter()
+                                    .map(|&c| {
+                                        let m = &layout.maps[c];
+                                        let mut v = Vec::new();
+                                        v.try_reserve_exact(gw * rows)
+                                            .map_err(|_| Error::TooLarge)?;
+                                        for y in y0..y1 {
+                                            pulse.check().map_err(|_| Error::Cancelled)?;
+                                            let row = &rp[y * rs..];
+                                            for x in x0..x0 + gw {
+                                                v.push(coded_ref(
+                                                    m,
+                                                    layout.table(c),
+                                                    info.sample,
+                                                    read_sample(row, x * nch + c, bps),
+                                                ));
+                                            }
+                                        }
+                                        Ok(v)
+                                    })
+                                    .collect()
+                            })
+                            .transpose()?;
                         let glr: Option<Vec<&[u32]>> = gl
                             .as_ref()
                             .map(|g| g.iter().map(|v| v.as_slice()).collect());
@@ -1147,11 +1160,12 @@ fn encode_parts_ref_with_progress(
                                 glr.as_deref(),
                             )?
                         };
-                        (Some((lp, lr)), d, ad, pr)
+                        (Some((lp_owned, lr)), d, ad, pr)
                     };
                 let (pw, py0) = if local.is_none() { (w, y0) } else { (gw, 0) };
                 let planes_u: Vec<&[u32]> = match &local {
-                    Some((lp, _)) => lp.iter().map(|v| v.as_slice()).collect(),
+                    Some((Some(lp), _)) => lp.iter().map(|v| v.as_slice()).collect(),
+                    Some((None, _)) => slot_planes.iter().map(|p| &p[y0 * w..y1 * w]).collect(),
                     None => slot_planes.clone(),
                 };
                 let res_u: Vec<&[u32]> = match &local {
@@ -4252,26 +4266,44 @@ fn recon_row_simd32(
     false
 }
 
-#[cfg(feature = "std")]
+// Browser wasm (`wasm32-unknown-unknown`) has no process environment variables,
+// so `std::env::var_os` is always `None`; folding `force_scalar()` to `false`
+// lets LLVM prune unreachable scalar fallback kernels when `Wasm128Token::summon()`
+// is compile-time proven.
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 pub(crate) fn force_scalar() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *F.get_or_init(|| std::env::var_os("IMIJ_SCALAR").is_some())
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(any(
+    not(feature = "std"),
+    all(target_arch = "wasm32", target_os = "unknown")
+))]
+#[inline(always)]
 pub(crate) fn force_scalar() -> bool {
     false
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub(crate) fn force_avx2() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *F.get_or_init(|| std::env::var_os("IMIJ_NO_AVX512").is_some())
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(any(
+    not(feature = "std"),
+    all(target_arch = "wasm32", target_os = "unknown")
+))]
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[inline(always)]
 pub(crate) fn force_avx2() -> bool {
     false
 }

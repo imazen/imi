@@ -50,7 +50,11 @@ def disassemble(module, wasm_tools, baseline, exact_models, v4_only):
                     near_rows.append(line.strip())
                 name = SYMBOL.match(line)
                 counter = None
-                kernel = name[1].removeprefix("lossy::") if name else None
+                kernel = (
+                    name[1].removeprefix("lossy::").removeprefix("decode::recon::")
+                    if name
+                    else None
+                )
                 if kernel in KERNELS:
                     if kernel in functions:
                         raise ValueError(f"duplicate {kernel} in {module}")

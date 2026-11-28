@@ -237,7 +237,6 @@ impl FrameEncoder {
             first: self.first.clone(),
             frames: self.frames.clone(),
             prev_src: self.prev_src.clone(),
-            prev_rec: self.prev_rec.clone(),
             since_key: self.since_key,
             later_features: self.later_features,
         }

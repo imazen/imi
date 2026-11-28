@@ -66,8 +66,10 @@ pub(super) fn check_inter_reference_rows(v4: bool) {
                 let bytes = encode_inter(
                     &config.lower(),
                     &current,
+                    rb,
                     &info,
                     &reference,
+                    rb,
                     &how_far::NoPulse,
                 )
                 .unwrap();
@@ -170,11 +172,14 @@ pub(super) fn suspended_v4_reference() {
             .collect();
         let mut current = reference.clone();
         current[info.row_bytes() * 34 + 5] ^= 13;
+        let rb = info.row_bytes();
         let native = encode_inter(
             &config.with_column_groups(Some(32)).lower(),
             &current,
+            rb,
             &info,
             &reference,
+            rb,
             &how_far::NoPulse,
         )
         .unwrap();
