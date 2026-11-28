@@ -441,10 +441,9 @@ pub struct FrameEncoder {
     cfg: FrameConfig,
     first: Option<(Vec<u8>, FrameDuration)>,
     frames: Vec<Vec<u8>>,
-    /// Animation: the previous frame's source pixels and what a decoder's
-    /// canvas holds after it (tight rows).
+    /// Animation: the previous frame's source pixels (tight rows), retained
+    /// only when inter coding is enabled.
     prev_src: Vec<u8>,
-    prev_rec: Vec<u8>,
     /// Frames since the last intra frame.
     since_key: u32,
     /// The features the frames or pages after the first declare: the outer
@@ -465,7 +464,6 @@ impl FrameEncoder {
             first: None,
             frames: Vec::new(),
             prev_src: Vec::new(),
-            prev_rec: Vec::new(),
             since_key: 0,
             later_features: Features::EMPTY,
         }
@@ -482,7 +480,6 @@ impl FrameEncoder {
             first: None,
             frames: Vec::new(),
             prev_src: Vec::new(),
-            prev_rec: Vec::new(),
             since_key: 0,
             later_features: Features::EMPTY,
         }
@@ -501,7 +498,6 @@ impl FrameEncoder {
             first: None,
             frames: Vec::new(),
             prev_src: Vec::new(),
-            prev_rec: Vec::new(),
             since_key: 0,
             later_features: Features::EMPTY,
         }
@@ -539,129 +535,142 @@ impl FrameEncoder {
             return Err(Error::InvalidInput("pixel buffer too small"));
         }
         let rb = info.row_bytes();
+        let w = info.width as usize;
         let h = info.height as usize;
-        let mut src = Vec::with_capacity(rb * h);
-        for y in 0..h {
-            pulse.check().map_err(|_| Error::Cancelled)?;
-            src.extend_from_slice(&pixels[y * stride..y * stride + rb]);
-        }
+        let coding = self.cfg.coding.lower();
         if self.first.is_none() {
-            let f =
-                encode_image_checked(&self.cfg.coding.lower(), &src, rb, &info, &self.meta, pulse)?;
+            let f = encode_image_checked(&coding, pixels, stride, &info, &self.meta, pulse)?;
             pulse.check().map_err(|_| Error::Cancelled)?;
-            self.prev_rec = self.reconstruct_intra(&f, &src)?;
-            pulse.check().map_err(|_| Error::Cancelled)?;
-            self.prev_src = src;
+            if self.cfg.inter {
+                self.store_prev_src(pixels, stride, rb, h)?;
+            }
             self.first = Some((f, duration));
             return Ok(());
         }
-        let bpp = rb / info.width as usize;
+        if !self.cfg.inter {
+            let f =
+                encode_image_checked(&coding, pixels, stride, &info, &Metadata::default(), pulse)?;
+            pulse.check().map_err(|_| Error::Cancelled)?;
+            let payload = frame_payload(0, 0, duration, 0, &f);
+            self.frames.try_reserve(1).map_err(|_| Error::TooLarge)?;
+            self.frames.push(payload);
+            self.since_key = 0;
+            return Ok(());
+        }
+        let bpp = rb / w;
         let key_due = self.cfg.keyframe_interval != 0
             && self.since_key.saturating_add(1) >= self.cfg.keyframe_interval;
-        let changed = changed_rect(&self.prev_src, &src, info.width as usize, h, bpp, pulse)?;
-        if changed.is_none() && self.cfg.inter && !key_due {
-            self.frames
-                .push(frame_payload(0, 0, duration, F_PREVIOUS | F_EMPTY, &[]));
+        let changed = changed_rect(&self.prev_src, rb, pixels, stride, w, h, bpp, pulse)?;
+        if changed.is_none() && !key_due {
+            let payload = frame_payload(0, 0, duration, F_PREVIOUS | F_EMPTY, &[]);
+            self.frames.try_reserve(1).map_err(|_| Error::TooLarge)?;
+            self.frames.push(payload);
             self.since_key = self.since_key.saturating_add(1);
             return Ok(());
         }
         // An unchanged source still needs an independent image at a seek point.
-        let (x0, y0, x1, y1) = changed.unwrap_or((0, 0, info.width as usize, h));
-        let area = (x1 - x0) * (y1 - y0);
+        let (x0, y0, x1, y1) = changed.unwrap_or((0, 0, w, h));
+        let (rw, rh) = (x1 - x0, y1 - y0);
+        let area = rw * rh;
+        let full_canvas = x0 == 0 && y0 == 0 && x1 == w && y1 == h;
         let mut best: Option<(Vec<u8>, bool)> = None;
         // Near-lossless frames never predict from the previous frame (SPEC
-        // 2.6): code them intra.
-        if self.cfg.inter && !key_due && !self.near() {
-            let (rw, rh) = (x1 - x0, y1 - y0);
-            let crop = |img: &[u8]| -> Result<Vec<u8>, Error> {
-                let mut v = Vec::with_capacity(rw * rh * bpp);
-                for y in y0..y1 {
-                    pulse.check().map_err(|_| Error::Cancelled)?;
-                    v.extend_from_slice(&img[y * rb + x0 * bpp..y * rb + x1 * bpp]);
-                }
-                Ok(v)
-            };
-            // Lossless predicts from the decoder's canvas; lossy keeps blocks
-            // whose source did not change.
-            let refr = match self.cfg.coding.lower() {
-                Lowered::Lossless(_) | Lowered::Quick(_) => crop(&self.prev_rec)?,
-                Lowered::Lossy(_) => crop(&self.prev_src)?,
-            };
-            let cur = crop(&src)?;
+        // 2.6): code them intra. Coders without pixel-level reference
+        // prediction gain nothing over an independent intra frame when the
+        // changed rectangle already covers the entire canvas.
+        if !key_due && !self.near() && (!full_canvas || uses_pixel_reference(&coding, &info)) {
             let ri = ImageInfo {
                 width: rw as u32,
                 height: rh as u32,
                 ..info.clone()
             };
+            let cur = &pixels[y0 * stride + x0 * bpp..];
+            let refr = &self.prev_src[y0 * rb + x0 * bpp..];
             best = Some((
-                encode_inter(&self.cfg.coding.lower(), &cur, &ri, &refr, pulse)?,
+                encode_inter(&coding, cur, stride, &ri, refr, rb, pulse)?,
                 true,
             ));
         }
-        if best.is_none() || key_due || 2 * area >= info.width as usize * h {
-            let f = encode_image_checked(
-                &self.cfg.coding.lower(),
-                &src,
-                rb,
-                &info,
-                &Metadata::default(),
-                pulse,
-            )?;
+        if best.is_none() || key_due || 2 * area >= w * h {
+            let f =
+                encode_image_checked(&coding, pixels, stride, &info, &Metadata::default(), pulse)?;
             if best.as_ref().is_none_or(|(b, _)| f.len() < b.len()) {
                 best = Some((f, false));
             }
         }
         pulse.check().map_err(|_| Error::Cancelled)?;
         let (f, inter) = best.unwrap();
-        if inter {
-            self.frames.push(frame_payload(
-                x0 as u32, y0 as u32, duration, F_PREVIOUS, &f,
-            ));
-            // What a decoder's canvas holds next: decode the frame into it.
-            let at = y0 * rb + x0 * bpp;
-            decode_file(
-                &f,
-                &mut self.prev_rec[at..],
-                rb,
-                1,
-                true,
-                Some(&self.canvas),
-            )?;
-            self.since_key += 1;
+        let payload = if inter {
+            frame_payload(x0 as u32, y0 as u32, duration, F_PREVIOUS, &f)
         } else {
-            self.frames.push(frame_payload(0, 0, duration, 0, &f));
-            pulse.check().map_err(|_| Error::Cancelled)?;
-            self.prev_rec = self.reconstruct_intra(&f, &src)?;
-            pulse.check().map_err(|_| Error::Cancelled)?;
+            frame_payload(0, 0, duration, 0, &f)
+        };
+        self.frames.try_reserve(1).map_err(|_| Error::TooLarge)?;
+        if let Some((cx0, cy0, cx1, cy1)) = changed {
+            self.update_prev_src_rect(pixels, stride, rb, bpp, cx0, cy0, cx1, cy1);
+        }
+        self.frames.push(payload);
+        if inter {
+            self.since_key = self.since_key.saturating_add(1);
+        } else {
             self.since_key = 0;
         }
-        pulse.check().map_err(|_| Error::Cancelled)?;
-        self.prev_src = src;
         Ok(())
+    }
+
+    /// Copies the first frame into the tight-packed reference buffer.
+    fn store_prev_src(
+        &mut self,
+        pixels: &[u8],
+        stride: usize,
+        rb: usize,
+        h: usize,
+    ) -> Result<(), Error> {
+        let total = rb.checked_mul(h).ok_or(Error::TooLarge)?;
+        self.prev_src.clear();
+        self.prev_src
+            .try_reserve_exact(total)
+            .map_err(|_| Error::TooLarge)?;
+        if stride == rb {
+            self.prev_src.extend_from_slice(&pixels[..total]);
+        } else {
+            for y in 0..h {
+                self.prev_src
+                    .extend_from_slice(&pixels[y * stride..y * stride + rb]);
+            }
+        }
+        Ok(())
+    }
+
+    /// Updates the changed rectangle of `prev_src` in place, reusing its allocation.
+    #[allow(clippy::too_many_arguments)]
+    fn update_prev_src_rect(
+        &mut self,
+        pixels: &[u8],
+        stride: usize,
+        rb: usize,
+        bpp: usize,
+        x0: usize,
+        y0: usize,
+        x1: usize,
+        y1: usize,
+    ) {
+        if stride == rb && x0 == 0 && x1 * bpp == rb {
+            self.prev_src[y0 * rb..y1 * rb].copy_from_slice(&pixels[y0 * rb..y1 * rb]);
+            return;
+        }
+        let x_off = x0 * bpp;
+        let row_len = (x1 - x0) * bpp;
+        for y in y0..y1 {
+            self.prev_src[y * rb + x_off..y * rb + x_off + row_len]
+                .copy_from_slice(&pixels[y * stride + x_off..y * stride + x_off + row_len]);
+        }
     }
 
     /// Lossless frames coded near-lossless (any channel bound).
     fn near(&self) -> bool {
         let n = self.canvas.channels.count();
         matches!(self.cfg.coding.lower(), Lowered::Lossless(c) if c.max_error[..n].iter().any(|&d| d != 0))
-    }
-
-    /// The canvas after an intra frame: the source (lossless) or the
-    /// decoded frame (lossy, near-lossless).
-    fn reconstruct_intra(&self, f: &[u8], src: &[u8]) -> Result<Vec<u8>, Error> {
-        if self.cfg.coding.coder().is_lossless() && !self.near() {
-            return Ok(src.to_vec());
-        }
-        let mut out = vec![0u8; src.len()];
-        decode_file(
-            f,
-            &mut out,
-            self.canvas.row_bytes(),
-            1,
-            false,
-            Some(&self.canvas),
-        )?;
-        Ok(out)
     }
 
     /// Adds a page (`info`: its size; channels and sample type as the
@@ -749,16 +758,38 @@ impl FrameEncoder {
         self.finish_native_checked(&how_far::NoPulse)
     }
 
-    pub(crate) fn finish_checked(self, stop: &dyn Stop) -> Result<Vec<u8>, Error> {
-        let out = self.finish_native_checked(stop)?;
+    pub(crate) fn finish_checked(mut self, stop: &dyn Stop) -> Result<Vec<u8>, Error> {
         stop.check().map_err(|_| Error::Cancelled)?;
-        let out = crate::v4::migrate::finish_encoded(out)?;
-        stop.check().map_err(|_| Error::Cancelled)?;
-        Ok(out)
+        self.prev_src = Vec::new();
+        let (first, d0) = self.first.take().ok_or(Error::InvalidInput("no frames"))?;
+        let mut anim = Vec::new();
+        anim.push(match self.kind {
+            FrameKind::Pages => 2,
+            FrameKind::MixedPages => 3,
+            _ => 1,
+        });
+        put_varint(&mut anim, self.cfg.loop_count as u64);
+        put_varint(&mut anim, self.frames.len() as u64 + 1);
+        put_varint(&mut anim, d0.num);
+        put_varint(&mut anim, d0.den as u64);
+        let extra_features = if self.kind == FrameKind::MixedPages {
+            Features::EMPTY.with(Feature::MixedPages)
+        } else {
+            Features::EMPTY
+        };
+        crate::v4::migrate::finish_sequence(
+            first,
+            self.frames,
+            &[(ANIM, &anim)],
+            extra_features,
+            self.cfg.coding.checksum_algorithm(),
+            stop,
+        )
     }
-    pub(crate) fn finish_native_checked(self, stop: &dyn Stop) -> Result<Vec<u8>, Error> {
+    pub(crate) fn finish_native_checked(mut self, stop: &dyn Stop) -> Result<Vec<u8>, Error> {
         stop.check().map_err(|_| Error::Cancelled)?;
-        let (first, d0) = self.first.ok_or(Error::InvalidInput("no frames"))?;
+        self.prev_src = Vec::new();
+        let (first, d0) = self.first.take().ok_or(Error::InvalidInput("no frames"))?;
         // The outer header declares every feature a later frame or page
         // needs (its mask and what its fields imply, SPEC 0.1, 1.3), and
         // `mixed_pages` for kind 3, so a decoder without one rejects the
@@ -786,9 +817,21 @@ impl FrameEncoder {
         put_varint(&mut anim, d0.num);
         put_varint(&mut anim, d0.den as u64);
         let mut out = container::insert_before_data(&first, &[(ANIM, &anim)])?;
-        for f in &self.frames {
+        drop(first);
+        let extra = self
+            .frames
+            .iter()
+            .try_fold(0usize, |acc, f| {
+                let chunk = 4usize
+                    .checked_add(crate::varint_len(f.len() as u64 + 1))?
+                    .checked_add(f.len())?;
+                acc.checked_add(chunk)
+            })
+            .ok_or(Error::TooLarge)?;
+        out.try_reserve_exact(extra).map_err(|_| Error::TooLarge)?;
+        for f in self.frames {
             stop.check().map_err(|_| Error::Cancelled)?;
-            container::put_chunk(&mut out, &FRAM, f);
+            container::put_chunk(&mut out, &FRAM, &f);
         }
         let out = container::finish_unit_table(out)?;
         stop.check().map_err(|_| Error::Cancelled)?;
@@ -798,66 +841,124 @@ impl FrameEncoder {
     }
 }
 
+/// Whether `coding` performs pixel-level inter prediction (or enforces an
+/// inter-only rejection) from a reference frame on `info`, rather than relying
+/// solely on changed-rectangle cropping.
+#[cfg(feature = "encode")]
+fn uses_pixel_reference(coding: &Lowered, info: &ImageInfo) -> bool {
+    match coding {
+        Lowered::Lossless(_) => info.sample.bytes() <= 4,
+        Lowered::Lossy(c) => {
+            #[cfg(feature = "lab")]
+            if c.rdoq_lambda != 0.0 {
+                return true;
+            }
+            c.small_transforms || info.channels == crate::Channels::Rgb
+        }
+        Lowered::Quick(_) => false,
+    }
+}
+
 /// Bounding box (x0, y0, x1, y1) of the pixels that differ; `None` if none.
+#[allow(clippy::too_many_arguments)]
 #[cfg(feature = "encode")]
 fn changed_rect(
     a: &[u8],
+    a_stride: usize,
     b: &[u8],
+    b_stride: usize,
     w: usize,
     h: usize,
     bpp: usize,
     stop: &dyn Stop,
 ) -> Result<Option<(usize, usize, usize, usize)>, Error> {
     let rb = w * bpp;
-    fn px(r: &[u8], x: usize, bpp: usize) -> &[u8] {
-        &r[x * bpp..(x + 1) * bpp]
-    }
     let (mut x0, mut x1, mut y0, mut y1) = (w, 0, h, 0);
     for y in 0..h {
         stop.check().map_err(|_| Error::Cancelled)?;
-        let (ra, rr) = (&a[y * rb..(y + 1) * rb], &b[y * rb..(y + 1) * rb]);
+        let ra = &a[y * a_stride..y * a_stride + rb];
+        let rr = &b[y * b_stride..y * b_stride + rb];
         if ra == rr {
             continue;
         }
-        let f = (0..w).find(|&x| px(ra, x, bpp) != px(rr, x, bpp)).unwrap();
-        let l = (f..w)
-            .rev()
-            .find(|&x| px(ra, x, bpp) != px(rr, x, bpp))
-            .unwrap();
-        x0 = x0.min(f);
-        x1 = x1.max(l + 1);
-        y0 = y0.min(y);
+        if y1 == 0 {
+            y0 = y;
+        }
         y1 = y + 1;
+        if x0 > 0 {
+            let prefix = x0 * bpp;
+            if let Some(byte) = ra[..prefix]
+                .iter()
+                .zip(&rr[..prefix])
+                .position(|(p, q)| p != q)
+            {
+                x0 = byte / bpp;
+                if x1 <= x0 {
+                    x1 = x0 + 1;
+                }
+            }
+        }
+        if x1 < w {
+            let start = x1 * bpp;
+            if let Some(rel) = ra[start..]
+                .iter()
+                .zip(&rr[start..])
+                .rposition(|(p, q)| p != q)
+            {
+                x1 = (start + rel) / bpp + 1;
+            }
+        }
+        // Once the horizontal span already covers the full canvas width, only
+        // the bottom-most differing row remains to be found.
+        if x0 == 0 && x1 == w {
+            for by in (y + 1..h).rev() {
+                stop.check().map_err(|_| Error::Cancelled)?;
+                let ba = &a[by * a_stride..by * a_stride + rb];
+                let br = &b[by * b_stride..by * b_stride + rb];
+                if ba != br {
+                    y1 = by + 1;
+                    break;
+                }
+            }
+            break;
+        }
     }
     Ok((y1 > 0).then_some((x0, y0, x1, y1)))
 }
 
 /// An inter frame's nested file: `cur` coded against `refr` (lossless: the
-/// decoder's canvas under the rectangle; lossy: the previous frame's
-/// source there), both tight rows of `info`.
+/// previous exact canvas under the rectangle; lossy: the previous frame's
+/// source there), preserving each buffer's row stride.
 #[cfg(feature = "encode")]
 fn encode_inter(
     coding: &Lowered,
     cur: &[u8],
+    cur_stride: usize,
     info: &ImageInfo,
     refr: &[u8],
+    refr_stride: usize,
     pulse: &dyn Pulse,
 ) -> Result<Vec<u8>, Error> {
     pulse.check().map_err(|_| Error::Cancelled)?;
-    let rb = info.row_bytes();
     let none = Metadata::default();
     match coding {
-        Lowered::Quick(c) => crate::quick::encode_frame(cur, rb, info, &none, c, pulse),
-        Lowered::Lossless(c) => {
-            crate::v1::encode_frame_with_progress(cur, rb, info, &none, c, Some((refr, rb)), pulse)
-        }
-        Lowered::Lossy(c) => crate::lossy::encode_lossy_frame_with_progress(
+        Lowered::Quick(c) => crate::quick::encode_frame(cur, cur_stride, info, &none, c, pulse),
+        Lowered::Lossless(c) => crate::v1::encode_frame_with_progress(
             cur,
-            rb,
+            cur_stride,
             info,
             &none,
             c,
-            Some((refr, rb)),
+            Some((refr, refr_stride)),
+            pulse,
+        ),
+        Lowered::Lossy(c) => crate::lossy::encode_lossy_frame_with_progress(
+            cur,
+            cur_stride,
+            info,
+            &none,
+            c,
+            Some((refr, refr_stride)),
             pulse,
         ),
     }

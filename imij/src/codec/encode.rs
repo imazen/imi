@@ -9,7 +9,7 @@ use zenpixels::{PixelDescriptor, PixelSlice};
 /// Full-canvas animation executor using the native frame encoder.
 ///
 /// Input stride and native sample bits are preserved. Compressed frames and the
-/// previous source/reconstruction are buffered until finish. Working-memory caps
+/// previous source frame (when inter coding is enabled) are buffered until finish. Working-memory caps
 /// are refused. Lossless work checks cancellation during source copies, changed
 /// rectangle scans and native analysis/coding; lossy search and reconstruction
 /// currently check only at their boundaries. Progress counts completed native frames,

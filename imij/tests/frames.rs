@@ -645,3 +645,149 @@ fn direct_selection_keeps_nested_admission_and_can_return_to_primary() {
         assert_eq!(pixels, frame(16, 8, 1, 1));
     }
 }
+
+#[test]
+fn strided_animation_matches_packed_bit_for_bit_across_coders() {
+    let pad = |tight: &[u8], w: usize, h: usize, bpp: usize, extra: usize| -> (Vec<u8>, usize) {
+        let rb = w * bpp;
+        let stride = rb + extra;
+        let mut out = vec![0xA5u8; stride * h];
+        for y in 0..h {
+            out[y * stride..y * stride + rb].copy_from_slice(&tight[y * rb..(y + 1) * rb]);
+        }
+        (out, stride)
+    };
+    let (w, h) = (53u32, 37u32);
+    let cases = [
+        (
+            Channels::Rgb,
+            SampleType::U8,
+            imij::ImiEncoderConfig::lossless(),
+        ),
+        (
+            Channels::Rgba,
+            SampleType::U8,
+            imij::ImiEncoderConfig::lossless(),
+        ),
+        (
+            Channels::Rgb,
+            SampleType::U8,
+            imij::ImiEncoderConfig::lossy(85.0),
+        ),
+        (
+            Channels::Rgba,
+            SampleType::U8,
+            imij::ImiEncoderConfig::lossy(85.0),
+        ),
+        (
+            Channels::Rgba,
+            SampleType::U8,
+            imij::ImiEncoderConfig::quick(),
+        ),
+        (
+            Channels::Rgb,
+            SampleType::U8,
+            imij::ImiEncoderConfig::lossless().tune_lossless(|t| t.max_error = [2, 2, 2, 0]),
+        ),
+    ];
+    for (ch, st, coding) in cases {
+        let info = ImageInfo::new(w, h, ch, st);
+        let bpp = ch.count() * st.bytes();
+        let rb = info.row_bytes();
+        let f0 = frame(w, h, ch.count(), 0);
+        // Frame 1: interior sub-rect change.
+        let mut f1 = f0.clone();
+        for y in 7..19 {
+            for x in 11..29 {
+                let o = (y * w as usize + x) * bpp;
+                f1[o] ^= 0x5A;
+            }
+        }
+        // Frame 2: identical to f1 (empty inter frame).
+        let f2 = f1.clone();
+        // Frame 3: second sub-rect touching bottom-right corner.
+        let mut f3 = f1.clone();
+        for y in (h as usize - 5)..h as usize {
+            for x in (w as usize - 9)..w as usize {
+                let o = (y * w as usize + x) * bpp;
+                f3[o] = f3[o].wrapping_add(37);
+            }
+        }
+        // Frame 4: full-canvas change.
+        let f4: Vec<u8> = f3.iter().map(|&b| b.wrapping_add(19)).collect();
+        let seq = [f0, f1, f2, f3, f4];
+        for (inter, keyframe_interval) in [(true, 0), (true, 3), (false, 0)] {
+            let mut cfg = FrameConfig::new(coding.clone().with_threads(1));
+            cfg.inter = inter;
+            cfg.keyframe_interval = keyframe_interval;
+            let mut packed_enc =
+                FrameEncoder::animation(info.clone(), Metadata::default(), cfg.clone());
+            let mut strided_enc = FrameEncoder::animation(info.clone(), Metadata::default(), cfg);
+            for (i, f) in seq.iter().enumerate() {
+                let dur = FrameDuration::from_millis(25 + i as u32 * 5);
+                packed_enc.push_frame(f, rb, dur).unwrap();
+                let (padded, stride) = pad(f, w as usize, h as usize, bpp, 19 + i * 7);
+                strided_enc.push_frame(&padded, stride, dur).unwrap();
+            }
+            let packed_file = packed_enc.finish().unwrap();
+            let strided_file = strided_enc.finish().unwrap();
+            assert_eq!(
+                strided_file, packed_file,
+                "{ch:?} {st:?} inter={inter} key={keyframe_interval}"
+            );
+            let (_, decoded) = decode_all(&strided_file);
+            assert_eq!(decoded.len(), seq.len());
+            if coding.coder().is_lossless() && !matches!(coding.coder(), imij::Coder::Lossless) {
+                // Quick is exact lossless.
+                for (i, (_, px)) in decoded.iter().enumerate() {
+                    assert_eq!(px, &seq[i]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn full_canvas_non_reference_coders_emit_keyframes_while_subrects_stay_inter() {
+    let (w, h) = (48u32, 32u32);
+    for (ch, coding) in [
+        (Channels::Rgba, imij::ImiEncoderConfig::lossy(80.0)),
+        (Channels::Gray, imij::ImiEncoderConfig::lossy(80.0)),
+        (Channels::Rgba, imij::ImiEncoderConfig::quick()),
+    ] {
+        let info = ImageInfo::new(w, h, ch, SampleType::U8);
+        let rb = info.row_bytes();
+        let f0 = frame(w, h, ch.count(), 0);
+        // Frame 1: small sub-rect change -> should use previous canvas.
+        let mut f1 = f0.clone();
+        for y in 4..12 {
+            for x in 6..18 {
+                let o = (y * w as usize + x) * ch.count();
+                f1[o] ^= 0x77;
+            }
+        }
+        // Frame 2: full-canvas change -> independent keyframe (no duplicate encode).
+        let f2: Vec<u8> = f1.iter().map(|&b| b.wrapping_add(41)).collect();
+        let mut enc = FrameEncoder::animation(
+            info.clone(),
+            Metadata::default(),
+            FrameConfig::new(coding.with_threads(1)),
+        );
+        for f in [&f0, &f1, &f2] {
+            enc.push_frame(f, rb, FrameDuration::from_millis(33))
+                .unwrap();
+        }
+        let file = enc.finish().unwrap();
+        let (_, decoded) = decode_all(&file);
+        assert_eq!(decoded.len(), 3);
+        assert!(!decoded[0].0.uses_previous);
+        assert!(
+            decoded[1].0.uses_previous,
+            "{ch:?} sub-rect should stay inter"
+        );
+        assert!(
+            !decoded[2].0.uses_previous,
+            "{ch:?} full-canvas non-reference frame should be an intra keyframe"
+        );
+    }
+}

@@ -211,15 +211,32 @@ impl SequenceEncoder {
         decoded
             .try_reserve_exact(bytes)
             .map_err(|_| Error::TooLarge)?;
-        decoded.resize(bytes, 0);
-        if let Some((reference, _)) = chosen {
-            for y in 0..item.info.height as usize {
-                decoded[y * row..(y + 1) * row].copy_from_slice(
-                    &reference.pixels[y * reference.stride..y * reference.stride + row],
-                );
+        let exact_lossless = match coding {
+            Lowered::Quick(_) => true,
+            Lowered::Lossless(c) => c.max_error[..item.info.channels.count()]
+                .iter()
+                .all(|&v| v == 0),
+            Lowered::Lossy(_) => false,
+        };
+        if exact_lossless {
+            if item.stride == row {
+                decoded.extend_from_slice(&item.pixels[..bytes]);
+            } else {
+                for y in 0..item.info.height as usize {
+                    decoded.extend_from_slice(&item.pixels[y * item.stride..y * item.stride + row]);
+                }
             }
+        } else {
+            decoded.resize(bytes, 0);
+            if let Some((reference, _)) = chosen {
+                for y in 0..item.info.height as usize {
+                    decoded[y * row..(y + 1) * row].copy_from_slice(
+                        &reference.pixels[y * reference.stride..y * reference.stride + row],
+                    );
+                }
+            }
+            decode_file(&file, &mut decoded, row, 1, chosen.is_some(), None)?;
         }
-        decode_file(&file, &mut decoded, row, 1, chosen.is_some(), None)?;
         let hash = crate::pixelsum::digest_with(
             self.config.coding.hash_algorithm(),
             item.info,
@@ -257,7 +274,25 @@ impl SequenceEncoder {
         Ok(decoded)
     }
     pub fn finish(self) -> Result<Vec<u8>, Error> {
-        crate::v4::migrate::finish_encoded(self.finish_container()?)
+        let (first, duration) = self.first.ok_or(Error::InvalidInput("no frames"))?;
+        let mut control = vec![4];
+        put_varint(&mut control, u64::from(self.config.loop_count));
+        put_varint(&mut control, self.identities.len() as u64);
+        put_varint(&mut control, duration.num);
+        put_varint(&mut control, u64::from(duration.den));
+        control.push(u8::from(self.kind == SequenceKind::Animation));
+        let chunks = [
+            (ANIM, control.as_slice()),
+            (defaults::TAG, self.defaults.as_slice()),
+        ];
+        crate::v4::migrate::finish_sequence(
+            first,
+            self.items,
+            &chunks[..1 + usize::from(!self.defaults.is_empty())],
+            Features::EMPTY.with(Feature::SequenceItems),
+            self.config.coding.checksum_algorithm(),
+            &how_far::NoPulse,
+        )
     }
 
     /// Finish with the retained V3 item grammar for explicit compatibility
@@ -286,6 +321,18 @@ impl SequenceEncoder {
             &first,
             &chunks[..1 + usize::from(!self.defaults.is_empty())],
         )?;
+        drop(first);
+        let extra = self
+            .items
+            .iter()
+            .try_fold(0usize, |acc, item| {
+                let chunk = 4usize
+                    .checked_add(crate::varint_len(item.len() as u64 + 1))?
+                    .checked_add(item.len())?;
+                acc.checked_add(chunk)
+            })
+            .ok_or(Error::TooLarge)?;
+        out.try_reserve_exact(extra).map_err(|_| Error::TooLarge)?;
         for item in self.items {
             container::put_chunk(&mut out, &FRAM, &item);
         }
